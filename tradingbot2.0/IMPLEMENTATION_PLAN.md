@@ -620,7 +620,7 @@ class Position:
 - [x] `tests/test_risk_manager.py` - all risk limits, position sizing, EOD flatten, circuit breakers (77 tests, all passing)
 - [x] `tests/test_backtest.py` - cost model, slippage, order fill logic, metrics, trade logging (84 tests, all passing)
 - [x] `tests/test_models.py` - model forward pass, output shape, 3-class output, ModelPrediction (55 tests, all passing)
-- [x] `tests/test_topstepx_api.py` - TopstepX API client, REST endpoints, WebSocket market/trade hubs (77 tests, all passing)
+- [x] `tests/test_topstepx_api.py` - TopstepX API client, REST endpoints, WebSocket market/trade hubs (77 tests, all passing) - FIXED: Removed global pytestmark to fix asyncio warnings (60 warnings → 11)
 - [x] `tests/test_trading.py` - Live trading system, position manager, signal generator, order executor, real-time features, recovery (77 tests, all passing)
 - [x] `tests/test_data_loader.py` - FuturesDataLoader, CSV/TXT loading, data validation, train/test split (37 tests, coverage 19% → 84%)
 - [x] `tests/test_feature_engineering.py` - feature calculations, returns, moving averages, volatility, momentum (40 tests, coverage 12% → 90%)
@@ -651,7 +651,7 @@ class Position:
 - [x] `pytest.ini` or `pyproject.toml` pytest config - COMPLETED (pytest.ini created with asyncio_mode=auto, strict markers, test discovery)
 - [x] Test coverage: 85% (1235 tests passing, improved from 62% → 74% → 77% → 79% → 85%)
 - [x] Test coverage target: > 80% ✓ ACHIEVED (85% coverage)
-- [ ] CI/CD integration (GitHub Actions)
+- [x] CI/CD integration (GitHub Actions) - COMPLETED
 
 ### 8.4 Bug Fixes (2026-01-16)
 - [x] Fixed numpy.trapz deprecation in evaluation.py - replaced with numpy.trapezoid for NumPy 2.0+ compatibility
@@ -1083,3 +1083,5 @@ Before going live with real capital, the system must:
 | 2026-01-16 | - 6 manual kill switch tests (Go-Live #12) |
 | 2026-01-16 | Added public halt() and reset_halt() methods to RiskManager for manual kill switch (Go-Live #12) |
 | 2026-01-16 | Total test count increased from 1206 to 1235 |
+| 2026-01-16 | Fixed pytest asyncio warnings - removed global pytestmark from test_topstepx_api.py (60 warnings → 11) |
+| 2026-01-16 | **Phase 8.3 CI/CD COMPLETED**: Created .github/workflows/ci.yml with test, lint, and security jobs |

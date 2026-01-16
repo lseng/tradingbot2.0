@@ -21,8 +21,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 
-# Configure pytest-asyncio to use auto mode
-pytestmark = pytest.mark.asyncio(loop_scope="function")
+# pytest-asyncio is configured in pytest.ini with asyncio_mode=auto
+# This allows pytest to auto-detect async functions without global marks
 
 from src.api.topstepx_client import (
     TopstepXClient,
