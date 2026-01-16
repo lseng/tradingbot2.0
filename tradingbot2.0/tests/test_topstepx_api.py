@@ -157,6 +157,39 @@ class TestRateLimiter:
         wait = await limiter.acquire()
         assert wait == 0.0
 
+    @pytest.mark.asyncio
+    async def test_wait_and_acquire_immediate(self):
+        """Test wait_and_acquire returns immediately when under limit."""
+        limiter = RateLimiter(max_requests=10, window_seconds=1.0)
+        # Should return quickly without waiting
+        start = time.time()
+        await limiter.wait_and_acquire()
+        elapsed = time.time() - start
+        assert elapsed < 0.1  # Should be nearly instant
+
+    @pytest.mark.asyncio
+    async def test_wait_and_acquire_at_limit(self):
+        """Test wait_and_acquire waits when at limit."""
+        limiter = RateLimiter(max_requests=2, window_seconds=0.2)
+        await limiter.acquire()
+        await limiter.acquire()
+        # Next acquire should wait for window to expire
+        start = time.time()
+        await limiter.wait_and_acquire()
+        elapsed = time.time() - start
+        # Should have waited approximately 0.2 seconds
+        assert elapsed >= 0.15  # Allow for some timing variance
+
+    @pytest.mark.asyncio
+    async def test_acquire_returns_positive_wait_after_window(self):
+        """Test that acquire returns 0 after wait time passes."""
+        limiter = RateLimiter(max_requests=1, window_seconds=0.1)
+        await limiter.acquire()
+        # Wait for window to expire
+        await asyncio.sleep(0.15)
+        wait = await limiter.acquire()
+        assert wait == 0.0
+
 
 # ============================================================================
 # TopstepXClient Tests
@@ -256,6 +289,59 @@ class TestTopstepXClient:
         client = TopstepXClient(username="user", password="pass")
         await client.close()
         assert client._session is None
+
+    @pytest.mark.asyncio
+    async def test_get_session_creates_session(self):
+        """Test _get_session creates a session if none exists."""
+        client = TopstepXClient(username="user", password="pass")
+        session = await client._get_session()
+        assert session is not None
+        assert not session.closed
+        # Clean up
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_get_session_reuses_session(self):
+        """Test _get_session reuses existing session."""
+        client = TopstepXClient(username="user", password="pass")
+        session1 = await client._get_session()
+        session2 = await client._get_session()
+        assert session1 is session2
+        # Clean up
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_close_with_session(self):
+        """Test close when session exists."""
+        client = TopstepXClient(username="user", password="pass")
+        # Create session first
+        await client._get_session()
+        assert client._session is not None
+        # Close
+        await client.close()
+        assert client._session is None
+
+    @pytest.mark.asyncio
+    async def test_close_without_session(self):
+        """Test close when no session exists."""
+        client = TopstepXClient(username="user", password="pass")
+        # Should not raise
+        await client.close()
+        assert client._session is None
+
+    def test_default_account_id_empty(self):
+        """Test default_account_id returns None when no accounts."""
+        client = TopstepXClient(username="user", password="pass")
+        assert client.default_account_id is None
+
+    def test_accounts_returns_copy(self):
+        """Test accounts property returns a copy."""
+        client = TopstepXClient(username="user", password="pass")
+        client._accounts = [{"id": 1}, {"id": 2}]
+        accounts = client.accounts
+        accounts.append({"id": 3})
+        # Original should be unchanged
+        assert len(client._accounts) == 2
 
 
 # ============================================================================

@@ -15,10 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock, patch
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-from api.topstepx_ws import (
+from src.api.topstepx_ws import (
     WebSocketState,
     Quote,
     OrderFill,

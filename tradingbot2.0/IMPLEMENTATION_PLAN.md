@@ -609,8 +609,8 @@ class Position:
 
 ## Phase 8: MEDIUM - Testing (Ongoing)
 
-**Status**: PARTIAL - tests/ directory created with 858 unit tests
-**Test Coverage**: 74% (target: >80%)
+**Status**: PARTIAL - tests/ directory created with 897 unit tests
+**Test Coverage**: 77% (target: >80%)
 **Directory**: `tests/`
 
 ### 8.1 Unit Tests
@@ -620,16 +620,16 @@ class Position:
 - [x] `tests/test_risk_manager.py` - all risk limits, position sizing, EOD flatten, circuit breakers (77 tests, all passing)
 - [x] `tests/test_backtest.py` - cost model, slippage, order fill logic, metrics, trade logging (84 tests, all passing)
 - [x] `tests/test_models.py` - model forward pass, output shape, 3-class output, ModelPrediction (55 tests, all passing)
-- [x] `tests/test_topstepx_api.py` - TopstepX API client, REST endpoints, WebSocket market/trade hubs (68 tests, all passing)
+- [x] `tests/test_topstepx_api.py` - TopstepX API client, REST endpoints, WebSocket market/trade hubs (77 tests, all passing)
 - [x] `tests/test_trading.py` - Live trading system, position manager, signal generator, order executor, real-time features, recovery (77 tests, all passing)
 - [x] `tests/test_data_loader.py` - FuturesDataLoader, CSV/TXT loading, data validation, train/test split (37 tests, coverage 19% → 84%)
 - [x] `tests/test_feature_engineering.py` - feature calculations, returns, moving averages, volatility, momentum (40 tests, coverage 12% → 90%)
 - [x] `tests/test_training.py` - SequenceDataset, ModelTrainer, WalkForwardValidator, class weights (39 tests, coverage 12% → 81%)
 - [x] `tests/test_live_trader_unit.py` - TradingConfig, SessionMetrics, LiveTrader init, callbacks, inference (37 tests, coverage 24% → 47%)
-- [x] `tests/test_order_executor_unit.py` - ExecutionStatus, EntryResult, ExecutorConfig, signal dispatch (33 tests, coverage 25% → 39%)
+- [x] `tests/test_order_executor_unit.py` - ExecutionStatus, EntryResult, ExecutorConfig, signal dispatch, async entry/exit (51 tests, coverage 25% → 70%)
 - [x] `tests/test_topstepx_ws_unit.py` - Quote, OrderFill, PositionUpdate, AccountUpdate, SignalR, WebSocket (66 tests, coverage 37% → 42%)
 - [x] `tests/test_evaluation.py` - ClassificationMetrics, TradingMetrics, TradingSimulator, backtesting (38 tests, coverage 0% → 54%)
-- [x] `tests/test_train_futures_model.py` - CLI argument parsing, seed setting, config building (39 tests, all passing)
+- [x] `tests/test_train_futures_model.py` - CLI argument parsing, seed setting, config building, full pipeline tests (51 tests, coverage 23% → 99%)
 - [x] `tests/conftest.py` - pytest fixtures (sample data, mock clients, position manager) - COMPLETED
 
 ### 8.2 Integration Tests
@@ -645,8 +645,8 @@ class Position:
 ### 8.3 Test Configuration
 
 - [x] `pytest.ini` or `pyproject.toml` pytest config - COMPLETED (pytest.ini created with asyncio_mode=auto, strict markers, test discovery)
-- [x] Test coverage: 74% (858 tests passing, improved from 62% → 74%)
-- [ ] Test coverage target: > 80% (need ~6% more coverage)
+- [x] Test coverage: 77% (897 tests passing, improved from 62% → 74% → 77%)
+- [ ] Test coverage target: > 80% (need ~3% more coverage)
 - [ ] CI/CD integration (GitHub Actions)
 
 ---
@@ -1042,3 +1042,10 @@ Before going live with real capital, the system must:
 | 2026-01-16 | Added `tests/test_train_futures_model.py` - 39 tests for CLI script |
 | 2026-01-16 | Test count increased from 760 to 858 tests (98 new tests) |
 | 2026-01-16 | Test coverage improved from 73% to 74% |
+| 2026-01-16 | **Phase 8.1 continued**: Added 39 more tests for train_futures_model.py (now 51 tests, coverage 23% → 99%) |
+| 2026-01-16 | Added 18 new tests for order_executor.py async entry/exit (now 51 tests, coverage 39% → 70%) |
+| 2026-01-16 | Added 9 new tests for topstepx_api.py RateLimiter and TopstepXClient (now 77 tests, coverage 53% → 59%) |
+| 2026-01-16 | Added OrderStatus to src/api/__init__.py exports |
+| 2026-01-16 | Fixed test imports: changed from relative to absolute (src.trading.*, src.api.*) |
+| 2026-01-16 | Test count increased from 858 to 897 tests (39 new tests) |
+| 2026-01-16 | **Test coverage improved from 74% to 77%** (1329 missing lines, down from 1341) |
