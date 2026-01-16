@@ -377,6 +377,10 @@ class LiveTrader:
         self._last_bar = bar
         self._session_metrics.bars_processed += 1
 
+        # 10A.7: Update bar range for reversal constraint tracking
+        if self._signal_generator:
+            self._signal_generator.update_bar_range(bar.high, bar.low, bar.close)
+
     def _on_position_change(self, change: PositionChange) -> None:
         """
         Callback when position changes.
