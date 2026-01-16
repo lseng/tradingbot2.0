@@ -32,12 +32,13 @@ from src.api import (
     TopstepXWebSocket,
     Quote,
 )
-from src.risk import RiskManager, RiskLimits, EODManager, EODPhase, PositionSizer
+from src.risk import RiskManager, RiskLimits, EODManager, EODPhase, PositionSizer, TradingStatus, CircuitBreakers
 from src.trading.position_manager import PositionManager
 from src.trading.signal_generator import SignalGenerator, SignalConfig, Signal, SignalType, ModelPrediction
 from src.trading.order_executor import OrderExecutor, ExecutorConfig
 from src.trading.rt_features import RealTimeFeatureEngine, BarAggregator, RTFeaturesConfig, OHLCV
 from src.trading.recovery import RecoveryHandler, RecoveryConfig, ErrorEvent, ErrorSeverity
+from src.lib.constants import MES_TICK_VALUE
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +175,7 @@ class LiveTrader:
         self._feature_engine: Optional[RealTimeFeatureEngine] = None
         self._bar_aggregator: Optional[BarAggregator] = None
         self._recovery_handler: Optional[RecoveryHandler] = None
+        self._circuit_breaker: Optional[CircuitBreakers] = None
 
         # ML Model
         self._model = None
@@ -311,6 +313,25 @@ class LiveTrader:
                     await asyncio.sleep(1)
                     continue
 
+                # Risk checks - daily limits and account drawdown (10A.2, 10A.4)
+                if not self._risk_manager.can_trade():
+                    reason = self._risk_manager.state.halt_reason or "Risk limits exceeded"
+                    logger.critical(f"Trading halted by risk manager: {reason}")
+                    # Flatten any open positions for safety
+                    await self._handle_eod_flatten()
+                    self._shutdown_event.set()
+                    break
+
+                # Check for manual review status (20% account drawdown)
+                if self._risk_manager.state.status == TradingStatus.MANUAL_REVIEW:
+                    logger.critical(
+                        "Account drawdown exceeds 20% - MANUAL_REVIEW required. "
+                        "Flattening positions and halting trading."
+                    )
+                    await self._handle_eod_flatten()
+                    self._shutdown_event.set()
+                    break
+
                 # EOD flatten check
                 if current_time >= self.config.flatten_time:
                     await self._handle_eod_flatten()
@@ -374,7 +395,8 @@ class LiveTrader:
             self._session_metrics.predictions_made += 1
 
             # 3. Check EOD phase
-            eod_phase = self._eod_manager.get_current_phase()
+            eod_status = self._eod_manager.get_status()
+            eod_phase = eod_status.phase
             if eod_phase == EODPhase.CLOSE_ONLY:
                 # No new entries, only exits
                 if not self._position_manager.is_flat():
@@ -473,6 +495,15 @@ class LiveTrader:
 
             if size.contracts <= 0:
                 logger.warning("Position size is 0, skipping trade")
+                return
+
+            # Validate trade with risk manager (per-trade risk + confidence check)
+            risk_amount = size.contracts * signal.stop_ticks * MES_TICK_VALUE
+            if not self._risk_manager.approve_trade(risk_amount, signal.confidence):
+                logger.warning(
+                    f"Trade rejected by risk manager: risk=${risk_amount:.2f}, "
+                    f"confidence={signal.confidence:.1%}"
+                )
                 return
 
             # Execute via order executor

@@ -131,7 +131,9 @@ class MLSignalGenerator:
             # Run model inference
             with torch.no_grad():
                 features_tensor = torch.FloatTensor(features).unsqueeze(0).to(self.device)
-                logits = self.model(features_tensor)
+                output = self.model(features_tensor)
+                # Handle LSTM which returns (logits, hidden_state) tuple
+                logits = output[0] if isinstance(output, tuple) else output
                 probs = torch.softmax(logits, dim=1).squeeze().cpu().numpy()
 
             # Get prediction and confidence
@@ -253,25 +255,33 @@ def load_model(model_path: str, device: str = 'cpu') -> Tuple[torch.nn.Module, D
     # Load checkpoint
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
 
-    # Get model configuration
-    config = checkpoint.get('config', {})
-    model_type = config.get('model_type', 'feedforward')
-    input_size = config.get('input_size', 50)
-    hidden_sizes = config.get('hidden_sizes', [256, 128, 64])
-    num_classes = config.get('num_classes', 3)
+    # Get model configuration - handle different checkpoint formats
+    # New format: model_config with 'type' and 'params'
+    # Old format: config with 'model_type' and direct keys
+    config = checkpoint.get('model_config', checkpoint.get('config', {}))
+    model_type = config.get('type', config.get('model_type', 'feedforward'))
+    input_size = checkpoint.get('input_dim', config.get('input_size', 50))
+
+    # Get params from config (new format) or directly from config (old format)
+    params = config.get('params', config)
+    # Handle both hidden_dims (FeedForward) and hidden_sizes naming
+    hidden_dims = params.get('hidden_dims', params.get('hidden_sizes', [256, 128, 64]))
+    num_classes = params.get('num_classes', 3)
+    dropout_rate = params.get('dropout_rate', 0.3)
 
     # Create model based on type
     if model_type == 'feedforward':
         model = FeedForwardNet(
-            input_size=input_size,
-            hidden_sizes=hidden_sizes,
+            input_dim=input_size,
+            hidden_dims=hidden_dims,
+            dropout_rate=dropout_rate,
             num_classes=num_classes,
         )
     elif model_type == 'lstm':
         model = LSTMNet(
             input_size=input_size,
-            hidden_size=hidden_sizes[0] if hidden_sizes else 128,
-            num_layers=config.get('num_layers', 2),
+            hidden_size=hidden_dims[0] if hidden_dims else 128,
+            num_layers=params.get('num_layers', 2),
             num_classes=num_classes,
         )
     elif model_type == 'hybrid':
@@ -484,10 +494,10 @@ def run_backtest(
     logger.info("BACKTEST RESULTS")
     logger.info("=" * 60)
     logger.info(f"Total trades: {metrics.total_trades}")
-    logger.info(f"Win rate: {metrics.win_rate:.1%}")
+    logger.info(f"Win rate: {metrics.win_rate_pct:.1f}%")
     logger.info(f"Profit factor: {metrics.profit_factor:.2f}")
-    logger.info(f"Total return: ${metrics.total_net_pnl:.2f} ({metrics.total_return_pct:.2%})")
-    logger.info(f"Max drawdown: ${metrics.max_drawdown:.2f} ({metrics.max_drawdown_pct:.2%})")
+    logger.info(f"Total return: ${metrics.net_profit:.2f} ({metrics.total_return_pct:.2f}%)")
+    logger.info(f"Max drawdown: ${metrics.max_drawdown_dollars:.2f} ({metrics.max_drawdown_pct:.2f}%)")
     logger.info(f"Sharpe ratio: {metrics.sharpe_ratio:.2f}")
     logger.info(f"Sortino ratio: {metrics.sortino_ratio:.2f}")
     logger.info(f"Calmar ratio: {metrics.calmar_ratio:.2f}")

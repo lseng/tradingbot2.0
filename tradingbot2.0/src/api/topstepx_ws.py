@@ -708,6 +708,10 @@ class TopstepXWebSocket:
         # Connect to trade hub
         await self._connect_trade()
 
+        # Start auto-reconnect loop if enabled
+        if self._auto_reconnect and not self._reconnect_task:
+            self._reconnect_task = asyncio.create_task(self._auto_reconnect_loop())
+
     async def _connect_market(self) -> None:
         """Connect to market hub."""
         if self._market_connection and self._market_connection.is_connected:
