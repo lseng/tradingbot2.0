@@ -632,7 +632,16 @@ def prepare_scalping_features(
     scaler = None
     if normalize:
         from sklearn.preprocessing import StandardScaler
+        import numpy as np
         scaler = StandardScaler()
+
+        # Replace infinity values with NaN, then drop rows with NaN
+        df_features[feature_names] = df_features[feature_names].replace([np.inf, -np.inf], np.nan)
+        rows_before = len(df_features)
+        df_features = df_features.dropna(subset=feature_names)
+        rows_dropped = rows_before - len(df_features)
+        if rows_dropped > 0:
+            logger.info(f"Dropped {rows_dropped} rows with infinity/NaN values during normalization")
 
         # Fit and transform features
         df_features[feature_names] = scaler.fit_transform(df_features[feature_names])
