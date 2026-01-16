@@ -38,6 +38,14 @@ from .engine import (
     Signal,
     SignalType,
 )
+from .go_live_validator import (
+    GoLiveValidator,
+    GoLiveValidationResult,
+    GoLiveThresholds,
+    ValidationCheck,
+    ValidationStatus,
+    check_go_live_ready,
+)
 
 # Visualization imports (optional - requires plotly)
 try:
@@ -85,6 +93,13 @@ __all__ = [
     "OrderFillMode",
     "Signal",
     "SignalType",
+    # Go-Live Validation
+    "GoLiveValidator",
+    "GoLiveValidationResult",
+    "GoLiveThresholds",
+    "ValidationCheck",
+    "ValidationStatus",
+    "check_go_live_ready",
     # Visualization (optional)
     "VISUALIZATION_AVAILABLE",
     "BacktestVisualizer",
