@@ -610,7 +610,7 @@ class Position:
 
 ## Phase 8: MEDIUM - Testing (Ongoing)
 
-**Status**: COMPLETED - tests/ directory created with 1358 unit tests
+**Status**: COMPLETED - tests/ directory created with 1508 unit tests
 **Test Coverage**: 85% (target: >80%) ✓ ACHIEVED
 **Directory**: `tests/`
 
@@ -634,6 +634,7 @@ class Position:
 - [x] `tests/test_evaluation_simple.py` - Additional evaluation tests for _simple_auc, TradingSimulator (21 tests, coverage 54% → 57%)
 - [x] `tests/test_train_futures_model.py` - CLI argument parsing, seed setting, config building, full pipeline tests (51 tests, coverage 23% → 99%)
 - [x] `tests/test_recovery_extended.py` - RecoveryHandler disconnect, auth failure, order rejection, margin, rate limit, position mismatch, error history (47 tests, coverage 69% → 99%)
+- [x] `tests/test_train_scalping_model.py` - train_scalping_model.py CLI script, parquet_loader and scalping_features integration (38 tests, all passing)
 - [x] `tests/conftest.py` - pytest fixtures (sample data, mock clients, position manager) - COMPLETED
 
 ### 8.2 Integration Tests
@@ -1117,3 +1118,9 @@ Before going live with real capital, the system must:
 | 2026-01-16 | Added optuna>=3.3.0 to requirements.txt |
 | 2026-01-16 | Added 112 tests in tests/test_optimization.py (all passing) |
 | 2026-01-16 | Total test count increased from 1358 to 1470 |
+| 2026-01-16 | **Integration Gap Closed**: Created train_scalping_model.py connecting Phase 1 data pipeline to Phase 4 training |
+| 2026-01-16 | Created src/ml/train_scalping_model.py - CLI script integrating parquet_loader.py and scalping_features.py |
+| 2026-01-16 | Creates models/scalper_v1.pt checkpoint with 3-class scalping model |
+| 2026-01-16 | Added 38 tests in tests/test_train_scalping_model.py (all passing) |
+| 2026-01-16 | Total test count increased from 1470 to 1508 |
+| 2026-01-16 | Phase 1 data pipeline (parquet_loader + scalping_features) now fully connected to Phase 4 training pipeline |
