@@ -14,18 +14,69 @@ Signal Types:
 - FLATTEN: Emergency close all positions
 - HOLD: No action
 
+Reversal Constraints (per specs/risk-management.md):
+- Must have high-confidence opposite signal (> 75%)
+- Cannot reverse more than 2x in same bar range
+- Cooldown period after reversal: 30 seconds minimum
+- Reversal counts as new trade for daily limits
+
 Reference: specs/live-trading-execution.md
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from enum import Enum
 import logging
 
 from src.trading.position_manager import Position
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class BarRange:
+    """
+    Tracks the price range of a bar for reversal constraint checking.
+
+    Used to enforce the "Cannot reverse more than 2x in same bar range" rule
+    from specs/risk-management.md.
+
+    Attributes:
+        high: Bar high price
+        low: Bar low price
+        timestamp: When this bar range was established
+    """
+    high: float
+    low: float
+    timestamp: datetime = field(default_factory=datetime.now)
+
+    def contains_price(self, price: float, tolerance: float = 0.0) -> bool:
+        """
+        Check if a price is within this bar range.
+
+        Args:
+            price: Price to check
+            tolerance: Additional tolerance in price units (default 0)
+
+        Returns:
+            True if price is within [low - tolerance, high + tolerance]
+        """
+        return (self.low - tolerance) <= price <= (self.high + tolerance)
+
+    def overlaps(self, other: 'BarRange', tolerance: float = 0.0) -> bool:
+        """
+        Check if this bar range overlaps with another.
+
+        Args:
+            other: Another BarRange to check
+            tolerance: Additional tolerance in price units
+
+        Returns:
+            True if the ranges overlap
+        """
+        return not (self.high + tolerance < other.low or
+                    self.low - tolerance > other.high)
 
 
 class SignalType(Enum):
@@ -108,13 +159,18 @@ class SignalConfig:
     # Cooldown after exits (prevent overtrading)
     exit_cooldown_seconds: float = 30.0
 
+    # Cooldown after reversals (per specs/risk-management.md: 30s minimum)
+    reversal_cooldown_seconds: float = 30.0
+
     # Exit triggers
     exit_on_opposite_signal: bool = True  # Exit if model predicts opposite direction
     exit_on_flat_signal: bool = False  # Exit if model predicts FLAT
 
-    # Reversal settings
+    # Reversal settings (per specs/risk-management.md)
     allow_reversals: bool = True  # Allow direct reversals
     require_flat_first: bool = False  # Require flat before reversal
+    max_reversals_per_bar_range: int = 2  # Cannot reverse more than 2x in same bar range
+    bar_range_tolerance: float = 0.25  # Tolerance for bar range overlap (1 tick for MES)
 
 
 class SignalGenerator:
@@ -151,11 +207,18 @@ class SignalGenerator:
         """
         self.config = config or SignalConfig()
         self._last_exit_time: Optional[datetime] = None
+        self._last_reversal_time: Optional[datetime] = None
+
+        # Reversal bar-range constraint tracking (per specs/risk-management.md)
+        self._current_bar_range: Optional[BarRange] = None
+        self._reversals_in_bar_range: int = 0
+        self._reversal_bar_ranges: List[BarRange] = []  # History for debugging
 
         logger.info(
             f"SignalGenerator initialized: "
             f"min_entry_conf={self.config.min_entry_confidence}, "
-            f"min_exit_conf={self.config.min_exit_confidence}"
+            f"min_exit_conf={self.config.min_exit_confidence}, "
+            f"max_reversals_per_bar={self.config.max_reversals_per_bar_range}"
         )
 
     def generate(
@@ -278,17 +341,26 @@ class SignalGenerator:
         if prediction.direction == -1:  # DOWN prediction while long
             if prediction.confidence >= self.config.min_reversal_confidence:
                 if self.config.allow_reversals and not self.config.require_flat_first:
-                    logger.info(
-                        f"REVERSE_TO_SHORT signal: confidence={prediction.confidence:.2%}"
-                    )
-                    return Signal(
-                        signal_type=SignalType.REVERSE_TO_SHORT,
-                        confidence=prediction.confidence,
-                        stop_ticks=stop_ticks,
-                        target_ticks=target_ticks,
-                        predicted_class=0,  # DOWN
-                        reason="Model predicts DOWN with high confidence (reversal)",
-                    )
+                    # Check bar-range constraint (per specs/risk-management.md)
+                    can_reverse, reason = self._can_reverse_in_bar_range()
+                    if not can_reverse:
+                        logger.info(
+                            f"Reversal blocked: {reason} (confidence={prediction.confidence:.2%})"
+                        )
+                        # Fall through to check for regular exit instead
+                    else:
+                        logger.info(
+                            f"REVERSE_TO_SHORT signal: confidence={prediction.confidence:.2%}"
+                        )
+                        self._record_reversal()
+                        return Signal(
+                            signal_type=SignalType.REVERSE_TO_SHORT,
+                            confidence=prediction.confidence,
+                            stop_ticks=stop_ticks,
+                            target_ticks=target_ticks,
+                            predicted_class=0,  # DOWN
+                            reason="Model predicts DOWN with high confidence (reversal)",
+                        )
 
             if (self.config.exit_on_opposite_signal and
                     prediction.confidence >= self.config.min_exit_confidence):
@@ -335,17 +407,26 @@ class SignalGenerator:
         if prediction.direction == 1:  # UP prediction while short
             if prediction.confidence >= self.config.min_reversal_confidence:
                 if self.config.allow_reversals and not self.config.require_flat_first:
-                    logger.info(
-                        f"REVERSE_TO_LONG signal: confidence={prediction.confidence:.2%}"
-                    )
-                    return Signal(
-                        signal_type=SignalType.REVERSE_TO_LONG,
-                        confidence=prediction.confidence,
-                        stop_ticks=stop_ticks,
-                        target_ticks=target_ticks,
-                        predicted_class=2,  # UP
-                        reason="Model predicts UP with high confidence (reversal)",
-                    )
+                    # Check bar-range constraint (per specs/risk-management.md)
+                    can_reverse, reason = self._can_reverse_in_bar_range()
+                    if not can_reverse:
+                        logger.info(
+                            f"Reversal blocked: {reason} (confidence={prediction.confidence:.2%})"
+                        )
+                        # Fall through to check for regular exit instead
+                    else:
+                        logger.info(
+                            f"REVERSE_TO_LONG signal: confidence={prediction.confidence:.2%}"
+                        )
+                        self._record_reversal()
+                        return Signal(
+                            signal_type=SignalType.REVERSE_TO_LONG,
+                            confidence=prediction.confidence,
+                            stop_ticks=stop_ticks,
+                            target_ticks=target_ticks,
+                            predicted_class=2,  # UP
+                            reason="Model predicts UP with high confidence (reversal)",
+                        )
 
             if (self.config.exit_on_opposite_signal and
                     prediction.confidence >= self.config.min_exit_confidence):
@@ -443,6 +524,144 @@ class SignalGenerator:
         """Reset exit cooldown (e.g., at start of new session)."""
         self._last_exit_time = None
         logger.debug("Exit cooldown reset")
+
+    # ========== Reversal Bar-Range Constraint Methods ==========
+    # Per specs/risk-management.md: "Cannot reverse more than 2x in same bar range"
+
+    def update_bar_range(self, high: float, low: float, current_price: float) -> None:
+        """
+        Update the current bar range for reversal constraint checking.
+
+        Should be called on each new bar (typically 1-second bars in live trading).
+        If the new bar range overlaps with the current tracked range, keep tracking.
+        If it's a new non-overlapping range, reset the reversal counter.
+
+        Args:
+            high: Current bar high price
+            low: Current bar low price
+            current_price: Current price (for range extension logic)
+        """
+        new_range = BarRange(high=high, low=low)
+
+        if self._current_bar_range is None:
+            # First bar - establish range
+            self._current_bar_range = new_range
+            self._reversals_in_bar_range = 0
+            logger.debug(f"Bar range established: {low:.2f} - {high:.2f}")
+            return
+
+        # Check if new bar overlaps with current range
+        if self._current_bar_range.overlaps(new_range, self.config.bar_range_tolerance):
+            # Extend the range if needed
+            extended_high = max(self._current_bar_range.high, high)
+            extended_low = min(self._current_bar_range.low, low)
+            self._current_bar_range = BarRange(
+                high=extended_high,
+                low=extended_low,
+                timestamp=self._current_bar_range.timestamp
+            )
+            logger.debug(
+                f"Bar range extended: {self._current_bar_range.low:.2f} - "
+                f"{self._current_bar_range.high:.2f}, reversals={self._reversals_in_bar_range}"
+            )
+        else:
+            # New non-overlapping range - reset counter
+            old_range = self._current_bar_range
+            self._reversal_bar_ranges.append(old_range)  # Keep history
+            self._current_bar_range = new_range
+            self._reversals_in_bar_range = 0
+            logger.debug(
+                f"New bar range: {low:.2f} - {high:.2f} (previous: "
+                f"{old_range.low:.2f} - {old_range.high:.2f})"
+            )
+
+    def _in_reversal_cooldown(self) -> bool:
+        """
+        Check if in post-reversal cooldown period.
+
+        Separate from exit cooldown per specs/risk-management.md:
+        "Cooldown period after reversal: 30 seconds minimum"
+        """
+        if self._last_reversal_time is None:
+            return False
+
+        elapsed = (datetime.now() - self._last_reversal_time).total_seconds()
+        return elapsed < self.config.reversal_cooldown_seconds
+
+    def _can_reverse_in_bar_range(self) -> tuple[bool, str]:
+        """
+        Check if a reversal is allowed based on the bar-range constraint.
+
+        Per specs/risk-management.md: "Cannot reverse more than 2x in same bar range"
+
+        Returns:
+            Tuple of (can_reverse, reason)
+        """
+        # Check reversal cooldown first
+        if self._in_reversal_cooldown():
+            elapsed = 0.0
+            if self._last_reversal_time:
+                elapsed = (datetime.now() - self._last_reversal_time).total_seconds()
+            remaining = self.config.reversal_cooldown_seconds - elapsed
+            return False, f"Reversal cooldown active ({remaining:.1f}s remaining)"
+
+        # Check bar-range constraint
+        if self._reversals_in_bar_range >= self.config.max_reversals_per_bar_range:
+            return False, (
+                f"Max {self.config.max_reversals_per_bar_range} reversals "
+                f"reached in bar range "
+                f"({self._current_bar_range.low:.2f} - {self._current_bar_range.high:.2f})"
+                if self._current_bar_range else "Max reversals reached"
+            )
+
+        return True, ""
+
+    def _record_reversal(self) -> None:
+        """Record a reversal event for constraint tracking."""
+        self._last_reversal_time = datetime.now()
+        self._reversals_in_bar_range += 1
+        self._record_exit_time()  # Reversals also trigger exit cooldown
+
+        logger.info(
+            f"Reversal recorded: count={self._reversals_in_bar_range} "
+            f"in bar range {self._current_bar_range.low:.2f} - "
+            f"{self._current_bar_range.high:.2f}"
+            if self._current_bar_range else
+            f"Reversal recorded: count={self._reversals_in_bar_range}"
+        )
+
+    def reset_reversal_state(self) -> None:
+        """
+        Reset reversal tracking state (e.g., at start of new session).
+
+        This resets:
+        - Reversal cooldown
+        - Bar-range tracking
+        - Reversal counter
+        """
+        self._last_reversal_time = None
+        self._current_bar_range = None
+        self._reversals_in_bar_range = 0
+        self._reversal_bar_ranges.clear()
+        logger.debug("Reversal state reset")
+
+    def get_reversal_state(self) -> dict:
+        """
+        Get current reversal constraint state for monitoring/debugging.
+
+        Returns:
+            Dictionary with reversal tracking state
+        """
+        return {
+            "reversals_in_bar_range": self._reversals_in_bar_range,
+            "max_allowed": self.config.max_reversals_per_bar_range,
+            "current_bar_range": (
+                {"high": self._current_bar_range.high, "low": self._current_bar_range.low}
+                if self._current_bar_range else None
+            ),
+            "in_reversal_cooldown": self._in_reversal_cooldown(),
+            "last_reversal_time": self._last_reversal_time.isoformat() if self._last_reversal_time else None,
+        }
 
 
 def is_entry_signal(signal: Signal) -> bool:

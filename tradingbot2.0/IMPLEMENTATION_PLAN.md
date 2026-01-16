@@ -501,6 +501,7 @@ Logic:
 - [x] Risk manager integration (check limits before signal)
 - [x] Position-aware (no duplicate entries, handle reversals)
 - [x] Cooldown after exits (configurable seconds)
+- [x] **Position Reversal Bar-Range Constraint**: Cannot reverse more than 2x in same bar range (COMPLETED 2026-01-16)
 
 ### 6.3 Order Executor
 **File**: `src/trading/order_executor.py` (NEW)
@@ -610,7 +611,7 @@ class Position:
 
 ## Phase 8: MEDIUM - Testing (Ongoing)
 
-**Status**: COMPLETED - tests/ directory created with 1868 unit tests
+**Status**: COMPLETED - tests/ directory created with 1908 unit tests
 **Test Coverage**: 85% (target: >80%) ✓ ACHIEVED
 **Directory**: `tests/`
 
@@ -904,7 +905,7 @@ Before going live with real capital, the system must:
 4. [x] EOD flatten works 100% of the time (verified across DST boundaries) - **VERIFIED with DST tests**
 5. [x] Inference latency < 10ms (measured on target hardware) - **VERIFIED with inference benchmark tests**
 6. [x] No lookahead bias in features or targets (temporal unit tests pass) - **VERIFIED with 29 comprehensive tests**
-7. [x] Unit test coverage > 80% - **ACHIEVED (85% coverage, 1813 tests)**
+7. [x] Unit test coverage > 80% - **ACHIEVED (85% coverage, 1908 tests)**
 8. [ ] Paper trading for minimum 2 weeks without critical errors
 9. [x] Position sizing matches spec for all account balance tiers - **VERIFIED with 53 comprehensive tests**
 10. [x] Circuit breakers tested and working (simulated loss scenarios) - **VERIFIED with 40 comprehensive tests**
@@ -916,7 +917,7 @@ Before going live with real capital, the system must:
 ## Notes
 
 - The existing `src/ml/` code is a solid foundation but needs significant rework for scalping timeframes
-- **1813 tests exist** with 85% coverage - comprehensive test suite covering all major modules
+- **1908 tests exist** with 85% coverage - comprehensive test suite covering all major modules
 - The 227MB 1-second parquet dataset is the primary asset but isn't being used
 - TopstepX API is for **live trading only** (7-14 day historical limit)
 - DataBento is for historical data (already have 2 years in parquet)
@@ -1195,3 +1196,11 @@ Before going live with real capital, the system must:
 | 2026-01-16 | Created src/backtest/go_live_validator.py - GoLiveValidator, GoLiveThresholds, ValidationCheck, check_go_live_ready() |
 | 2026-01-16 | Added 55 tests in tests/test_go_live_validator.py (all passing) |
 | 2026-01-16 | Total test count increased from 1813 to 1868 |
+| 2026-01-16 | **Position Reversal Bar-Range Constraint COMPLETED**: Implemented "Cannot reverse more than 2x in same bar range" constraint in SignalGenerator |
+| 2026-01-16 | Added BarRange dataclass for tracking price ranges |
+| 2026-01-16 | Added reversal tracking state (_reversals_in_bar_range, _current_bar_range, _last_reversal_time) |
+| 2026-01-16 | Added 30-second reversal-specific cooldown (separate from exit cooldown) |
+| 2026-01-16 | Added update_bar_range(), _can_reverse_in_bar_range(), _record_reversal() methods |
+| 2026-01-16 | Updated _generate_long_signal() and _generate_short_signal() to check constraints |
+| 2026-01-16 | Added 40 tests in tests/test_reversal_bar_range.py |
+| 2026-01-16 | Total test count increased from 1868 to 1908 |
