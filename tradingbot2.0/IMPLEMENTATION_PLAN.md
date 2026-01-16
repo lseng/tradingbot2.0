@@ -1250,3 +1250,6 @@ Before going live with real capital, the system must:
 | 2026-01-16 | Added tests/test_order_executor_extended.py with 50 comprehensive tests covering: ExecutionTiming dataclass, limit order placement, WebSocket fill handling, OCO order management, cancel operations, wait_for_fill timeout/REST fallback, stop/target placement errors, exit/flatten error handling, unknown signal types, latency warnings |
 | 2026-01-16 | Total test count increased from 2174 to 2224 (50 new tests) |
 | 2026-01-16 | Overall test coverage improved from 89% to 90% |
+| 2026-01-16 | **Test Coverage Improvement**: evaluation.py coverage improved from 73% to 92% (20 new tests) |
+| 2026-01-16 | Added tests/test_evaluation_plots.py with 20 comprehensive tests covering: plot_results function, print_evaluation_report, matplotlib integration, edge cases (empty trades, single point equity, negative/mixed PnL) |
+| 2026-01-16 | Total test count increased from 2224 to 2244 (20 new tests) |
