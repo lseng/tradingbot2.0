@@ -55,7 +55,7 @@ python scripts/download_data.py --backfill-gaps --validate
 
 Run these after implementing to get immediate feedback:
 
-- Tests: `pytest tests/` (1551 tests)
+- Tests: `pytest tests/` (2331 tests, 91% coverage)
 - Typecheck: `mypy src/ml/`
 - Lint: `ruff check src/ml/`
 
@@ -92,7 +92,7 @@ src/
 scripts/
 ├── run_backtest.py        # Backtest entry point
 └── run_live.py            # Live trading entry point
-tests/                     # 1508 tests (unit + integration)
+tests/                     # 2331 tests (unit + integration)
 ```
 
 ### Codebase Patterns
