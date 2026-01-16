@@ -279,7 +279,7 @@ class TestLiveTraderProcessBar:
         trader._feature_engine.get_atr = MagicMock(return_value=2.0)
 
         trader._eod_manager = MagicMock()
-        trader._eod_manager.get_current_phase = MagicMock(return_value=EODPhase.CLOSE_ONLY)
+        trader._eod_manager.get_status.return_value = MagicMock(phase=EODPhase.CLOSE_ONLY)
 
         trader._position_manager = MagicMock()
         trader._position_manager.is_flat = MagicMock(return_value=True)
@@ -315,7 +315,7 @@ class TestLiveTraderProcessBar:
         trader._feature_engine.get_atr = MagicMock(return_value=2.0)
 
         trader._eod_manager = MagicMock()
-        trader._eod_manager.get_current_phase = MagicMock(return_value=EODPhase.NORMAL)
+        trader._eod_manager.get_status.return_value = MagicMock(phase=EODPhase.NORMAL)
 
         trader._position_manager = MagicMock()
         trader._position_manager.is_flat = MagicMock(return_value=True)

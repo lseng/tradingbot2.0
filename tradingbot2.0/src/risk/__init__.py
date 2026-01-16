@@ -11,7 +11,7 @@ This module provides comprehensive risk controls to protect the $1,000 starting 
 All limits are NON-NEGOTIABLE as capital preservation is the primary objective.
 """
 
-from .risk_manager import RiskManager, RiskState, RiskLimits
+from .risk_manager import RiskManager, RiskState, RiskLimits, TradingStatus
 from .position_sizing import PositionSizer, PositionSizeResult
 from .stops import StopLossManager, StopType
 from .eod_manager import EODManager, EODPhase
@@ -22,6 +22,7 @@ __all__ = [
     'RiskManager',
     'RiskState',
     'RiskLimits',
+    'TradingStatus',
     # Position sizing
     'PositionSizer',
     'PositionSizeResult',

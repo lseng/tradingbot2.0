@@ -78,12 +78,101 @@ logits = output[0] if isinstance(output, tuple) else output
 
 ---
 
+## 6. ScalpingFeatureEngineer Constructor Mismatch (FIXED)
+
+**File:** `scripts/run_backtest.py:407`
+
+**Issue:** Backtest script creates `ScalpingFeatureEngineer()` without required `df` argument. The class requires `df` in constructor, not in method call.
+
+**Error:**
+```
+TypeError: ScalpingFeatureEngineer.__init__() missing 1 required positional argument: 'df'
+```
+
+**Fix:** Pass df to constructor:
+```python
+# Before (wrong):
+feature_engineer = ScalpingFeatureEngineer()
+df = feature_engineer.add_all_features(df)
+
+# After (correct):
+feature_engineer = ScalpingFeatureEngineer(df)
+df = feature_engineer.generate_all_features()
+```
+
+---
+
+## 7. Model Loading Config Key Mismatch (FIXED)
+
+**File:** `scripts/run_backtest.py:256-266`
+
+**Issue:** `load_model()` function expected old checkpoint format with `config` key, but trained model saves with `model_config` key. Different key names throughout:
+- Checkpoint uses `model_config` → code expected `config`
+- Checkpoint uses `type` → code expected `model_type`
+- Checkpoint uses `input_dim` (top-level) → code expected `input_size` in config
+- Checkpoint uses `params.hidden_dims` → code expected `hidden_sizes`
+
+**Error:**
+```
+TypeError: FeedForwardNet.__init__() got an unexpected keyword argument 'input_size'
+```
+
+**Fix:** Handle both old and new checkpoint formats:
+```python
+config = checkpoint.get('model_config', checkpoint.get('config', {}))
+model_type = config.get('type', config.get('model_type', 'feedforward'))
+input_size = checkpoint.get('input_dim', config.get('input_size', 50))
+params = config.get('params', config)
+hidden_dims = params.get('hidden_dims', params.get('hidden_sizes', [256, 128, 64]))
+```
+
+---
+
+## 8. FeedForwardNet Parameter Names (FIXED)
+
+**File:** `scripts/run_backtest.py:270-277`
+
+**Issue:** Code passed `input_size` and `hidden_sizes` to `FeedForwardNet`, but the class uses `input_dim` and `hidden_dims`.
+
+**Fix:** Use correct parameter names:
+```python
+model = FeedForwardNet(
+    input_dim=input_size,
+    hidden_dims=hidden_dims,
+    dropout_rate=dropout_rate,
+    num_classes=num_classes,
+)
+```
+
+---
+
+## 9. PerformanceMetrics Attribute Names (FIXED)
+
+**File:** `scripts/run_backtest.py:495-498`
+
+**Issue:** Code references wrong attribute names for PerformanceMetrics:
+- `metrics.win_rate` → should be `metrics.win_rate_pct`
+- `metrics.total_net_pnl` → should be `metrics.net_profit`
+- `metrics.max_drawdown` → should be `metrics.max_drawdown_dollars`
+
+**Error:**
+```
+AttributeError: 'PerformanceMetrics' object has no attribute 'win_rate'
+```
+
+**Fix:** Use correct attribute names matching PerformanceMetrics class.
+
+---
+
 ## Recommended Tests to Add
 
 1. Test feature scaling with infinity values in input
 2. Test LSTM evaluation with large batch sizes
 3. Test memory usage estimation before training
 4. Integration test with full data pipeline
+5. **Test checkpoint loading with both old and new formats**
+6. **Test backtest script end-to-end with trained model**
+7. **Test ScalpingFeatureEngineer API consistency**
 
 ---
 
@@ -94,3 +183,6 @@ When running `./loop.sh plan` next, consider:
 - Implementing checkpoint resumption so training can continue after crashes
 - Adding memory estimation before training starts
 - Implementing chunked feature engineering for large datasets
+- **Standardizing checkpoint format keys across training/inference**
+- **Ensuring PerformanceMetrics has consistent API**
+- **Integration tests for backtest script with real models**

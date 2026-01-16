@@ -101,3 +101,15 @@ tests/                     # 2331 tests (unit + integration)
 - Pandas for data manipulation
 - Walk-forward validation (time-series cross-validation)
 - Early stopping and gradient clipping for training stability
+
+### Known Issues (IMPORTANT - READ FIRST)
+
+**See `BUGS_FOUND.md` for 9 bugs discovered during production deployment.**
+
+Key issues requiring attention:
+1. Checkpoint format inconsistency between training and inference scripts
+2. ScalpingFeatureEngineer API mismatch in backtest script
+3. PerformanceMetrics attribute naming inconsistency
+4. Memory issues with large datasets (need chunked processing)
+
+Run `cat BUGS_FOUND.md` before planning to see full details and recommended fixes.

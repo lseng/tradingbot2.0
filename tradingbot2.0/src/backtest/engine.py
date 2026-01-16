@@ -780,7 +780,7 @@ class BacktestEngine:
             pos.contracts,
         )
 
-        net_pnl = gross_pnl - commission
+        net_pnl = gross_pnl - commission - slippage_cost
 
         # Record trade
         self._trade_log.add_trade(

@@ -197,6 +197,7 @@ class OrderExecutor:
         # Track open orders
         self._open_orders: Dict[str, OrderResponse] = {}
         self._pending_fills: Dict[str, asyncio.Future] = {}
+        self._pending_oco_cancellations: set[asyncio.Task] = set()
 
         # Register WebSocket callbacks if available
         if self._ws:
@@ -712,6 +713,9 @@ class OrderExecutor:
 
         Since TopstepX doesn't support bracket orders, we manually
         cancel the other side when stop or target is hit.
+
+        This schedules an async task to handle cancellation with proper
+        timeout and error handling to prevent race conditions.
         """
         if filled_order_id not in self._open_orders:
             return
@@ -734,8 +738,63 @@ class OrderExecutor:
             if order.custom_tag == cancel_tag and oid != filled_order_id
         ]
 
-        for order_id in to_cancel:
-            asyncio.create_task(self._cancel_order_safe(order_id))
+        if to_cancel:
+            # Schedule async cancellation with timeout and verification
+            task = asyncio.create_task(self._cancel_oco_orders_with_timeout(to_cancel))
+            # Track the task for potential cleanup
+            self._pending_oco_cancellations.add(task)
+            task.add_done_callback(lambda t: self._pending_oco_cancellations.discard(t))
+
+    async def _cancel_oco_orders_with_timeout(
+        self, order_ids: list[str], timeout: float = 5.0
+    ) -> None:
+        """
+        Cancel OCO orders with timeout and verification.
+
+        This ensures cancellations complete or are retried, preventing
+        the race condition where both stop and target could fill.
+        """
+        cancel_tasks = [self._cancel_order_safe(oid) for oid in order_ids]
+
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*cancel_tasks, return_exceptions=True),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                f"OCO cancellation timed out after {timeout}s - "
+                f"verifying order states for {order_ids}"
+            )
+            # Verify which orders are still pending
+            await self._verify_oco_cancellation_state(order_ids)
+
+    async def _verify_oco_cancellation_state(self, order_ids: list[str]) -> None:
+        """
+        Verify and reconcile OCO order states after timeout.
+
+        If cancellations timed out, we need to verify which orders are
+        still active and retry cancellation or log critical error.
+        """
+        for order_id in order_ids:
+            if order_id in self._open_orders:
+                logger.warning(
+                    f"Order {order_id} still in local state after cancellation - "
+                    "attempting retry"
+                )
+                try:
+                    # Retry cancellation
+                    await asyncio.wait_for(
+                        self._cancel_order_safe(order_id),
+                        timeout=3.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.critical(
+                        f"CRITICAL: Order {order_id} cancellation failed after retry - "
+                        "POSSIBLE DUAL FILL RISK"
+                    )
+                except Exception as e:
+                    logger.error(f"Cancellation retry failed for {order_id}: {e}")
 
     async def _cancel_order_safe(self, order_id: str) -> None:
         """Cancel order with error handling."""

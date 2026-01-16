@@ -33,7 +33,7 @@ from src.api import (
     Quote,
 )
 from src.risk import RiskManager, RiskLimits, EODManager, EODPhase, PositionSizer, TradingStatus, CircuitBreakers
-from src.trading.position_manager import PositionManager
+from src.trading.position_manager import PositionManager, PositionChange
 from src.trading.signal_generator import SignalGenerator, SignalConfig, Signal, SignalType, ModelPrediction
 from src.trading.order_executor import OrderExecutor, ExecutorConfig
 from src.trading.rt_features import RealTimeFeatureEngine, BarAggregator, RTFeaturesConfig, OHLCV
@@ -186,6 +186,7 @@ class LiveTrader:
         self._session_metrics = SessionMetrics()
         self._last_bar: Optional[OHLCV] = None
         self._last_prediction: Optional[ModelPrediction] = None
+        self._last_realized_pnl: float = 0.0  # Track session realized P&L for circuit breakers
 
         # Shutdown handling
         self._shutdown_event = asyncio.Event()
@@ -250,11 +251,15 @@ class LiveTrader:
         self._risk_manager = RiskManager(limits=risk_limits, state_file=state_file)
         self._eod_manager = EODManager()
         self._position_sizer = PositionSizer()
+        self._circuit_breaker = CircuitBreakers()  # 10A.3: Circuit breaker integration
         logger.info(f"   Balance: ${self._risk_manager.state.account_balance:.2f}")
 
         # 3. Initialize position manager
         logger.info("3. Initializing position manager...")
         self._position_manager = PositionManager(self.config.contract_id)
+        # Register callback to track trade results for circuit breakers
+        self._position_manager.on_position_change(self._on_position_change)
+        self._last_realized_pnl = 0.0  # Track session realized P&L for incremental calculation
 
         # 4. Sync existing positions
         logger.info("4. Syncing existing positions...")
@@ -372,6 +377,41 @@ class LiveTrader:
         self._last_bar = bar
         self._session_metrics.bars_processed += 1
 
+    def _on_position_change(self, change: PositionChange) -> None:
+        """
+        Callback when position changes.
+
+        Reports trade results to RiskManager for circuit breaker tracking.
+        This triggers consecutive loss/win tracking and pause logic.
+        """
+        try:
+            # Only report completed trades (close, partial_close, flatten)
+            if change.change_type not in ("close", "partial_close", "flatten", "reversal"):
+                return
+
+            # Calculate incremental P&L from this trade
+            new_realized = change.new_position.realized_pnl
+            trade_pnl = new_realized - self._last_realized_pnl
+            self._last_realized_pnl = new_realized
+
+            # Report to risk manager (this triggers circuit breaker checks)
+            if self._risk_manager and trade_pnl != 0:
+                self._risk_manager.record_trade_result(trade_pnl)
+                logger.info(
+                    f"Trade result reported: P&L=${trade_pnl:+.2f}, "
+                    f"consecutive_losses={self._risk_manager.state.consecutive_losses}"
+                )
+
+            # 10A.3: Update circuit breaker with trade result
+            if self._circuit_breaker:
+                if trade_pnl > 0:
+                    self._circuit_breaker.record_win()
+                elif trade_pnl < 0:
+                    self._circuit_breaker.record_loss()
+
+        except Exception as e:
+            logger.error(f"Error in position change callback: {e}")
+
     async def _process_bar(self, bar: OHLCV) -> None:
         """
         Process a completed 1-second bar.
@@ -406,7 +446,17 @@ class LiveTrader:
                 await self._handle_eod_flatten()
                 return
 
-            # 4. Generate signal
+            # 4. Check circuit breaker before generating signals (10A.3)
+            if self._circuit_breaker and not self._circuit_breaker.can_trade():
+                pause_remaining = self._circuit_breaker.state.pause_until
+                if pause_remaining:
+                    logger.info(
+                        f"Circuit breaker active - paused until {pause_remaining}. "
+                        "Skipping signal generation."
+                    )
+                return
+
+            # 5. Generate signal
             current_atr = self._feature_engine.get_atr()
             signal = self._signal_generator.generate(
                 prediction=prediction,

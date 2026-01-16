@@ -295,6 +295,12 @@ class TestLiveTraderTradingLoop:
         trader._running = True
         trader._handle_eod_flatten = AsyncMock()
 
+        # Mock risk manager for can_trade() check (10A.2)
+        mock_risk_manager = Mock()
+        mock_risk_manager.can_trade.return_value = True
+        mock_risk_manager.state.status = Mock()  # Not MANUAL_REVIEW
+        trader._risk_manager = mock_risk_manager
+
         # Mock time to be at flatten time
         with patch('src.trading.live_trader.datetime') as mock_dt:
             mock_dt.now.return_value = Mock(
@@ -454,7 +460,7 @@ class TestLiveTraderBarProcessing:
 
         # Mock EOD manager
         trader._eod_manager = Mock()
-        trader._eod_manager.get_current_phase.return_value = EODPhase.NORMAL
+        trader._eod_manager.get_status.return_value = Mock(phase=EODPhase.NORMAL)
 
         # Mock signal generator
         mock_signal = Signal(signal_type=SignalType.LONG_ENTRY, confidence=0.75)
@@ -508,7 +514,7 @@ class TestLiveTraderBarProcessing:
 
         # EOD CLOSE_ONLY phase
         trader._eod_manager = Mock()
-        trader._eod_manager.get_current_phase.return_value = EODPhase.CLOSE_ONLY
+        trader._eod_manager.get_status.return_value = Mock(phase=EODPhase.CLOSE_ONLY)
 
         trader._position_manager = Mock()
         trader._position_manager.is_flat.return_value = False
@@ -545,7 +551,7 @@ class TestLiveTraderBarProcessing:
         trader._session_metrics = SessionMetrics()
 
         trader._eod_manager = Mock()
-        trader._eod_manager.get_current_phase.return_value = EODPhase.MUST_BE_FLAT
+        trader._eod_manager.get_status.return_value = Mock(phase=EODPhase.MUST_BE_FLAT)
 
         trader._handle_eod_flatten = AsyncMock()
 
