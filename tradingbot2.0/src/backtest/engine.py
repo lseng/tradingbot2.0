@@ -48,6 +48,16 @@ from .trade_logger import (
     ExitReason,
 )
 
+# Import risk management module for full integration
+try:
+    from src.risk.risk_manager import RiskManager, RiskLimits, TradingStatus
+    RISK_MANAGER_AVAILABLE = True
+except ImportError:
+    RISK_MANAGER_AVAILABLE = False
+    RiskManager = None
+    RiskLimits = None
+    TradingStatus = None
+
 
 class SignalType(Enum):
     """Trading signal types."""
@@ -140,6 +150,12 @@ class BacktestConfig:
         eod_reduce_time: Time to reduce position sizing (NY)
         eod_close_only_time: Time to stop new positions (NY)
         log_frequency: How often to log equity (bars between logs)
+        enable_risk_manager: Enable full RiskManager integration (default: True)
+        kill_switch_loss: Cumulative loss to trigger kill switch (default: $300)
+        min_account_balance: Minimum balance to allow trading (default: $700)
+        max_consecutive_losses: Max consecutive losses before pause (default: 5)
+        max_daily_drawdown: Max intraday drawdown (default: $75)
+        max_per_trade_risk: Max risk per trade (default: $25)
     """
     initial_capital: float = 1000.0
     commission_per_side: float = 0.20
@@ -160,6 +176,13 @@ class BacktestConfig:
     eod_reduce_time: time = time(16, 0)  # 4:00 PM
     eod_close_only_time: time = time(16, 15)  # 4:15 PM
     log_frequency: int = 60  # Log equity every 60 bars (1 min for 1-sec data)
+    # Full RiskManager integration parameters
+    enable_risk_manager: bool = True  # Enable RiskManager for full risk limit enforcement
+    kill_switch_loss: float = 300.0  # Cumulative loss to halt permanently (30% of $1000)
+    min_account_balance: float = 700.0  # Minimum balance to allow trading
+    max_consecutive_losses: int = 5  # Triggers 30-min pause
+    max_daily_drawdown: float = 75.0  # Max intraday drawdown (7.5%)
+    max_per_trade_risk: float = 25.0  # Max risk per individual trade (2.5%)
 
     @property
     def round_trip_cost(self) -> float:
@@ -184,6 +207,13 @@ class BacktestConfig:
             "rth_start": self.rth_start.isoformat(),
             "rth_end": self.rth_end.isoformat(),
             "eod_flatten_time": self.eod_flatten_time.isoformat(),
+            # RiskManager integration parameters
+            "enable_risk_manager": self.enable_risk_manager,
+            "kill_switch_loss": self.kill_switch_loss,
+            "min_account_balance": self.min_account_balance,
+            "max_consecutive_losses": self.max_consecutive_losses,
+            "max_daily_drawdown": self.max_daily_drawdown,
+            "max_per_trade_risk": self.max_per_trade_risk,
         }
 
 
@@ -260,6 +290,28 @@ class BacktestEngine:
             )
         )
 
+        # Initialize RiskManager if available and enabled
+        self._risk_manager: Optional['RiskManager'] = None
+        if self.config.enable_risk_manager and RISK_MANAGER_AVAILABLE:
+            self._risk_manager = RiskManager(
+                limits=RiskLimits(
+                    starting_capital=self.config.initial_capital,
+                    min_account_balance=self.config.min_account_balance,
+                    max_daily_loss=self.config.max_daily_loss,
+                    max_daily_drawdown=self.config.max_daily_drawdown,
+                    max_per_trade_risk=self.config.max_per_trade_risk,
+                    max_consecutive_losses=self.config.max_consecutive_losses,
+                    kill_switch_loss=self.config.kill_switch_loss,
+                    min_confidence=self.config.min_confidence,
+                    tick_size=self.config.tick_size,
+                    tick_value=self.config.tick_value,
+                    point_value=self.config.point_value,
+                    commission_per_side=self.config.commission_per_side + self.config.exchange_fee_per_side,
+                    round_trip_commission=self.config.round_trip_cost,
+                ),
+                auto_persist=False,  # Don't persist during backtest
+            )
+
         # State tracking
         self._reset_state()
 
@@ -277,9 +329,35 @@ class BacktestEngine:
         self._daily_trades = 0
         self._daily_pnls: List[float] = []
 
+        # Risk tracking
+        self._halted_by_risk_manager = False
+        self._risk_halt_reason: Optional[str] = None
+
         # Reset cost/slippage tracking
         self._cost_model.reset()
         self._slippage_model.reset()
+
+        # Reset RiskManager if enabled
+        if self._risk_manager is not None:
+            # Re-create risk manager to get clean state
+            self._risk_manager = RiskManager(
+                limits=RiskLimits(
+                    starting_capital=self.config.initial_capital,
+                    min_account_balance=self.config.min_account_balance,
+                    max_daily_loss=self.config.max_daily_loss,
+                    max_daily_drawdown=self.config.max_daily_drawdown,
+                    max_per_trade_risk=self.config.max_per_trade_risk,
+                    max_consecutive_losses=self.config.max_consecutive_losses,
+                    kill_switch_loss=self.config.kill_switch_loss,
+                    min_confidence=self.config.min_confidence,
+                    tick_size=self.config.tick_size,
+                    tick_value=self.config.tick_value,
+                    point_value=self.config.point_value,
+                    commission_per_side=self.config.commission_per_side + self.config.exchange_fee_per_side,
+                    round_trip_commission=self.config.round_trip_cost,
+                ),
+                auto_persist=False,
+            )
 
     def run(
         self,
@@ -373,6 +451,16 @@ class BacktestEngine:
         # Calculate metrics
         metrics = self._calculate_final_metrics(data)
 
+        # Add risk manager metrics to data_stats
+        if self._risk_manager is not None:
+            risk_metrics = self._risk_manager.get_metrics()
+            data_stats["risk_manager_enabled"] = True
+            data_stats["risk_manager_metrics"] = risk_metrics
+            data_stats["halted_by_risk_manager"] = self._halted_by_risk_manager
+            data_stats["risk_halt_reason"] = self._risk_halt_reason
+        else:
+            data_stats["risk_manager_enabled"] = False
+
         # Build report
         report = BacktestReport(
             trade_log=self._trade_log,
@@ -418,10 +506,39 @@ class BacktestEngine:
             self._daily_pnl = 0.0
             self._daily_trades = 0
 
+            # Reset RiskManager daily state
+            if self._risk_manager is not None:
+                self._risk_manager.reset_daily_state(current_date)
+
         self._current_date = current_date
 
     def _can_trade_today(self) -> bool:
-        """Check if trading is allowed today (daily loss limit)."""
+        """
+        Check if trading is allowed today.
+
+        Uses RiskManager if enabled, which enforces:
+        - Daily loss limit
+        - Daily drawdown limit
+        - Kill switch (cumulative loss)
+        - Minimum account balance
+        - Consecutive loss pauses
+        """
+        # If permanently halted by risk manager, don't trade
+        if self._halted_by_risk_manager:
+            return False
+
+        # Use RiskManager if available
+        if self._risk_manager is not None:
+            can_trade = self._risk_manager.can_trade()
+            if not can_trade:
+                # Check if this is a permanent halt (kill switch)
+                status = self._risk_manager.state.status
+                if status == TradingStatus.HALTED:
+                    self._halted_by_risk_manager = True
+                    self._risk_halt_reason = self._risk_manager.state.halt_reason
+            return can_trade
+
+        # Fallback to simple daily loss check
         return self._daily_pnl > -self.config.max_daily_loss
 
     def _should_flatten_eod(self, timestamp: datetime) -> bool:
@@ -695,6 +812,13 @@ class BacktestEngine:
         if self._equity > self._peak_equity:
             self._peak_equity = self._equity
 
+        # Record trade result with RiskManager for circuit breaker/kill switch tracking
+        if self._risk_manager is not None:
+            self._risk_manager.record_trade_result(
+                pnl=net_pnl,
+                is_win=(net_pnl > 0),
+            )
+
         # Clear position
         self._position = None
 
@@ -775,6 +899,28 @@ class BacktestEngine:
         )
 
         return metrics
+
+    def get_risk_manager_metrics(self) -> Optional[Dict[str, Any]]:
+        """
+        Get current risk manager metrics.
+
+        Returns:
+            Dictionary of risk metrics if RiskManager is enabled, None otherwise.
+        """
+        if self._risk_manager is None:
+            return None
+
+        return self._risk_manager.get_metrics()
+
+    @property
+    def is_halted(self) -> bool:
+        """Check if backtest was halted by risk manager (kill switch)."""
+        return self._halted_by_risk_manager
+
+    @property
+    def halt_reason(self) -> Optional[str]:
+        """Get reason for risk manager halt, if any."""
+        return self._risk_halt_reason
 
 
 def create_simple_signal_generator(

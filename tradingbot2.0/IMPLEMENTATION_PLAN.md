@@ -899,11 +899,11 @@ Before going live with real capital, the system must:
 
 1. [ ] Walk-forward backtest shows consistent profitability (Sharpe > 1.0, Calmar > 0.5)
 2. [x] Out-of-sample accuracy > 52% on 3-class (better than random) - **VERIFIED with OOS validation tests**
-3. [ ] All risk limits enforced and verified in simulation
+3. [x] All risk limits enforced and verified in simulation - **VERIFIED with 19 comprehensive tests**
 4. [x] EOD flatten works 100% of the time (verified across DST boundaries) - **VERIFIED with DST tests**
 5. [ ] Inference latency < 10ms (measured on target hardware)
 6. [x] No lookahead bias in features or targets (temporal unit tests pass) - **VERIFIED with 29 comprehensive tests**
-7. [x] Unit test coverage > 80% - **ACHIEVED (85% coverage, 1741 tests)**
+7. [x] Unit test coverage > 80% - **ACHIEVED (85% coverage, 1760 tests)**
 8. [ ] Paper trading for minimum 2 weeks without critical errors
 9. [ ] Position sizing matches spec for all account balance tiers
 10. [x] Circuit breakers tested and working (simulated loss scenarios) - **VERIFIED with 40 comprehensive tests**
@@ -915,7 +915,7 @@ Before going live with real capital, the system must:
 ## Notes
 
 - The existing `src/ml/` code is a solid foundation but needs significant rework for scalping timeframes
-- **1741 tests exist** with 85% coverage - comprehensive test suite covering all major modules
+- **1760 tests exist** with 85% coverage - comprehensive test suite covering all major modules
 - The 227MB 1-second parquet dataset is the primary asset but isn't being used
 - TopstepX API is for **live trading only** (7-14 day historical limit)
 - DataBento is for historical data (already have 2 years in parquet)
@@ -1180,3 +1180,8 @@ Before going live with real capital, the system must:
 | 2026-01-16 | - Error rate monitoring |
 | 2026-01-16 | - Recovery handler integration |
 | 2026-01-16 | Total test count increased from 1671 to 1741 (70 new tests) |
+| 2026-01-16 | **Go-Live #3 COMPLETED**: Integrated RiskManager into BacktestEngine |
+| 2026-01-16 | BacktestEngine now enforces: kill switch, consecutive losses, min balance, daily loss/drawdown |
+| 2026-01-16 | Added enable_risk_manager config option (default: True) for full risk limit enforcement |
+| 2026-01-16 | Created `tests/integration/test_backtest_risk_integration.py` with 19 tests |
+| 2026-01-16 | Total test count increased from 1741 to 1760 |
