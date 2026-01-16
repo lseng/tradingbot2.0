@@ -7,12 +7,17 @@ Implements:
 3. Time-series cross-validation
 4. Training utilities and callbacks
 
+Supports:
+- Binary classification (UP/DOWN) with BCELoss
+- 3-class classification (DOWN/FLAT/UP) with CrossEntropyLoss for scalping
+
 Best Practices:
 - Temporal data handling (no data leakage)
 - Early stopping to prevent overfitting
 - Learning rate scheduling
 - Model checkpointing
 - Comprehensive logging
+- Class weighting for imbalanced data
 """
 
 import torch
@@ -21,7 +26,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Tuple, Optional, Callable
+from typing import Dict, List, Tuple, Optional, Callable, Union
 from pathlib import Path
 from datetime import datetime
 import logging
@@ -36,16 +41,24 @@ logger = logging.getLogger(__name__)
 class SequenceDataset:
     """Create sequences for LSTM training from tabular data."""
 
-    def __init__(self, features: np.ndarray, targets: np.ndarray, seq_length: int = 20):
+    def __init__(
+        self,
+        features: np.ndarray,
+        targets: np.ndarray,
+        seq_length: int = 20,
+        num_classes: int = 3
+    ):
         """
         Initialize sequence dataset.
 
         Args:
             features: Feature array (n_samples, n_features)
-            targets: Target array (n_samples,)
+            targets: Target array (n_samples,) - class indices for multi-class
             seq_length: Number of timesteps per sequence
+            num_classes: Number of classes (2=binary with BCELoss, 3+=multi-class with CrossEntropyLoss)
         """
         self.seq_length = seq_length
+        self.num_classes = num_classes
 
         X_seq, y_seq = [], []
         for i in range(len(features) - seq_length):
@@ -56,10 +69,15 @@ class SequenceDataset:
         self.y = np.array(y_seq)
 
     def get_tensors(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return PyTorch tensors."""
+        """
+        Return PyTorch tensors.
+
+        For 3-class (CrossEntropyLoss): Returns (FloatTensor, LongTensor)
+        """
+        # CrossEntropyLoss expects class indices as LongTensor
         return (
             torch.FloatTensor(self.X),
-            torch.FloatTensor(self.y).unsqueeze(1)
+            torch.LongTensor(self.y)  # Class indices (0, 1, 2)
         )
 
 
@@ -68,6 +86,7 @@ class ModelTrainer:
     Trainer class for neural network models.
 
     Handles training loop, validation, checkpointing, and logging.
+    Supports both binary (BCELoss) and multi-class (CrossEntropyLoss) classification.
     """
 
     def __init__(
@@ -76,7 +95,9 @@ class ModelTrainer:
         device: str = 'auto',
         learning_rate: float = 0.001,
         weight_decay: float = 0.01,
-        scheduler_patience: int = 5
+        scheduler_patience: int = 5,
+        num_classes: int = 3,
+        class_weights: Optional[torch.Tensor] = None
     ):
         """
         Initialize trainer.
@@ -87,6 +108,9 @@ class ModelTrainer:
             learning_rate: Initial learning rate
             weight_decay: L2 regularization strength
             scheduler_patience: LR scheduler patience
+            num_classes: Number of output classes (2=binary, 3=scalping with FLAT)
+            class_weights: Optional tensor of class weights for imbalanced data
+                           Shape: (num_classes,), e.g., [1.5, 0.5, 1.5] for DOWN/FLAT/UP
         """
         # Set device
         if device == 'auto':
@@ -104,9 +128,14 @@ class ModelTrainer:
         self.model = model.to(self.device)
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
+        self.num_classes = num_classes
 
-        # Loss function (binary cross-entropy)
-        self.criterion = nn.BCELoss()
+        # Loss function - CrossEntropyLoss for multi-class classification
+        # CrossEntropyLoss expects raw logits (no softmax) and class indices as targets
+        if class_weights is not None:
+            class_weights = class_weights.to(self.device)
+            logger.info(f"Using class weights: {class_weights.tolist()}")
+        self.criterion = nn.CrossEntropyLoss(weight=class_weights)
 
         # Optimizer (AdamW with weight decay for regularization)
         self.optimizer = optim.AdamW(
@@ -157,6 +186,7 @@ class ModelTrainer:
             else:
                 outputs = self.model(batch_x)
 
+            # CrossEntropyLoss expects: outputs (N, C), targets (N,) as class indices
             loss = self.criterion(outputs, batch_y)
 
             # Backward pass
@@ -167,9 +197,9 @@ class ModelTrainer:
 
             self.optimizer.step()
 
-            # Statistics
+            # Statistics - use argmax for multi-class predictions
             total_loss += loss.item() * len(batch_y)
-            predictions = (outputs > 0.5).float()
+            predictions = torch.argmax(outputs, dim=1)  # Get predicted class indices
             correct += (predictions == batch_y).sum().item()
             total += len(batch_y)
 
@@ -200,10 +230,11 @@ class ModelTrainer:
                 else:
                     outputs = self.model(batch_x)
 
+                # CrossEntropyLoss expects: outputs (N, C), targets (N,) as class indices
                 loss = self.criterion(outputs, batch_y)
 
                 total_loss += loss.item() * len(batch_y)
-                predictions = (outputs > 0.5).float()
+                predictions = torch.argmax(outputs, dim=1)  # Get predicted class indices
                 correct += (predictions == batch_y).sum().item()
                 total += len(batch_y)
 
@@ -297,7 +328,7 @@ class ModelTrainer:
             X: Feature array
 
         Returns:
-            Probability predictions
+            Class probabilities (N, num_classes) after softmax
         """
         self.model.eval()
         X_tensor = torch.FloatTensor(X).to(self.device)
@@ -308,7 +339,23 @@ class ModelTrainer:
             else:
                 outputs = self.model(X_tensor)
 
-        return outputs.cpu().numpy()
+            # Apply softmax to get class probabilities
+            probs = torch.softmax(outputs, dim=1)
+
+        return probs.cpu().numpy()
+
+    def predict_classes(self, X: np.ndarray) -> np.ndarray:
+        """
+        Predict class labels (argmax of probabilities).
+
+        Args:
+            X: Feature array
+
+        Returns:
+            Predicted class indices (N,)
+        """
+        probs = self.predict(X)
+        return np.argmax(probs, axis=1)
 
     def save_checkpoint(self, path: str):
         """Save model checkpoint."""
@@ -403,6 +450,25 @@ class WalkForwardValidator:
         return splits
 
 
+def compute_class_weights(y: np.ndarray, num_classes: int = 3) -> torch.Tensor:
+    """
+    Compute class weights inversely proportional to class frequency.
+
+    Args:
+        y: Target array with class indices
+        num_classes: Number of classes
+
+    Returns:
+        Tensor of class weights
+    """
+    class_counts = np.bincount(y.astype(int), minlength=num_classes)
+    # Avoid division by zero
+    class_counts = np.maximum(class_counts, 1)
+    # Inverse frequency weighting
+    weights = len(y) / (num_classes * class_counts)
+    return torch.FloatTensor(weights)
+
+
 def train_with_walk_forward(
     X: np.ndarray,
     y: np.ndarray,
@@ -410,28 +476,34 @@ def train_with_walk_forward(
     n_splits: int = 5,
     epochs: int = 50,
     batch_size: int = 32,
-    seq_length: int = 20
+    seq_length: int = 20,
+    num_classes: int = 3,
+    use_class_weights: bool = True
 ) -> Dict:
     """
-    Train model using walk-forward validation.
+    Train model using walk-forward validation with 3-class classification.
 
     Args:
         X: Feature matrix
-        y: Target vector
+        y: Target vector (class indices: 0=DOWN, 1=FLAT, 2=UP)
         model_config: Model configuration dict
         n_splits: Number of walk-forward splits
         epochs: Training epochs per fold
         batch_size: Batch size
         seq_length: Sequence length for LSTM
+        num_classes: Number of output classes (2=binary, 3=scalping)
+        use_class_weights: Whether to use class weights for imbalanced data
 
     Returns:
         Dictionary with results for each fold
     """
     results = {
         'fold_metrics': [],
-        'predictions': [],
+        'predictions': [],  # Will be (N, num_classes) probabilities
+        'predicted_classes': [],  # Will be class indices
         'actuals': [],
-        'timestamps': []
+        'timestamps': [],
+        'num_classes': num_classes
     }
 
     validator = WalkForwardValidator(n_splits=n_splits, expanding=True)
@@ -446,21 +518,29 @@ def train_with_walk_forward(
         X_train, X_test = X[train_idx], X[test_idx]
         y_train, y_test = y[train_idx], y[test_idx]
 
+        # Compute class weights for this fold if enabled
+        class_weights = None
+        if use_class_weights:
+            class_weights = compute_class_weights(y_train, num_classes)
+            logger.info(f"Class distribution (train): {np.bincount(y_train.astype(int), minlength=num_classes)}")
+            logger.info(f"Class weights: {class_weights.tolist()}")
+
         # Create model
         model_type = model_config.get('type', 'feedforward')
 
         if model_type == 'lstm':
             # Create sequences
-            train_seq = SequenceDataset(X_train, y_train, seq_length)
-            test_seq = SequenceDataset(X_test, y_test, seq_length)
+            train_seq = SequenceDataset(X_train, y_train, seq_length, num_classes)
+            test_seq = SequenceDataset(X_test, y_test, seq_length, num_classes)
             X_train_t, y_train_t = train_seq.get_tensors()
             X_test_t, y_test_t = test_seq.get_tensors()
             input_dim = X.shape[1]
         else:
+            # For non-LSTM models, targets are class indices (LongTensor)
             X_train_t = torch.FloatTensor(X_train)
-            y_train_t = torch.FloatTensor(y_train).unsqueeze(1)
+            y_train_t = torch.LongTensor(y_train)  # Class indices, no unsqueeze
             X_test_t = torch.FloatTensor(X_test)
-            y_test_t = torch.FloatTensor(y_test).unsqueeze(1)
+            y_test_t = torch.LongTensor(y_test)
             input_dim = X.shape[1]
 
         # Create data loaders
@@ -470,11 +550,17 @@ def train_with_walk_forward(
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
         # Create and train model
-        model = create_model(model_type, input_dim, **model_config.get('params', {}))
+        model = create_model(
+            model_type, input_dim,
+            num_classes=num_classes,
+            **model_config.get('params', {})
+        )
         trainer = ModelTrainer(
             model,
             learning_rate=model_config.get('learning_rate', 0.001),
-            weight_decay=model_config.get('weight_decay', 0.01)
+            weight_decay=model_config.get('weight_decay', 0.01),
+            num_classes=num_classes,
+            class_weights=class_weights
         )
 
         history = trainer.train(
@@ -487,8 +573,9 @@ def train_with_walk_forward(
         # Evaluate on test set
         test_loss, test_acc = trainer.validate(test_loader)
 
-        # Get predictions
+        # Get predictions - returns (N, num_classes) probabilities
         predictions = trainer.predict(X_test_t.numpy() if model_type != 'lstm' else X_test_t.numpy())
+        predicted_classes = np.argmax(predictions, axis=1)
 
         results['fold_metrics'].append({
             'fold': fold + 1,
@@ -500,24 +587,66 @@ def train_with_walk_forward(
             'final_train_acc': history['train_acc'][-1]
         })
 
-        results['predictions'].extend(predictions.flatten().tolist())
-        results['actuals'].extend(y_test_t.numpy().flatten().tolist())
+        # Store probabilities and predicted classes
+        results['predictions'].extend(predictions.tolist())
+        results['predicted_classes'].extend(predicted_classes.tolist())
+        results['actuals'].extend(y_test_t.numpy().tolist())
 
-    # Calculate overall metrics
-    all_preds = np.array(results['predictions'])
+    # Calculate overall metrics for multi-class
+    all_pred_classes = np.array(results['predicted_classes'])
     all_actuals = np.array(results['actuals'])
-    binary_preds = (all_preds > 0.5).astype(int)
 
-    results['overall_accuracy'] = (binary_preds == all_actuals).mean()
-    results['overall_auc'] = calculate_auc(all_actuals, all_preds)
+    results['overall_accuracy'] = (all_pred_classes == all_actuals).mean()
+
+    # Per-class accuracy
+    for c in range(num_classes):
+        mask = all_actuals == c
+        if mask.sum() > 0:
+            class_acc = (all_pred_classes[mask] == c).mean()
+            results[f'class_{c}_accuracy'] = class_acc
+            logger.info(f"Class {c} accuracy: {class_acc:.4f}")
+
+    # Calculate macro-averaged AUC for multi-class
+    all_probs = np.array(results['predictions'])
+    results['overall_auc'] = calculate_multiclass_auc(all_actuals, all_probs, num_classes)
 
     logger.info(f"\n{'='*60}")
     logger.info("WALK-FORWARD VALIDATION COMPLETE")
     logger.info(f"Overall Accuracy: {results['overall_accuracy']:.4f}")
-    logger.info(f"Overall AUC: {results['overall_auc']:.4f}")
+    logger.info(f"Overall AUC (macro): {results['overall_auc']:.4f}")
     logger.info(f"{'='*60}")
 
     return results
+
+
+def calculate_multiclass_auc(y_true: np.ndarray, y_probs: np.ndarray, num_classes: int) -> float:
+    """
+    Calculate macro-averaged AUC for multi-class classification.
+
+    Args:
+        y_true: True class indices (N,)
+        y_probs: Class probabilities (N, num_classes)
+        num_classes: Number of classes
+
+    Returns:
+        Macro-averaged AUC score
+    """
+    try:
+        from sklearn.metrics import roc_auc_score
+        # One-vs-rest AUC
+        return roc_auc_score(y_true, y_probs, multi_class='ovr', average='macro')
+    except (ImportError, ValueError):
+        # Fallback: average of binary AUCs for each class
+        aucs = []
+        for c in range(num_classes):
+            binary_true = (y_true == c).astype(int)
+            binary_probs = y_probs[:, c]
+            try:
+                auc = calculate_auc(binary_true, binary_probs)
+                aucs.append(auc)
+            except:
+                pass
+        return np.mean(aucs) if aucs else 0.5
 
 
 def calculate_auc(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -539,19 +668,25 @@ def calculate_auc(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 
 
 if __name__ == "__main__":
-    # Test training pipeline
-    print("Testing Training Pipeline")
+    # Test training pipeline with 3-class classification
+    print("Testing Training Pipeline (3-Class Scalping)")
     print("="*60)
 
-    # Create synthetic data
+    # Create synthetic 3-class data (DOWN=0, FLAT=1, UP=2)
     np.random.seed(42)
     n_samples = 1000
     n_features = 40
+    num_classes = 3
 
     X = np.random.randn(n_samples, n_features)
-    y = (np.random.rand(n_samples) > 0.5).astype(float)
+    # Create imbalanced 3-class targets similar to scalping: ~20% DOWN, ~60% FLAT, ~20% UP
+    probs = np.random.rand(n_samples)
+    y = np.where(probs < 0.2, 0,  # DOWN
+         np.where(probs < 0.8, 1,  # FLAT
+                  2))  # UP
+    print(f"Class distribution: DOWN={np.sum(y==0)}, FLAT={np.sum(y==1)}, UP={np.sum(y==2)}")
 
-    # Test walk-forward validation
+    # Test walk-forward validation with 3-class
     model_config = {
         'type': 'feedforward',
         'params': {
@@ -567,9 +702,19 @@ if __name__ == "__main__":
         model_config=model_config,
         n_splits=3,
         epochs=10,
-        batch_size=32
+        batch_size=32,
+        num_classes=num_classes,
+        use_class_weights=True
     )
 
     print("\nFold Results:")
     for fold_result in results['fold_metrics']:
         print(f"  Fold {fold_result['fold']}: Acc={fold_result['test_accuracy']:.4f}")
+
+    print(f"\nOverall Accuracy: {results['overall_accuracy']:.4f}")
+    print(f"Overall AUC (macro): {results['overall_auc']:.4f}")
+    for c in range(num_classes):
+        key = f'class_{c}_accuracy'
+        if key in results:
+            class_names = ['DOWN', 'FLAT', 'UP']
+            print(f"  {class_names[c]} accuracy: {results[key]:.4f}")

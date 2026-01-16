@@ -1,7 +1,7 @@
 # Implementation Plan - MES Futures Scalping Bot
 
-> Last Updated: 2026-01-15
-> Status: ACTIVE - Phase 3 (Backtesting Engine) COMPLETED
+> Last Updated: 2026-01-16
+> Status: ACTIVE - Phase 4.1 (3-Class Classification) COMPLETED
 > Verified: All findings confirmed via codebase analysis
 
 ---
@@ -62,7 +62,8 @@
 | Live Trading | `src/trading/` | P2 - HIGH | NOT IMPLEMENTED | live_trader.py, signal_generator.py, order_executor.py, position_manager.py, rt_features.py, recovery.py |
 | DataBento Client | `src/data/` | P3 - MEDIUM | NOT IMPLEMENTED | databento_client.py |
 | Shared Utilities | `src/lib/` | P3 - MEDIUM | NOT IMPLEMENTED | config.py, logging.py, time_utils.py |
-| Tests | `tests/` | P3 - MEDIUM | **PARTIAL** (237 tests: 26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest) | Remaining test files |
+| Model Architecture | `src/ml/models/` | P2 - HIGH | **PARTIAL** (4.1 COMPLETED, 4.2-4.4 pending) | 4.1 done: 3-class output, CrossEntropyLoss |
+| Tests | `tests/` | P3 - MEDIUM | **PARTIAL** (292 tests: 26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest + 55 models) | Remaining test files |
 
 ### Critical Bug Summary
 
@@ -344,31 +345,27 @@ All metrics implemented per spec:
 ## Phase 4: HIGH - Model Architecture Updates (Week 4-5)
 
 ### 4.1 3-Class Classification
-**Status**: NOT IMPLEMENTED (current is binary sigmoid output)
-**File**: `src/ml/models/neural_networks.py` (modify)
+**Status**: COMPLETED (2026-01-16)
+**File**: `src/ml/models/neural_networks.py` (modified)
 **Spec**: `specs/ml-scalping-model.md`
 
-Lines requiring modification:
-- Line 77: `self.output_layer = nn.Linear(hidden_dims[-1], 1)` -> `nn.Linear(hidden_dims[-1], 3)`
-- Line 102: `return torch.sigmoid(x)` -> `return F.softmax(x, dim=-1)`
-- Line 166: `self.output_layer = nn.Linear(..., 1)` -> `nn.Linear(..., 3)`
-- Line 213: `output = torch.sigmoid(...)` -> `output = F.softmax(..., dim=-1)`
-- Line 304: `output = torch.sigmoid(...)` -> `output = F.softmax(..., dim=-1)`
-
-Tasks:
-- [ ] Change output layer: `Dense(1, sigmoid)` -> `Dense(3, softmax)`
-- [ ] Change loss: `BCELoss` -> `CrossEntropyLoss` with class weights
-- [ ] Handle class imbalance (FLAT class likely dominant ~60-70%):
-  - Class weights inverse to frequency
-  - Or focal loss for hard examples
-- [ ] Update all model architectures: FeedForwardNet, LSTMNet, HybridNet
-- [ ] Update training loop in `training.py` for 3-class
+All models updated for 3-class classification:
+- [x] Change output layer: `Dense(1, sigmoid)` -> `Dense(num_classes)` with raw logits
+- [x] Change loss: `BCELoss` -> `CrossEntropyLoss` with class weights
+- [x] Handle class imbalance (FLAT class likely dominant ~60-70%):
+  - Class weights inverse to frequency supported in training.py
+- [x] Update all model architectures: FeedForwardNet, LSTMNet, HybridNet
+- [x] Update training loop in `training.py` for 3-class CrossEntropyLoss
+- [x] Added `num_classes` parameter to all models (default=3 for scalping)
+- [x] Added `get_probabilities()` method for softmax inference
+- [x] Added `predict()` method returning (class_idx, confidence)
+- [x] Added ModelPrediction dataclass per spec
 
 ### 4.2 Model Output Interface
-**Status**: NOT IMPLEMENTED
-**File**: `src/ml/models/neural_networks.py` (add)
+**Status**: COMPLETED (2026-01-16) - Implemented as part of 4.1
+**File**: `src/ml/models/neural_networks.py`
 
-Per spec, model must return structured output:
+ModelPrediction dataclass implemented per spec:
 ```python
 @dataclass
 class ModelPrediction:
@@ -608,7 +605,7 @@ class Position:
 
 ## Phase 8: MEDIUM - Testing (Ongoing)
 
-**Status**: PARTIAL - tests/ directory created with 237 unit tests (26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest)
+**Status**: PARTIAL - tests/ directory created with 292 unit tests (26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest + 55 models)
 **Directory**: `tests/`
 
 ### 8.1 Unit Tests
@@ -617,8 +614,8 @@ class Position:
 - [x] `tests/test_scalping_features.py` - scalping feature engineering for 1-second data (50 tests, all passing)
 - [x] `tests/test_risk_manager.py` - all risk limits, position sizing, EOD flatten, circuit breakers (77 tests, all passing)
 - [x] `tests/test_backtest.py` - cost model, slippage, order fill logic, metrics, trade logging (84 tests, all passing)
+- [x] `tests/test_models.py` - model forward pass, output shape, 3-class output, ModelPrediction (55 tests, all passing)
 - [ ] `tests/test_feature_engineering.py` - feature calculations, no NaN leakage, no lookahead
-- [ ] `tests/test_models.py` - model forward pass, output shape, 3-class output
 - [ ] `tests/test_signal_generator.py` - signal logic, confidence thresholds
 - [ ] `tests/conftest.py` - pytest fixtures, sample data
 
@@ -879,7 +876,7 @@ Before going live with real capital, the system must:
 ## Notes
 
 - The existing `src/ml/` code is a solid foundation but needs significant rework for scalping timeframes
-- **237 tests exist** (26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest) - remaining modules need test coverage
+- **292 tests exist** (26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest + 55 models) - remaining modules need test coverage
 - The 227MB 1-second parquet dataset is the primary asset but isn't being used
 - TopstepX API is for **live trading only** (7-14 day historical limit)
 - DataBento is for historical data (already have 2 years in parquet)
@@ -970,3 +967,11 @@ Before going live with real capital, the system must:
 | 2026-01-15 | Slippage model: Tick-based (1 tick normal, 2-4 ticks high volatility) |
 | 2026-01-15 | Full performance metrics: Sharpe, Sortino, Calmar, max drawdown, win rate, profit factor, expectancy |
 | 2026-01-15 | Walk-forward validation framework implemented |
+| 2026-01-16 | **Phase 4.1 COMPLETED**: Updated neural_networks.py for 3-class classification (FeedForwardNet, LSTMNet, HybridNet) |
+| 2026-01-16 | Added `num_classes` parameter to all models (default=3 for scalping) |
+| 2026-01-16 | Changed output layer from 1 to num_classes, removed sigmoid activation (raw logits for CrossEntropyLoss) |
+| 2026-01-16 | Added `get_probabilities()` and `predict()` methods for inference |
+| 2026-01-16 | Added ModelPrediction dataclass per spec (direction, confidence, predicted_move, volatility) |
+| 2026-01-16 | Updated training.py for CrossEntropyLoss with class weights |
+| 2026-01-16 | Created `tests/test_models.py` with 55 comprehensive unit tests (all passing) |
+| 2026-01-16 | Total test count now 292 (26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest + 55 models) |
