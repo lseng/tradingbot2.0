@@ -107,7 +107,9 @@ def _simple_auc(y_true: np.ndarray, y_pred: np.ndarray) -> float:
         return 0.5
     tpr_cum = np.cumsum(sorted_true) / n_pos
     fpr_cum = np.cumsum(1 - sorted_true) / n_neg
-    return np.trapz(tpr_cum, fpr_cum)
+    # Use trapezoid (numpy 2.0+) or trapz (older numpy) for compatibility
+    trapz_func = getattr(np, 'trapezoid', None) or np.trapz
+    return trapz_func(tpr_cum, fpr_cum)
 
 
 class TradingSimulator:

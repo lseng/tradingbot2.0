@@ -609,8 +609,8 @@ class Position:
 
 ## Phase 8: MEDIUM - Testing (Ongoing)
 
-**Status**: PARTIAL - tests/ directory created with 897 unit tests
-**Test Coverage**: 77% (target: >80%)
+**Status**: PARTIAL - tests/ directory created with 998 unit tests
+**Test Coverage**: 79% (target: >80%)
 **Directory**: `tests/`
 
 ### 8.1 Unit Tests
@@ -628,8 +628,11 @@ class Position:
 - [x] `tests/test_live_trader_unit.py` - TradingConfig, SessionMetrics, LiveTrader init, callbacks, inference (37 tests, coverage 24% → 47%)
 - [x] `tests/test_order_executor_unit.py` - ExecutionStatus, EntryResult, ExecutorConfig, signal dispatch, async entry/exit (51 tests, coverage 25% → 70%)
 - [x] `tests/test_topstepx_ws_unit.py` - Quote, OrderFill, PositionUpdate, AccountUpdate, SignalR, WebSocket (66 tests, coverage 37% → 42%)
+- [x] `tests/test_topstepx_ws_dataclasses.py` - WebSocket dataclasses, Quote, OrderFill, PositionUpdate, AccountUpdate parsing (34 tests, all passing)
 - [x] `tests/test_evaluation.py` - ClassificationMetrics, TradingMetrics, TradingSimulator, backtesting (38 tests, coverage 0% → 54%)
+- [x] `tests/test_evaluation_simple.py` - Additional evaluation tests for _simple_auc, TradingSimulator (21 tests, coverage 54% → 57%)
 - [x] `tests/test_train_futures_model.py` - CLI argument parsing, seed setting, config building, full pipeline tests (51 tests, coverage 23% → 99%)
+- [x] `tests/test_recovery_extended.py` - RecoveryHandler disconnect, auth failure, order rejection, margin, rate limit, position mismatch, error history (47 tests, coverage 69% → 99%)
 - [x] `tests/conftest.py` - pytest fixtures (sample data, mock clients, position manager) - COMPLETED
 
 ### 8.2 Integration Tests
@@ -645,9 +648,12 @@ class Position:
 ### 8.3 Test Configuration
 
 - [x] `pytest.ini` or `pyproject.toml` pytest config - COMPLETED (pytest.ini created with asyncio_mode=auto, strict markers, test discovery)
-- [x] Test coverage: 77% (897 tests passing, improved from 62% → 74% → 77%)
-- [ ] Test coverage target: > 80% (need ~3% more coverage)
+- [x] Test coverage: 79% (998 tests passing, improved from 62% → 74% → 77% → 79%)
+- [ ] Test coverage target: > 80% (need ~1% more coverage)
 - [ ] CI/CD integration (GitHub Actions)
+
+### 8.4 Bug Fixes (2026-01-16)
+- [x] Fixed numpy.trapz deprecation in evaluation.py - replaced with numpy.trapezoid for NumPy 2.0+ compatibility
 
 ---
 
@@ -1049,3 +1055,10 @@ Before going live with real capital, the system must:
 | 2026-01-16 | Fixed test imports: changed from relative to absolute (src.trading.*, src.api.*) |
 | 2026-01-16 | Test count increased from 858 to 897 tests (39 new tests) |
 | 2026-01-16 | **Test coverage improved from 74% to 77%** (1329 missing lines, down from 1341) |
+| 2026-01-16 | **Phase 8.1 continued**: Test coverage improved from 77% to 79% (998 tests, 1257 missing lines) |
+| 2026-01-16 | Fixed numpy.trapz deprecation in evaluation.py - replaced with numpy.trapezoid for NumPy 2.0+ |
+| 2026-01-16 | Added `tests/test_recovery_extended.py` - 47 tests for RecoveryHandler (coverage 69% → 99%) |
+| 2026-01-16 | Added `tests/test_evaluation_simple.py` - 21 tests for evaluation module (coverage 54% → 57%) |
+| 2026-01-16 | Added `tests/test_topstepx_ws_dataclasses.py` - 34 tests for WebSocket dataclasses |
+| 2026-01-16 | Test count increased from 897 to 998 tests (101 new tests) |
+| 2026-01-16 | Coverage now at 79% (target: 80%) - need ~1% more coverage to reach goal |
