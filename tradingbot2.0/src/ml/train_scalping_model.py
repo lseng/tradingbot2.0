@@ -590,17 +590,25 @@ def main():
     print("STEP 5: Evaluation on Test Set")
     print("-" * 70)
 
-    # Get predictions (move tensor to same device as model)
+    # Get predictions in batches to avoid OOM (move tensor to same device as model)
     device = next(model.parameters()).device
     model.eval()
-    with torch.no_grad():
-        X_test_device = X_test_t.to(device)
-        if args.model == 'lstm':
-            logits = model(X_test_device)
-        else:
-            logits = model(X_test_device)
 
-        probs = torch.softmax(logits, dim=1).cpu()
+    # Process test set in batches to avoid CUDA OOM
+    eval_batch_size = 1024  # Smaller batch size for evaluation
+    all_probs = []
+
+    with torch.no_grad():
+        for i in range(0, len(X_test_t), eval_batch_size):
+            batch = X_test_t[i:i+eval_batch_size].to(device)
+            logits = model(batch)
+            probs = torch.softmax(logits, dim=1).cpu()
+            all_probs.append(probs)
+            # Clear GPU cache periodically
+            if i % (eval_batch_size * 10) == 0:
+                torch.cuda.empty_cache()
+
+        probs = torch.cat(all_probs, dim=0)
         predictions = torch.argmax(probs, dim=1).numpy()
         confidence = probs.max(dim=1).values.numpy()
 
