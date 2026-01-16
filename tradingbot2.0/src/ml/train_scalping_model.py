@@ -405,13 +405,17 @@ def main():
     print(f"\nGenerating features for validation set...")
     val_engineer = ScalpingFeatureEngineer(val_df.copy())
     val_features_df = val_engineer.generate_all_features(include_multiframe=True)
-    # Apply same scaler from training
+    # Replace infinity values and apply same scaler from training
+    val_features_df[feature_names] = val_features_df[feature_names].replace([np.inf, -np.inf], np.nan)
+    val_features_df = val_features_df.dropna(subset=feature_names)
     val_features_df[feature_names] = scaler.transform(val_features_df[feature_names])
 
     print(f"\nGenerating features for test set...")
     test_engineer = ScalpingFeatureEngineer(test_df.copy())
     test_features_df = test_engineer.generate_all_features(include_multiframe=True)
-    # Apply same scaler from training
+    # Replace infinity values and apply same scaler from training
+    test_features_df[feature_names] = test_features_df[feature_names].replace([np.inf, -np.inf], np.nan)
+    test_features_df = test_features_df.dropna(subset=feature_names)
     test_features_df[feature_names] = scaler.transform(test_features_df[feature_names])
 
     print(f"\nFeatures generated: {len(feature_names)}")
