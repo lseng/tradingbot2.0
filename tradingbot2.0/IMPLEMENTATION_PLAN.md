@@ -609,8 +609,8 @@ class Position:
 
 ## Phase 8: MEDIUM - Testing (Ongoing)
 
-**Status**: PARTIAL - tests/ directory created with 998 unit tests
-**Test Coverage**: 79% (target: >80%)
+**Status**: COMPLETED - tests/ directory created with 1206 unit tests
+**Test Coverage**: 85% (target: >80%) ✓ ACHIEVED
 **Directory**: `tests/`
 
 ### 8.1 Unit Tests
@@ -648,8 +648,8 @@ class Position:
 ### 8.3 Test Configuration
 
 - [x] `pytest.ini` or `pyproject.toml` pytest config - COMPLETED (pytest.ini created with asyncio_mode=auto, strict markers, test discovery)
-- [x] Test coverage: 79% (998 tests passing, improved from 62% → 74% → 77% → 79%)
-- [ ] Test coverage target: > 80% (need ~1% more coverage)
+- [x] Test coverage: 85% (1206 tests passing, improved from 62% → 74% → 77% → 79% → 85%)
+- [x] Test coverage target: > 80% ✓ ACHIEVED (85% coverage)
 - [ ] CI/CD integration (GitHub Actions)
 
 ### 8.4 Bug Fixes (2026-01-16)
@@ -899,7 +899,7 @@ Before going live with real capital, the system must:
 ## Notes
 
 - The existing `src/ml/` code is a solid foundation but needs significant rework for scalping timeframes
-- **360 tests exist** (26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest + 55 models + 68 topstepx_api) - remaining modules need test coverage
+- **1206 tests exist** with 85% coverage - comprehensive test suite covering all major modules
 - The 227MB 1-second parquet dataset is the primary asset but isn't being used
 - TopstepX API is for **live trading only** (7-14 day historical limit)
 - DataBento is for historical data (already have 2 years in parquet)
@@ -1062,3 +1062,14 @@ Before going live with real capital, the system must:
 | 2026-01-16 | Added `tests/test_topstepx_ws_dataclasses.py` - 34 tests for WebSocket dataclasses |
 | 2026-01-16 | Test count increased from 897 to 998 tests (101 new tests) |
 | 2026-01-16 | Coverage now at 79% (target: 80%) - need ~1% more coverage to reach goal |
+| 2026-01-16 | **Phase 8.1 COMPLETED**: Test coverage improved from 79% to 85% (1206 tests) |
+| 2026-01-16 | Added `tests/test_topstepx_ws_async.py` - 52 tests for WebSocket async methods (coverage 42% → 84%) |
+| 2026-01-16 | Added `tests/test_live_trader_extended.py` - 38 tests for LiveTrader async methods (coverage 47% → 66%) |
+| 2026-01-16 | Added `tests/test_evaluation_extended.py` - 34 tests for evaluation module (coverage 57% → 73%) |
+| 2026-01-16 | Added `tests/test_topstepx_client_extended.py` - 41 tests for TopstepX client (coverage 59% → 97%) |
+| 2026-01-16 | Added `tests/test_parquet_loader_extended.py` - 41 tests for parquet loader (coverage 67% → 88%) |
+| 2026-01-16 | Fixed bug in live_trader.py: EODPhase.NO_NEW_POSITIONS → EODPhase.CLOSE_ONLY |
+| 2026-01-16 | Fixed bug in live_trader.py: EODPhase.FLATTEN_ONLY → EODPhase.MUST_BE_FLAT |
+| 2026-01-16 | Fixed bug in live_trader.py: size <= 0 → size.contracts <= 0 (position size comparison) |
+| 2026-01-16 | Test count increased from 998 to 1206 tests (208 new tests) |
+| 2026-01-16 | **Target 80% coverage ACHIEVED** - now at 85% overall coverage |

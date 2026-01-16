@@ -375,12 +375,12 @@ class LiveTrader:
 
             # 3. Check EOD phase
             eod_phase = self._eod_manager.get_current_phase()
-            if eod_phase == EODPhase.NO_NEW_POSITIONS:
+            if eod_phase == EODPhase.CLOSE_ONLY:
                 # No new entries, only exits
                 if not self._position_manager.is_flat():
                     await self._handle_eod_flatten()
                 return
-            elif eod_phase == EODPhase.FLATTEN_ONLY:
+            elif eod_phase == EODPhase.MUST_BE_FLAT:
                 await self._handle_eod_flatten()
                 return
 
@@ -471,7 +471,7 @@ class LiveTrader:
                 confidence=signal.confidence,
             )
 
-            if size <= 0:
+            if size.contracts <= 0:
                 logger.warning("Position size is 0, skipping trade")
                 return
 
