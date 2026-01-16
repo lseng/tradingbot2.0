@@ -56,7 +56,9 @@ class Quote:
         bid_size: Bid size
         ask_size: Ask size
         volume: Total volume
-        timestamp: Quote timestamp
+        timestamp: Quote timestamp (local reception time)
+        server_timestamp: Server-side timestamp from API (if available)
+        reception_latency_ms: Time from server to local reception (if server_timestamp available)
     """
     contract_id: str
     bid: float
@@ -66,10 +68,41 @@ class Quote:
     ask_size: int = 0
     volume: int = 0
     timestamp: Optional[datetime] = None
+    server_timestamp: Optional[datetime] = None
+    reception_latency_ms: Optional[float] = None
 
     @classmethod
     def from_signalr(cls, data: dict) -> "Quote":
         """Create Quote from SignalR message."""
+        reception_time = datetime.utcnow()
+
+        # Parse server timestamp if available
+        server_timestamp = None
+        latency_ms = None
+
+        # Try different timestamp field names
+        ts_value = data.get("timestamp", data.get("ts", data.get("time")))
+        if ts_value is not None:
+            try:
+                if isinstance(ts_value, (int, float)):
+                    # Unix timestamp (seconds or milliseconds)
+                    if ts_value > 1e12:  # Milliseconds
+                        server_timestamp = datetime.utcfromtimestamp(ts_value / 1000)
+                    else:  # Seconds
+                        server_timestamp = datetime.utcfromtimestamp(ts_value)
+                elif isinstance(ts_value, str):
+                    # ISO format string
+                    server_timestamp = datetime.fromisoformat(ts_value.replace('Z', '+00:00').replace('+00:00', ''))
+            except (ValueError, TypeError, OSError):
+                pass
+
+        # Calculate latency if we have server timestamp
+        if server_timestamp:
+            latency_ms = (reception_time - server_timestamp).total_seconds() * 1000
+            # Clamp negative values (clock skew)
+            if latency_ms < 0:
+                latency_ms = 0.0
+
         return cls(
             contract_id=str(data.get("contractId", data.get("symbol", ""))),
             bid=float(data.get("bid", data.get("bidPrice", 0))),
@@ -78,7 +111,9 @@ class Quote:
             bid_size=int(data.get("bidSize", data.get("bidQty", 0))),
             ask_size=int(data.get("askSize", data.get("askQty", 0))),
             volume=int(data.get("volume", data.get("totalVolume", 0))),
-            timestamp=datetime.utcnow(),
+            timestamp=reception_time,
+            server_timestamp=server_timestamp,
+            reception_latency_ms=latency_ms,
         )
 
     @property

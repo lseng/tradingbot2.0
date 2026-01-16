@@ -65,6 +65,20 @@ from src.lib.logging_utils import (
     log_latency,
 )
 
+from src.lib.performance_monitor import (
+    PerformanceMonitor,
+    MetricType,
+    LatencyStats,
+    LatencySample,
+    MemorySnapshot,
+    Timer,
+    AsyncTimer,
+    measure_time,
+    get_global_monitor,
+    set_global_monitor,
+    PERFORMANCE_THRESHOLDS,
+)
+
 __all__ = [
     # Constants
     "MES_TICK_SIZE",
@@ -115,4 +129,16 @@ __all__ = [
     "LogLevel",
     "log_trade",
     "log_latency",
+    # Performance monitoring
+    "PerformanceMonitor",
+    "MetricType",
+    "LatencyStats",
+    "LatencySample",
+    "MemorySnapshot",
+    "Timer",
+    "AsyncTimer",
+    "measure_time",
+    "get_global_monitor",
+    "set_global_monitor",
+    "PERFORMANCE_THRESHOLDS",
 ]

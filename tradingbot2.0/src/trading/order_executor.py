@@ -9,11 +9,16 @@ Manages the complete order lifecycle:
 - OCO management (manual since API doesn't support brackets)
 - Order tracking and cancellation
 
+Performance Requirements (specs/live-trading-execution.md):
+- Order placement round-trip < 500ms
+- Market orders execute within 1 second of signal
+
 Reference: specs/live-trading-execution.md
 """
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Callable
@@ -48,6 +53,49 @@ class ExecutionStatus(Enum):
 
 
 @dataclass
+class ExecutionTiming:
+    """
+    Timing metrics for order execution.
+
+    Performance Requirements:
+    - Order placement round-trip < 500ms
+    - Signal to fill < 1000ms
+    """
+    signal_time: Optional[float] = None  # perf_counter when signal received
+    order_placed_time: Optional[float] = None  # perf_counter when order placed
+    fill_received_time: Optional[float] = None  # perf_counter when fill confirmed
+
+    @property
+    def placement_latency_ms(self) -> Optional[float]:
+        """Time from signal to order placement (ms). Target: part of <500ms round-trip."""
+        if self.signal_time is not None and self.order_placed_time is not None:
+            return (self.order_placed_time - self.signal_time) * 1000
+        return None
+
+    @property
+    def fill_latency_ms(self) -> Optional[float]:
+        """Time from order placement to fill (ms)."""
+        if self.order_placed_time is not None and self.fill_received_time is not None:
+            return (self.fill_received_time - self.order_placed_time) * 1000
+        return None
+
+    @property
+    def total_latency_ms(self) -> Optional[float]:
+        """Total time from signal to fill (ms). Target: <1000ms."""
+        if self.signal_time is not None and self.fill_received_time is not None:
+            return (self.fill_received_time - self.signal_time) * 1000
+        return None
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for logging."""
+        return {
+            "placement_latency_ms": round(self.placement_latency_ms, 2) if self.placement_latency_ms else None,
+            "fill_latency_ms": round(self.fill_latency_ms, 2) if self.fill_latency_ms else None,
+            "total_latency_ms": round(self.total_latency_ms, 2) if self.total_latency_ms else None,
+        }
+
+
+@dataclass
 class EntryResult:
     """
     Result of an entry order execution.
@@ -62,11 +110,19 @@ class EntryResult:
     target_order_id: Optional[str] = None
     error_message: Optional[str] = None
     timestamp: datetime = field(default_factory=datetime.now)
+    timing: Optional[ExecutionTiming] = None
 
     @property
     def success(self) -> bool:
         """Check if entry was successful."""
         return self.status == ExecutionStatus.FILLED and self.entry_fill_price is not None
+
+    @property
+    def execution_latency_ms(self) -> Optional[float]:
+        """Get total execution latency in milliseconds."""
+        if self.timing:
+            return self.timing.total_latency_ms
+        return None
 
 
 @dataclass
@@ -247,6 +303,10 @@ class OrderExecutor:
         4. Place take profit order
         5. Track all orders for OCO management
 
+        Performance targets:
+        - Order placement round-trip < 500ms
+        - Total signal to fill < 1000ms
+
         Args:
             contract_id: Contract to trade
             direction: 1 for long, -1 for short
@@ -256,8 +316,11 @@ class OrderExecutor:
             current_price: Current price for limit orders
 
         Returns:
-            EntryResult with fill details and order IDs
+            EntryResult with fill details, order IDs, and timing metrics
         """
+        # Start timing from signal receipt
+        timing = ExecutionTiming(signal_time=time.perf_counter())
+
         side = OrderSide.BUY if direction == 1 else OrderSide.SELL
 
         logger.info(
@@ -270,16 +333,28 @@ class OrderExecutor:
             entry_order = await self._place_entry_order(
                 contract_id, side, size, current_price
             )
+            timing.order_placed_time = time.perf_counter()
+
+            # Log placement latency
+            placement_ms = timing.placement_latency_ms
+            if placement_ms is not None:
+                logger.debug(f"Order placement latency: {placement_ms:.2f}ms")
+                if placement_ms > 500:
+                    logger.warning(
+                        f"Order placement exceeded 500ms threshold: {placement_ms:.2f}ms"
+                    )
 
             if entry_order.is_rejected:
                 logger.error(f"Entry order rejected: {entry_order.error_message}")
                 return EntryResult(
                     status=ExecutionStatus.REJECTED,
                     error_message=entry_order.error_message,
+                    timing=timing,
                 )
 
             # 2. Wait for fill
             fill_price = await self._wait_for_fill(entry_order.order_id)
+            timing.fill_received_time = time.perf_counter()
 
             if fill_price is None:
                 logger.error(f"Entry order fill timeout: {entry_order.order_id}")
@@ -289,9 +364,19 @@ class OrderExecutor:
                     status=ExecutionStatus.FAILED,
                     entry_order_id=entry_order.order_id,
                     error_message="Fill timeout",
+                    timing=timing,
                 )
 
-            logger.info(f"Entry filled: {fill_price}")
+            # Log execution timing
+            total_ms = timing.total_latency_ms
+            if total_ms is not None:
+                logger.info(f"Entry filled: {fill_price} (latency: {total_ms:.2f}ms)")
+                if total_ms > 1000:
+                    logger.warning(
+                        f"Order execution exceeded 1000ms threshold: {total_ms:.2f}ms"
+                    )
+            else:
+                logger.info(f"Entry filled: {fill_price}")
 
             # 3. Calculate stop and target prices
             stop_distance = stop_ticks * MES_TICK_SIZE
@@ -344,6 +429,7 @@ class OrderExecutor:
                 entry_order_id=entry_order.order_id,
                 stop_order_id=stop_order.order_id if stop_order else None,
                 target_order_id=target_order.order_id if target_order else None,
+                timing=timing,
             )
 
         except Exception as e:
@@ -351,6 +437,7 @@ class OrderExecutor:
             return EntryResult(
                 status=ExecutionStatus.FAILED,
                 error_message=str(e),
+                timing=timing,
             )
 
     async def execute_exit(
@@ -579,13 +666,13 @@ class OrderExecutor:
         This is called by the WebSocket client when an order is filled.
         """
         order_id = fill.order_id
-        logger.debug(f"Fill received: {order_id} @ {fill.price}")
+        logger.debug(f"Fill received: {order_id} @ {fill.fill_price}")
 
         # Resolve pending fill future
         if order_id in self._pending_fills:
             future = self._pending_fills[order_id]
             if not future.done():
-                future.set_result(fill.price)
+                future.set_result(fill.fill_price)
 
         # Handle OCO cancellation
         self._handle_oco_fill(order_id)
@@ -599,8 +686,8 @@ class OrderExecutor:
                     order_id=order_id,
                     contract_id=order.contract_id,
                     side=order.side,
-                    size=fill.size,
-                    price=fill.price,
+                    size=fill.fill_size,
+                    price=fill.fill_price,
                     timestamp=datetime.now(),
                     is_entry=False,
                 )
