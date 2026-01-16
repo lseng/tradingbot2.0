@@ -1240,3 +1240,9 @@ Before going live with real capital, the system must:
 | 2026-01-16 | Time utils tests cover: ETH edge cases (Sunday, Friday, CME reset), session start/end, EOD phases, trading day calendar, normalize_to_session |
 | 2026-01-16 | Total test count increased from 2006 to 2087 (81 new tests) |
 | 2026-01-16 | Overall test coverage improved from 86% to 87% |
+| 2026-01-16 | **Test Coverage Improvement**: position_manager.py coverage improved from 70% to 94% (38 new tests) |
+| 2026-01-16 | Added tests/test_position_manager_extended.py with 38 comprehensive tests covering: reversal logic, partial close, add to position, stop/target setters, API sync, callback exceptions, metrics for SHORT direction |
+| 2026-01-16 | **Test Coverage Improvement**: live_trader.py coverage improved from 66% to 95% (49 new tests) |
+| 2026-01-16 | Added tests/test_live_trader_comprehensive.py with 49 comprehensive tests covering: startup sequence, trading loop, quote handling, bar processing, inference, signal execution, EOD flatten, position sync, model loading, shutdown, alert handlers |
+| 2026-01-16 | Total test count increased from 2087 to 2174 (87 new tests) |
+| 2026-01-16 | Overall test coverage improved from 87% to 89% |
