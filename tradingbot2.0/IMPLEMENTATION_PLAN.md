@@ -568,6 +568,25 @@ class Position:
 - [x] Memory stable over 8-hour trading session (no leaks)
 - [x] Order placement round-trip < 500ms
 
+### 6.8 Alert System
+**Status**: COMPLETED (2026-01-16)
+**File**: `src/lib/alerts.py`
+
+Multi-channel alert system for error notifications and trading events:
+- [x] Alert and AlertConfig dataclasses for structured alert configuration
+- [x] AlertManager class with priority-based routing and channel management
+- [x] ConsoleAlertSender - Console/logging output for development
+- [x] EmailAlertSender - SMTP-based email alerts
+- [x] SlackAlertSender - Slack webhook integration
+- [x] WebhookAlertSender - Generic HTTP webhook support
+- [x] DiscordAlertSender - Discord webhook integration
+- [x] Throttling - Rate limiting per alert type (configurable window)
+- [x] Deduplication - Prevents duplicate alerts within time window
+- [x] Priority-based routing - Route alerts to appropriate channels by severity
+- [x] `create_error_event_handler()` - Integration with RecoveryHandler for automatic error alerting
+- [x] `create_alert_manager_from_env()` - Configuration from environment variables
+- [x] 56 tests in `tests/test_alerts.py` (all passing)
+
 ---
 
 ## Phase 7: MEDIUM - DataBento Integration (Week 7-8)
@@ -905,7 +924,7 @@ Before going live with real capital, the system must:
 4. [x] EOD flatten works 100% of the time (verified across DST boundaries) - **VERIFIED with DST tests**
 5. [x] Inference latency < 10ms (measured on target hardware) - **VERIFIED with inference benchmark tests**
 6. [x] No lookahead bias in features or targets (temporal unit tests pass) - **VERIFIED with 29 comprehensive tests**
-7. [x] Unit test coverage > 80% - **ACHIEVED (85% coverage, 1908 tests)**
+7. [x] Unit test coverage > 80% - **ACHIEVED (85% coverage, 1964 tests)**
 8. [ ] Paper trading for minimum 2 weeks without critical errors
 9. [x] Position sizing matches spec for all account balance tiers - **VERIFIED with 53 comprehensive tests**
 10. [x] Circuit breakers tested and working (simulated loss scenarios) - **VERIFIED with 40 comprehensive tests**
@@ -917,7 +936,7 @@ Before going live with real capital, the system must:
 ## Notes
 
 - The existing `src/ml/` code is a solid foundation but needs significant rework for scalping timeframes
-- **1908 tests exist** with 85% coverage - comprehensive test suite covering all major modules
+- **1964 tests exist** with 85% coverage - comprehensive test suite covering all major modules
 - The 227MB 1-second parquet dataset is the primary asset but isn't being used
 - TopstepX API is for **live trading only** (7-14 day historical limit)
 - DataBento is for historical data (already have 2 years in parquet)
@@ -1204,3 +1223,11 @@ Before going live with real capital, the system must:
 | 2026-01-16 | Updated _generate_long_signal() and _generate_short_signal() to check constraints |
 | 2026-01-16 | Added 40 tests in tests/test_reversal_bar_range.py |
 | 2026-01-16 | Total test count increased from 1868 to 1908 |
+| 2026-01-16 | **Alert System COMPLETED**: Implemented multi-channel alert system (`src/lib/alerts.py`) |
+| 2026-01-16 | Added Alert, AlertConfig, AlertManager classes |
+| 2026-01-16 | Added senders: ConsoleAlertSender, EmailAlertSender, SlackAlertSender, WebhookAlertSender, DiscordAlertSender |
+| 2026-01-16 | Added throttling, deduplication, priority-based routing |
+| 2026-01-16 | Added create_error_event_handler() for integration with RecoveryHandler |
+| 2026-01-16 | Added create_alert_manager_from_env() for configuration from environment variables |
+| 2026-01-16 | Added 56 tests in tests/test_alerts.py (all passing) |
+| 2026-01-16 | Total test count increased from 1908 to 1964 |

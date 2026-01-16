@@ -79,6 +79,22 @@ from src.lib.performance_monitor import (
     PERFORMANCE_THRESHOLDS,
 )
 
+from src.lib.alerts import (
+    AlertChannel,
+    AlertPriority,
+    Alert,
+    AlertConfig,
+    AlertSender,
+    ConsoleAlertSender,
+    EmailAlertSender,
+    SlackAlertSender,
+    WebhookAlertSender,
+    DiscordAlertSender,
+    AlertManager,
+    create_error_event_handler,
+    create_alert_manager_from_env,
+)
+
 __all__ = [
     # Constants
     "MES_TICK_SIZE",
@@ -141,4 +157,18 @@ __all__ = [
     "get_global_monitor",
     "set_global_monitor",
     "PERFORMANCE_THRESHOLDS",
+    # Alerts
+    "AlertChannel",
+    "AlertPriority",
+    "Alert",
+    "AlertConfig",
+    "AlertSender",
+    "ConsoleAlertSender",
+    "EmailAlertSender",
+    "SlackAlertSender",
+    "WebhookAlertSender",
+    "DiscordAlertSender",
+    "AlertManager",
+    "create_error_event_handler",
+    "create_alert_manager_from_env",
 ]
