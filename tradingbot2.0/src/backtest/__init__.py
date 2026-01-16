@@ -39,6 +39,24 @@ from .engine import (
     SignalType,
 )
 
+# Visualization imports (optional - requires plotly)
+try:
+    from .visualization import (
+        BacktestVisualizer,
+        WalkForwardVisualizer,
+        DrawdownPeriod,
+        identify_drawdown_periods,
+        export_visualization,
+    )
+    VISUALIZATION_AVAILABLE = True
+except ImportError:
+    VISUALIZATION_AVAILABLE = False
+    BacktestVisualizer = None  # type: ignore
+    WalkForwardVisualizer = None  # type: ignore
+    DrawdownPeriod = None  # type: ignore
+    identify_drawdown_periods = None  # type: ignore
+    export_visualization = None  # type: ignore
+
 __all__ = [
     # Cost model
     "TransactionCostModel",
@@ -67,4 +85,11 @@ __all__ = [
     "OrderFillMode",
     "Signal",
     "SignalType",
+    # Visualization (optional)
+    "VISUALIZATION_AVAILABLE",
+    "BacktestVisualizer",
+    "WalkForwardVisualizer",
+    "DrawdownPeriod",
+    "identify_drawdown_periods",
+    "export_visualization",
 ]
