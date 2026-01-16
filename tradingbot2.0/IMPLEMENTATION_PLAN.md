@@ -636,7 +636,7 @@ class Position:
 
 ### 8.3 Test Configuration
 
-- [ ] `pytest.ini` or `pyproject.toml` pytest config
+- [x] `pytest.ini` or `pyproject.toml` pytest config - COMPLETED (pytest.ini created with asyncio_mode=auto, strict markers, test discovery)
 - [ ] Test coverage target: > 80%
 - [ ] CI/CD integration (GitHub Actions)
 
@@ -774,10 +774,11 @@ tradingbot2.0/
 │       ├── test_backtest_e2e.py
 │       └── test_api_mock.py
 │
-├── scripts/                   # NEW - Entry points
-│   ├── download_data.py
-│   ├── run_backtest.py
-│   └── run_live.py
+├── scripts/                   # Entry points (PARTIAL - 2 of 3 implemented)
+│   ├── __init__.py             # EXISTS
+│   ├── download_data.py        # NOT IMPLEMENTED (Phase 7)
+│   ├── run_backtest.py         # EXISTS - CLI for backtesting
+│   └── run_live.py             # EXISTS - CLI for live trading
 │
 ├── data/
 │   └── historical/
@@ -1008,3 +1009,10 @@ Before going live with real capital, the system must:
 | 2026-01-16 | Verified feature calculation meets <5ms requirement |
 | 2026-01-16 | Verified end-to-end latency meets <15ms requirement |
 | 2026-01-16 | Total test count now 470 (437 previous + 33 inference_benchmark tests) |
+| 2026-01-16 | **Phase 8.3 PARTIAL**: Created `pytest.ini` with test configuration (asyncio_mode=auto, strict markers, test discovery) |
+| 2026-01-16 | Created `scripts/` directory with entry point scripts |
+| 2026-01-16 | Created `scripts/run_backtest.py` - CLI for running backtests with ML models on historical data |
+| 2026-01-16 | Created `scripts/run_live.py` - CLI for live trading with TopstepX API integration |
+| 2026-01-16 | Run_backtest.py features: ML model inference, random baseline testing, walk-forward validation, result export |
+| 2026-01-16 | Run_live.py features: Paper/live mode, auto contract detection, risk parameter configuration, graceful shutdown |
+| 2026-01-16 | All 470 tests continue to pass |

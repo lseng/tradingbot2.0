@@ -7,17 +7,36 @@ Python ML project for futures price direction prediction.
 pip install -r src/ml/requirements.txt
 
 # Run training with default settings
-python src/ml/train_futures_model.py --data /path/to/data.txt
+python src/ml/train_futures_model.py --data data/historical/MES/MES_full_1min_continuous_UNadjusted.txt
 
 # Run with LSTM model
-python src/ml/train_futures_model.py --data /path/to/data.txt --model lstm --epochs 100
+python src/ml/train_futures_model.py --data data/historical/MES/MES_full_1min_continuous_UNadjusted.txt --model lstm --epochs 100
+
+# Run backtest with default settings
+python scripts/run_backtest.py
+
+# Run backtest with specific model
+python scripts/run_backtest.py --model models/scalper_v1.pt --verbose
+
+# Run walk-forward validation
+python scripts/run_backtest.py --walk-forward --output ./results/walkforward
+
+# Run random baseline (should produce ~0 expectancy)
+python scripts/run_backtest.py --random-baseline
+
+# Run live trading (paper mode by default)
+# Requires: export TOPSTEPX_API_KEY='your-api-key'
+python scripts/run_live.py
+
+# Run live trading with custom parameters
+python scripts/run_live.py --capital 2000 --max-daily-loss 100 --min-confidence 0.70
 ```
 
 ## Validation
 
 Run these after implementing to get immediate feedback:
 
-- Tests: `pytest src/ml/`
+- Tests: `pytest tests/` (470 tests)
 - Typecheck: `mypy src/ml/`
 - Lint: `ruff check src/ml/`
 
@@ -46,12 +65,15 @@ data/historical/MES/
 data/
 └── historical/MES/        # Historical price data (DataBento)
 src/
-└── ml/
-    ├── data/              # Data loading and feature engineering
-    ├── models/            # Neural network architectures and training
-    ├── utils/             # Evaluation metrics and visualization
-    ├── configs/           # Configuration files
-    └── train_futures_model.py  # Main entry point
+├── ml/                    # ML pipeline (training, models, features)
+├── risk/                  # Risk management (position sizing, circuit breakers, EOD)
+├── backtest/              # Backtesting engine (costs, slippage, metrics)
+├── api/                   # TopstepX API integration (REST, WebSocket)
+└── trading/               # Live trading (signal generation, order execution)
+scripts/
+├── run_backtest.py        # Backtest entry point
+└── run_live.py            # Live trading entry point
+tests/                     # 470 unit tests
 ```
 
 ### Codebase Patterns
