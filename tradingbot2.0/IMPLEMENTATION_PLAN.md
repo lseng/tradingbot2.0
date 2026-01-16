@@ -1,7 +1,7 @@
 # Implementation Plan - MES Futures Scalping Bot
 
 > Last Updated: 2026-01-16
-> Status: ACTIVE - Phase 4.1 (3-Class Classification) COMPLETED
+> Status: ACTIVE - Phase 5 (TopstepX API Integration) COMPLETED
 > Verified: All findings confirmed via codebase analysis
 
 ---
@@ -58,12 +58,12 @@
 |--------|-----------|----------|--------|--------------|
 | Risk Management | `src/risk/` | **P1 - CRITICAL** | **COMPLETED** | risk_manager.py, position_sizing.py, stops.py, eod_manager.py, circuit_breakers.py |
 | Backtesting Engine | `src/backtest/` | **P1 - CRITICAL** | **COMPLETED** | engine.py, costs.py, slippage.py, metrics.py, trade_logger.py |
-| TopstepX API | `src/api/` | P2 - HIGH | NOT IMPLEMENTED | topstepx_client.py, topstepx_rest.py, topstepx_ws.py |
+| TopstepX API | `src/api/` | P2 - HIGH | **COMPLETED** | __init__.py, topstepx_client.py, topstepx_rest.py, topstepx_ws.py |
 | Live Trading | `src/trading/` | P2 - HIGH | NOT IMPLEMENTED | live_trader.py, signal_generator.py, order_executor.py, position_manager.py, rt_features.py, recovery.py |
 | DataBento Client | `src/data/` | P3 - MEDIUM | NOT IMPLEMENTED | databento_client.py |
 | Shared Utilities | `src/lib/` | P3 - MEDIUM | NOT IMPLEMENTED | config.py, logging.py, time_utils.py |
 | Model Architecture | `src/ml/models/` | P2 - HIGH | **PARTIAL** (4.1 COMPLETED, 4.2-4.4 pending) | 4.1 done: 3-class output, CrossEntropyLoss |
-| Tests | `tests/` | P3 - MEDIUM | **PARTIAL** (292 tests: 26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest + 55 models) | Remaining test files |
+| Tests | `tests/` | P3 - MEDIUM | **PARTIAL** (360 tests: 26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest + 55 models + 68 topstepx_api) | Remaining test files |
 
 ### Critical Bug Summary
 
@@ -400,50 +400,54 @@ Per spec, consider attention-based model for sequence patterns:
 
 ## Phase 5: HIGH - TopstepX API Integration (Week 5-6)
 
-**Status**: ENTIRE MODULE NOT IMPLEMENTED
-**Directory**: `src/api/` (NEW - directory does not exist)
+**Status**: COMPLETED (2026-01-16)
+**Directory**: `src/api/`
 **Spec**: `specs/topstepx-api-integration.md`
 
 ### 5.1 API Client Base
-**File**: `src/api/topstepx_client.py` (NEW)
+**Status**: COMPLETED (2026-01-16)
+**File**: `src/api/topstepx_client.py`
 
-- [ ] Base URL: `https://api.topstepx.com`
-- [ ] Authentication: POST `/api/Auth/loginKey` with API key
-- [ ] Token refresh logic (90-min expiry, refresh at 80 min proactively)
-- [ ] Rate limiting: 50 requests/30 seconds (track and throttle)
-- [ ] Exponential backoff on errors (1s, 2s, 4s, max 30s)
-- [ ] Request/response logging (sanitize sensitive data)
-- [ ] Session management (aiohttp or httpx)
+- [x] Base URL: `https://api.topstepx.com`
+- [x] Authentication: POST `/api/Auth/loginKey` with API key
+- [x] Token refresh logic (90-min expiry, refresh at 80 min proactively)
+- [x] Rate limiting: 50 requests/30 seconds (track and throttle)
+- [x] Exponential backoff on errors (1s, 2s, 4s, max 30s)
+- [x] Request/response logging (sanitize sensitive data)
+- [x] Session management (aiohttp or httpx)
 
 ### 5.2 REST Endpoints
-**File**: `src/api/topstepx_rest.py` (NEW)
+**Status**: COMPLETED (2026-01-16)
+**File**: `src/api/topstepx_rest.py`
 
-- [ ] Place order: POST `/api/Order/place` (market, limit, stop, stop-limit)
-- [ ] Cancel order: POST `/api/Order/cancel`
-- [ ] Get positions: GET `/api/Position/list`
-- [ ] Get account info: GET `/api/Account/info`
-- [ ] Retrieve historical bars: POST `/api/History/retrieveBars` (limited: ~7-14 days)
-- [ ] Order types enum: MARKET, LIMIT, STOP, STOP_LIMIT
-- [ ] Error handling for each endpoint
+- [x] Place order: POST `/api/Order/place` (market, limit, stop, stop-limit)
+- [x] Cancel order: POST `/api/Order/cancel`
+- [x] Get positions: GET `/api/Position/list`
+- [x] Get account info: GET `/api/Account/info`
+- [x] Retrieve historical bars: POST `/api/History/retrieveBars` (limited: ~7-14 days)
+- [x] Order types enum: MARKET, LIMIT, STOP, STOP_LIMIT
+- [x] Error handling for each endpoint
 
 ### 5.3 WebSocket Market Data
-**File**: `src/api/topstepx_ws.py` (NEW)
+**Status**: COMPLETED (2026-01-16)
+**File**: `src/api/topstepx_ws.py`
 
-- [ ] SignalR connection to `wss://rtc.topstepx.com/hubs/market`
-- [ ] Subscribe to MES quotes (MESU5, MESZ5, etc.)
-- [ ] Quote handler callback (bid, ask, last, size, timestamp)
-- [ ] Auto-reconnect with exponential backoff (1s, 2s, 4s...)
-- [ ] Max 2 concurrent WebSocket sessions (per spec)
-- [ ] Heartbeat/ping to detect disconnects
+- [x] SignalR connection to `wss://rtc.topstepx.com/hubs/market`
+- [x] Subscribe to MES quotes (MESU5, MESZ5, etc.)
+- [x] Quote handler callback (bid, ask, last, size, timestamp)
+- [x] Auto-reconnect with exponential backoff (1s, 2s, 4s...)
+- [x] Max 2 concurrent WebSocket sessions (per spec)
+- [x] Heartbeat/ping to detect disconnects
 
 ### 5.4 WebSocket Trade Hub
-**File**: `src/api/topstepx_ws.py` (extend)
+**Status**: COMPLETED (2026-01-16)
+**File**: `src/api/topstepx_ws.py`
 
-- [ ] Connect to `wss://rtc.topstepx.com/hubs/trade`
-- [ ] Order fill notifications (fill_price, fill_qty, order_id)
-- [ ] Position update notifications (direction, size, avg_price)
-- [ ] Account update notifications (balance, realized_pnl)
-- [ ] Order rejection notifications
+- [x] Connect to `wss://rtc.topstepx.com/hubs/trade`
+- [x] Order fill notifications (fill_price, fill_qty, order_id)
+- [x] Position update notifications (direction, size, avg_price)
+- [x] Account update notifications (balance, realized_pnl)
+- [x] Order rejection notifications
 
 ---
 
@@ -605,7 +609,7 @@ class Position:
 
 ## Phase 8: MEDIUM - Testing (Ongoing)
 
-**Status**: PARTIAL - tests/ directory created with 292 unit tests (26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest + 55 models)
+**Status**: PARTIAL - tests/ directory created with 360 unit tests (26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest + 55 models + 68 topstepx_api)
 **Directory**: `tests/`
 
 ### 8.1 Unit Tests
@@ -615,6 +619,7 @@ class Position:
 - [x] `tests/test_risk_manager.py` - all risk limits, position sizing, EOD flatten, circuit breakers (77 tests, all passing)
 - [x] `tests/test_backtest.py` - cost model, slippage, order fill logic, metrics, trade logging (84 tests, all passing)
 - [x] `tests/test_models.py` - model forward pass, output shape, 3-class output, ModelPrediction (55 tests, all passing)
+- [x] `tests/test_topstepx_api.py` - TopstepX API client, REST endpoints, WebSocket market/trade hubs (68 tests, all passing)
 - [ ] `tests/test_feature_engineering.py` - feature calculations, no NaN leakage, no lookahead
 - [ ] `tests/test_signal_generator.py` - signal logic, confidence thresholds
 - [ ] `tests/conftest.py` - pytest fixtures, sample data
@@ -727,7 +732,7 @@ tradingbot2.0/
 │   │   ├── metrics.py
 │   │   └── logging.py
 │   │
-│   ├── api/                   # NEW - TopstepX integration (0% implemented)
+│   ├── api/                   # COMPLETED - TopstepX integration (Phase 5)
 │   │   ├── __init__.py
 │   │   ├── topstepx_client.py
 │   │   ├── topstepx_rest.py
@@ -753,15 +758,16 @@ tradingbot2.0/
 │       ├── time_utils.py
 │       └── constants.py
 │
-├── tests/                     # Test suite (PARTIAL - 76 tests)
+├── tests/                     # Test suite (PARTIAL - 360 tests)
 │   ├── __init__.py
 │   ├── conftest.py
 │   ├── test_parquet_loader.py    # 26 tests (Phase 1.1/1.2)
 │   ├── test_scalping_features.py # 50 tests (Phase 1.3)
+│   ├── test_risk_manager.py      # 77 tests (Phase 2)
+│   ├── test_backtest.py          # 84 tests (Phase 3)
+│   ├── test_models.py            # 55 tests (Phase 4.1)
+│   ├── test_topstepx_api.py      # 68 tests (Phase 5)
 │   ├── test_feature_engineering.py
-│   ├── test_risk_manager.py
-│   ├── test_backtest.py
-│   ├── test_models.py
 │   └── integration/
 │       ├── __init__.py
 │       ├── test_backtest_e2e.py
@@ -876,7 +882,7 @@ Before going live with real capital, the system must:
 ## Notes
 
 - The existing `src/ml/` code is a solid foundation but needs significant rework for scalping timeframes
-- **292 tests exist** (26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest + 55 models) - remaining modules need test coverage
+- **360 tests exist** (26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest + 55 models + 68 topstepx_api) - remaining modules need test coverage
 - The 227MB 1-second parquet dataset is the primary asset but isn't being used
 - TopstepX API is for **live trading only** (7-14 day historical limit)
 - DataBento is for historical data (already have 2 years in parquet)
@@ -975,3 +981,12 @@ Before going live with real capital, the system must:
 | 2026-01-16 | Updated training.py for CrossEntropyLoss with class weights |
 | 2026-01-16 | Created `tests/test_models.py` with 55 comprehensive unit tests (all passing) |
 | 2026-01-16 | Total test count now 292 (26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest + 55 models) |
+| 2026-01-16 | **Phase 5 COMPLETED**: Implemented full TopstepX API Integration (`src/api/`) |
+| 2026-01-16 | Created 4 core files: __init__.py, topstepx_client.py, topstepx_rest.py, topstepx_ws.py |
+| 2026-01-16 | Phase 5.1: API client with auth, token refresh, rate limiting, exponential backoff |
+| 2026-01-16 | Phase 5.2: REST endpoints for orders, positions, accounts, historical bars |
+| 2026-01-16 | Phase 5.3: WebSocket market data hub with SignalR, quote subscriptions, auto-reconnect |
+| 2026-01-16 | Phase 5.4: WebSocket trade hub for fills, position updates, account updates |
+| 2026-01-16 | Added 68 comprehensive unit tests in `tests/test_topstepx_api.py` |
+| 2026-01-16 | Added pytest-asyncio and aiohttp dependencies to requirements.txt |
+| 2026-01-16 | Total test count now 360 (292 previous + 68 topstepx_api tests) |
