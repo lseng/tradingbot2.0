@@ -59,11 +59,11 @@
 | Risk Management | `src/risk/` | **P1 - CRITICAL** | **COMPLETED** | risk_manager.py, position_sizing.py, stops.py, eod_manager.py, circuit_breakers.py |
 | Backtesting Engine | `src/backtest/` | **P1 - CRITICAL** | **COMPLETED** | engine.py, costs.py, slippage.py, metrics.py, trade_logger.py |
 | TopstepX API | `src/api/` | P2 - HIGH | **COMPLETED** | __init__.py, topstepx_client.py, topstepx_rest.py, topstepx_ws.py |
-| Live Trading | `src/trading/` | P2 - HIGH | NOT IMPLEMENTED | live_trader.py, signal_generator.py, order_executor.py, position_manager.py, rt_features.py, recovery.py |
+| Live Trading | `src/trading/` | P2 - HIGH | COMPLETED | live_trader.py, signal_generator.py, order_executor.py, position_manager.py, rt_features.py, recovery.py |
 | DataBento Client | `src/data/` | P3 - MEDIUM | NOT IMPLEMENTED | databento_client.py |
 | Shared Utilities | `src/lib/` | P3 - MEDIUM | NOT IMPLEMENTED | config.py, logging.py, time_utils.py |
 | Model Architecture | `src/ml/models/` | P2 - HIGH | **PARTIAL** (4.1 COMPLETED, 4.2-4.4 pending) | 4.1 done: 3-class output, CrossEntropyLoss |
-| Tests | `tests/` | P3 - MEDIUM | **PARTIAL** (360 tests: 26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest + 55 models + 68 topstepx_api) | Remaining test files |
+| Tests | `tests/` | P3 - MEDIUM | **PARTIAL** (437 tests: 26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest + 55 models + 68 topstepx_api + 77 trading) | Remaining test files |
 
 ### Critical Bug Summary
 
@@ -453,65 +453,65 @@ Per spec, consider attention-based model for sequence patterns:
 
 ## Phase 6: HIGH - Live Trading System (Week 6-7)
 
-**Status**: ENTIRE MODULE NOT IMPLEMENTED
-**Directory**: `src/trading/` (NEW - directory does not exist)
+**Status**: COMPLETED (2026-01-16)
+**Directory**: `src/trading/`
 **Spec**: `specs/live-trading-execution.md`
 
 ### 6.1 Main Trading Loop
 **File**: `src/trading/live_trader.py` (NEW)
 
 **Startup Sequence**:
-- [ ] Load configuration from YAML + env vars
-- [ ] Load ML model from checkpoint (e.g., `models/scalper_v1.pt`)
-- [ ] Initialize risk manager with current account state
-- [ ] Connect to TopstepX API and authenticate
-- [ ] Subscribe to market data WebSocket
-- [ ] Sync existing positions from API (API is source of truth)
-- [ ] Begin trading loop
+- [x] Load configuration from YAML + env vars
+- [x] Load ML model from checkpoint (e.g., `models/scalper_v1.pt`)
+- [x] Initialize risk manager with current account state
+- [x] Connect to TopstepX API and authenticate
+- [x] Subscribe to market data WebSocket
+- [x] Sync existing positions from API (API is source of truth)
+- [x] Begin trading loop
 
 **Main Loop (per bar)**:
-- [ ] Receive bar from WebSocket aggregator
-- [ ] Update feature buffer (circular buffer)
-- [ ] Run model inference (< 10ms)
-- [ ] Generate signal from prediction
-- [ ] Risk manager check (limits, EOD, circuit breakers)
-- [ ] Execute if approved
-- [ ] Log state to file and console
+- [x] Receive bar from WebSocket aggregator
+- [x] Update feature buffer (circular buffer)
+- [x] Run model inference (< 10ms)
+- [x] Generate signal from prediction
+- [x] Risk manager check (limits, EOD, circuit breakers)
+- [x] Execute if approved
+- [x] Log state to file and console
 
 **Shutdown Sequence**:
-- [ ] Cancel all pending orders
-- [ ] Flatten all positions (market orders)
-- [ ] Disconnect from WebSocket
-- [ ] Save session state to disk
-- [ ] Generate session report (trades, P&L, metrics)
+- [x] Cancel all pending orders
+- [x] Flatten all positions (market orders)
+- [x] Disconnect from WebSocket
+- [x] Save session state to disk
+- [x] Generate session report (trades, P&L, metrics)
 
 ### 6.2 Signal Generator
 **File**: `src/trading/signal_generator.py` (NEW)
 
 Signal types:
-- [ ] LONG_ENTRY, SHORT_ENTRY
-- [ ] EXIT_LONG, EXIT_SHORT
-- [ ] REVERSE_TO_LONG, REVERSE_TO_SHORT
-- [ ] FLATTEN (EOD or risk limit)
-- [ ] HOLD (no action)
+- [x] LONG_ENTRY, SHORT_ENTRY
+- [x] EXIT_LONG, EXIT_SHORT
+- [x] REVERSE_TO_LONG, REVERSE_TO_SHORT
+- [x] FLATTEN (EOD or risk limit)
+- [x] HOLD (no action)
 
 Logic:
-- [ ] Confidence threshold check (min 60%)
-- [ ] Risk manager integration (check limits before signal)
-- [ ] Position-aware (no duplicate entries, handle reversals)
-- [ ] Cooldown after exits (configurable seconds)
+- [x] Confidence threshold check (min 60%)
+- [x] Risk manager integration (check limits before signal)
+- [x] Position-aware (no duplicate entries, handle reversals)
+- [x] Cooldown after exits (configurable seconds)
 
 ### 6.3 Order Executor
 **File**: `src/trading/order_executor.py` (NEW)
 
-- [ ] Place entry order (market for speed, limit for price)
-- [ ] Wait for fill confirmation (timeout handling)
-- [ ] Place stop loss order immediately after entry fill
-- [ ] Place take profit order
-- [ ] Manual OCO management (API doesn't support bracket natively)
-- [ ] Track all open orders by ID
-- [ ] Cancel orphaned orders on exit/flatten
-- [ ] Handle partial fills (adjust stop/target quantities)
+- [x] Place entry order (market for speed, limit for price)
+- [x] Wait for fill confirmation (timeout handling)
+- [x] Place stop loss order immediately after entry fill
+- [x] Place take profit order
+- [x] Manual OCO management (API doesn't support bracket natively)
+- [x] Track all open orders by ID
+- [x] Cancel orphaned orders on exit/flatten
+- [x] Handle partial fills (adjust stop/target quantities)
 
 ### 6.4 Position Manager
 **File**: `src/trading/position_manager.py` (NEW)
@@ -532,30 +532,30 @@ class Position:
     realized_pnl: float  # if partially closed
 ```
 
-- [ ] Track open position state locally
-- [ ] Calculate unrealized P&L in real-time (tick-by-tick)
-- [ ] Sync with API on reconnect (API is source of truth)
-- [ ] Position change notifications/callbacks
+- [x] Track open position state locally
+- [x] Calculate unrealized P&L in real-time (tick-by-tick)
+- [x] Sync with API on reconnect (API is source of truth)
+- [x] Position change notifications/callbacks
 
 ### 6.5 Real-Time Feature Engine
 **File**: `src/trading/rt_features.py` (NEW)
 
-- [ ] Aggregate incoming ticks to 1-second OHLCV bars
-- [ ] Maintain rolling feature windows (EMA, RSI, VWAP, etc.)
-- [ ] Calculate features in < 5ms (budget for 10ms total inference)
-- [ ] Memory-efficient circular buffers (collections.deque or numpy)
-- [ ] Feature caching (avoid redundant calculations)
+- [x] Aggregate incoming ticks to 1-second OHLCV bars
+- [x] Maintain rolling feature windows (EMA, RSI, VWAP, etc.)
+- [x] Calculate features in < 5ms (budget for 10ms total inference)
+- [x] Memory-efficient circular buffers (collections.deque or numpy)
+- [x] Feature caching (avoid redundant calculations)
 
 ### 6.6 Error Handling & Recovery
 **File**: `src/trading/recovery.py` (NEW)
 
-- [ ] WebSocket disconnect -> auto-reconnect with backoff
-- [ ] Position mismatch -> sync from API (API wins, log discrepancy)
-- [ ] Order rejection -> log reason, don't retry same order
-- [ ] Insufficient margin -> reduce size, retry once
-- [ ] Rate limited -> wait required time, retry
-- [ ] Auth failure -> re-authenticate, alert if fails twice
-- [ ] Unhandled exception -> flatten positions, halt, alert
+- [x] WebSocket disconnect -> auto-reconnect with backoff
+- [x] Position mismatch -> sync from API (API wins, log discrepancy)
+- [x] Order rejection -> log reason, don't retry same order
+- [x] Insufficient margin -> reduce size, retry once
+- [x] Rate limited -> wait required time, retry
+- [x] Auth failure -> re-authenticate, alert if fails twice
+- [x] Unhandled exception -> flatten positions, halt, alert
 
 ### 6.7 Live Trading Performance Requirements
 **Spec Reference**: `specs/live-trading-execution.md` (Performance section)
@@ -609,7 +609,7 @@ class Position:
 
 ## Phase 8: MEDIUM - Testing (Ongoing)
 
-**Status**: PARTIAL - tests/ directory created with 360 unit tests (26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest + 55 models + 68 topstepx_api)
+**Status**: PARTIAL - tests/ directory created with 437 unit tests (26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest + 55 models + 68 topstepx_api + 77 trading)
 **Directory**: `tests/`
 
 ### 8.1 Unit Tests
@@ -620,6 +620,7 @@ class Position:
 - [x] `tests/test_backtest.py` - cost model, slippage, order fill logic, metrics, trade logging (84 tests, all passing)
 - [x] `tests/test_models.py` - model forward pass, output shape, 3-class output, ModelPrediction (55 tests, all passing)
 - [x] `tests/test_topstepx_api.py` - TopstepX API client, REST endpoints, WebSocket market/trade hubs (68 tests, all passing)
+- [x] `tests/test_trading.py` - Live trading system, position manager, signal generator, order executor, real-time features, recovery (77 tests, all passing)
 - [ ] `tests/test_feature_engineering.py` - feature calculations, no NaN leakage, no lookahead
 - [ ] `tests/test_signal_generator.py` - signal logic, confidence thresholds
 - [ ] `tests/conftest.py` - pytest fixtures, sample data
@@ -990,3 +991,13 @@ Before going live with real capital, the system must:
 | 2026-01-16 | Added 68 comprehensive unit tests in `tests/test_topstepx_api.py` |
 | 2026-01-16 | Added pytest-asyncio and aiohttp dependencies to requirements.txt |
 | 2026-01-16 | Total test count now 360 (292 previous + 68 topstepx_api tests) |
+| 2026-01-16 | **Phase 6 COMPLETED**: Implemented full Live Trading System (`src/trading/`) |
+| 2026-01-16 | Created 7 core files: __init__.py, position_manager.py, signal_generator.py, order_executor.py, rt_features.py, recovery.py, live_trader.py |
+| 2026-01-16 | Phase 6.1: Main trading loop with startup/shutdown sequences, EOD flatten |
+| 2026-01-16 | Phase 6.2: Signal generator with confidence thresholds, reversals, cooldowns |
+| 2026-01-16 | Phase 6.3: Order executor with entry/stop/target orders, OCO management |
+| 2026-01-16 | Phase 6.4: Position manager with P\&L tracking, API sync |
+| 2026-01-16 | Phase 6.5: Real-time feature engine with bar aggregation, incremental EMAs/VWAP |
+| 2026-01-16 | Phase 6.6: Recovery handler with exponential backoff, error categorization |
+| 2026-01-16 | Added 77 comprehensive unit tests in `tests/test_trading.py` |
+| 2026-01-16 | Total test count now 437 (360 previous + 77 trading tests) |
