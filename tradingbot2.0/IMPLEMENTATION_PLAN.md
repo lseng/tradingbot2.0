@@ -903,11 +903,11 @@ Before going live with real capital, the system must:
 4. [x] EOD flatten works 100% of the time (verified across DST boundaries) - **VERIFIED with DST tests**
 5. [ ] Inference latency < 10ms (measured on target hardware)
 6. [x] No lookahead bias in features or targets (temporal unit tests pass) - **VERIFIED with 29 comprehensive tests**
-7. [x] Unit test coverage > 80% - **ACHIEVED (83% coverage, 1671 tests)**
+7. [x] Unit test coverage > 80% - **ACHIEVED (85% coverage, 1741 tests)**
 8. [ ] Paper trading for minimum 2 weeks without critical errors
 9. [ ] Position sizing matches spec for all account balance tiers
-10. [ ] Circuit breakers tested and working (simulated loss scenarios)
-11. [ ] API reconnection works (tested with network interruption)
+10. [x] Circuit breakers tested and working (simulated loss scenarios) - **VERIFIED with 40 comprehensive tests**
+11. [x] API reconnection works (tested with network interruption) - **VERIFIED with 30 comprehensive tests**
 12. [x] Manual kill switch accessible and tested - **IMPLEMENTED and TESTED (halt/reset_halt methods)**
 
 ---
@@ -915,7 +915,7 @@ Before going live with real capital, the system must:
 ## Notes
 
 - The existing `src/ml/` code is a solid foundation but needs significant rework for scalping timeframes
-- **1671 tests exist** with 85% coverage - comprehensive test suite covering all major modules
+- **1741 tests exist** with 85% coverage - comprehensive test suite covering all major modules
 - The 227MB 1-second parquet dataset is the primary asset but isn't being used
 - TopstepX API is for **live trading only** (7-14 day historical limit)
 - DataBento is for historical data (already have 2 years in parquet)
@@ -1158,3 +1158,25 @@ Before going live with real capital, the system must:
 | 2026-01-16 | Created TestGoLiveTestCoverage class with 6 tests validating coverage measurement |
 | 2026-01-16 | Total test count increased from 1656 to 1671 (15 new tests) |
 | 2026-01-16 | All Go-Live checklist items now have validation tests except #8 (paper trading - operational) |
+| 2026-01-16 | **Go-Live #10 COMPLETED**: Added comprehensive circuit breaker tests |
+| 2026-01-16 | Created `tests/test_circuit_breakers_comprehensive.py` with 40 tests: |
+| 2026-01-16 | - Multiple simultaneous breakers activation |
+| 2026-01-16 | - Boundary condition tests (threshold edge cases) |
+| 2026-01-16 | - Pause/Halt priority conflicts |
+| 2026-01-16 | - Thread safety under concurrency |
+| 2026-01-16 | - EOD + Circuit Breaker interaction |
+| 2026-01-16 | - State transitions and recovery |
+| 2026-01-16 | - Edge cases (None values, negative ATR, etc.) |
+| 2026-01-16 | **Go-Live #11 COMPLETED**: Added comprehensive API reconnection tests |
+| 2026-01-16 | Created `tests/test_api_reconnection_comprehensive.py` with 30 tests: |
+| 2026-01-16 | - Subscription recovery after reconnect |
+| 2026-01-16 | - State consistency after reconnection |
+| 2026-01-16 | - Cascade failures (market + trade connections) |
+| 2026-01-16 | - Operation buffering during disconnection |
+| 2026-01-16 | - Callback resilience |
+| 2026-01-16 | - Connection stability (rapid connect/disconnect) |
+| 2026-01-16 | - Graceful shutdown during reconnection |
+| 2026-01-16 | - Position synchronization after reconnect |
+| 2026-01-16 | - Error rate monitoring |
+| 2026-01-16 | - Recovery handler integration |
+| 2026-01-16 | Total test count increased from 1671 to 1741 (70 new tests) |
