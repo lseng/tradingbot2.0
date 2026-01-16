@@ -609,7 +609,8 @@ class Position:
 
 ## Phase 8: MEDIUM - Testing (Ongoing)
 
-**Status**: PARTIAL - tests/ directory created with 470 unit tests (26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest + 55 models + 68 topstepx_api + 77 trading + 33 inference_benchmark)
+**Status**: PARTIAL - tests/ directory created with 760 unit tests
+**Test Coverage**: 73% (target: >80%)
 **Directory**: `tests/`
 
 ### 8.1 Unit Tests
@@ -621,9 +622,14 @@ class Position:
 - [x] `tests/test_models.py` - model forward pass, output shape, 3-class output, ModelPrediction (55 tests, all passing)
 - [x] `tests/test_topstepx_api.py` - TopstepX API client, REST endpoints, WebSocket market/trade hubs (68 tests, all passing)
 - [x] `tests/test_trading.py` - Live trading system, position manager, signal generator, order executor, real-time features, recovery (77 tests, all passing)
-- [ ] `tests/test_feature_engineering.py` - feature calculations, no NaN leakage, no lookahead
-- [ ] `tests/test_signal_generator.py` - signal logic, confidence thresholds
-- [ ] `tests/conftest.py` - pytest fixtures, sample data
+- [x] `tests/test_data_loader.py` - FuturesDataLoader, CSV/TXT loading, data validation, train/test split (37 tests, coverage 19% → 84%)
+- [x] `tests/test_feature_engineering.py` - feature calculations, returns, moving averages, volatility, momentum (40 tests, coverage 12% → 90%)
+- [x] `tests/test_training.py` - SequenceDataset, ModelTrainer, WalkForwardValidator, class weights (39 tests, coverage 12% → 81%)
+- [x] `tests/test_live_trader_unit.py` - TradingConfig, SessionMetrics, LiveTrader init, callbacks, inference (37 tests, coverage 24% → 47%)
+- [x] `tests/test_order_executor_unit.py` - ExecutionStatus, EntryResult, ExecutorConfig, signal dispatch (33 tests, coverage 25% → 39%)
+- [x] `tests/test_topstepx_ws_unit.py` - Quote, OrderFill, PositionUpdate, AccountUpdate, SignalR, WebSocket (66 tests, coverage 37% → 42%)
+- [x] `tests/test_evaluation.py` - ClassificationMetrics, TradingMetrics, TradingSimulator, backtesting (38 tests, coverage 0% → 54%)
+- [x] `tests/conftest.py` - pytest fixtures (sample data, mock clients, position manager) - COMPLETED
 
 ### 8.2 Integration Tests
 **Directory**: `tests/integration/` (NEW)
@@ -637,7 +643,8 @@ class Position:
 ### 8.3 Test Configuration
 
 - [x] `pytest.ini` or `pyproject.toml` pytest config - COMPLETED (pytest.ini created with asyncio_mode=auto, strict markers, test discovery)
-- [ ] Test coverage target: > 80%
+- [x] Test coverage: 73% (760 tests passing, improved from 62% → 73%)
+- [ ] Test coverage target: > 80% (need ~7% more coverage)
 - [ ] CI/CD integration (GitHub Actions)
 
 ---
@@ -1016,3 +1023,14 @@ Before going live with real capital, the system must:
 | 2026-01-16 | Run_backtest.py features: ML model inference, random baseline testing, walk-forward validation, result export |
 | 2026-01-16 | Run_live.py features: Paper/live mode, auto contract detection, risk parameter configuration, graceful shutdown |
 | 2026-01-16 | All 470 tests continue to pass |
+| 2026-01-16 | **Phase 8.1 EXPANDED**: Test coverage improved from 62% to 73% (760 tests total) |
+| 2026-01-16 | Added `tests/test_data_loader.py` - 37 tests for FuturesDataLoader (coverage 19% → 84%) |
+| 2026-01-16 | Added `tests/test_feature_engineering.py` - 40 tests for FeatureEngineer (coverage 12% → 90%) |
+| 2026-01-16 | Added `tests/test_training.py` - 39 tests for training pipeline (coverage 12% → 81%) |
+| 2026-01-16 | Added `tests/test_live_trader_unit.py` - 37 tests for LiveTrader (coverage 24% → 47%) |
+| 2026-01-16 | Added `tests/test_order_executor_unit.py` - 33 tests for OrderExecutor (coverage 25% → 39%) |
+| 2026-01-16 | Added `tests/test_topstepx_ws_unit.py` - 66 tests for WebSocket module (coverage 37% → 42%) |
+| 2026-01-16 | Added `tests/test_evaluation.py` - 38 tests for evaluation module (coverage 0% → 54%) |
+| 2026-01-16 | Enhanced `tests/conftest.py` with comprehensive fixtures for mocking |
+| 2026-01-16 | Fixed PyTorch compatibility: Removed deprecated `verbose` parameter from ReduceLROnPlateau |
+| 2026-01-16 | Created git tag v0.0.10 for test coverage milestone |
