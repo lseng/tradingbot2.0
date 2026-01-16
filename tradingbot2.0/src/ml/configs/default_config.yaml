@@ -1,0 +1,101 @@
+# Default Configuration for Futures ML Model
+# ============================================
+# Copy this file and modify for your experiments
+
+# Data Configuration
+data:
+  path: "/Users/leoneng/Downloads/MES_full_1min_continuous_UNadjusted.txt"
+  train_ratio: 0.8
+  # Session times for futures (CME)
+  session_start: "18:00"
+  session_end: "17:00"
+
+# Feature Engineering
+features:
+  # Return lookback periods
+  return_periods: [1, 5, 10, 21]
+
+  # Moving average periods
+  sma_periods: [5, 10, 20, 50]
+  ema_periods: [5, 10, 20]
+
+  # Volatility
+  atr_period: 14
+  bollinger_period: 20
+  bollinger_std: 2.0
+  volatility_windows: [5, 10, 21]
+
+  # Momentum
+  rsi_period: 14
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  stoch_period: 14
+
+  # Volume
+  volume_ma_periods: [5, 10, 20]
+
+  # Include time features
+  include_time_features: true
+
+# Model Configuration
+model:
+  # Options: 'feedforward', 'lstm', 'hybrid'
+  type: feedforward
+
+  # Feed-Forward Network settings
+  feedforward:
+    hidden_dims: [128, 64, 32]
+    dropout_rate: 0.3
+    use_batch_norm: true
+
+  # LSTM settings
+  lstm:
+    hidden_dim: 64
+    num_layers: 2
+    dropout_rate: 0.3
+    bidirectional: false
+    fc_dims: [32]
+    seq_length: 20
+
+# Training Configuration
+training:
+  epochs: 100
+  batch_size: 32
+  learning_rate: 0.001
+  weight_decay: 0.01  # L2 regularization
+
+  # Early stopping
+  early_stopping_patience: 15
+  min_delta: 0.001
+
+  # Learning rate scheduler
+  lr_scheduler_patience: 5
+  lr_scheduler_factor: 0.5
+
+  # Gradient clipping
+  max_grad_norm: 1.0
+
+# Walk-Forward Validation
+walk_forward:
+  n_splits: 5
+  expanding: true  # true = expanding window, false = rolling window
+
+# Trading Strategy Simulation
+strategy:
+  initial_capital: 100000
+  position_size: 0.02  # 2% of capital per trade
+  commission: 5.0  # Fixed commission per trade
+  slippage: 0.0001  # 1 basis point
+  long_threshold: 0.55  # Go long if P(up) > this
+  short_threshold: 0.45  # Go short if P(up) < this
+
+# Output
+output:
+  dir: "./results"
+  save_model: true
+  save_plots: true
+  log_level: INFO
+
+# Reproducibility
+seed: 42

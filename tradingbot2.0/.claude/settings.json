@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [[ \"$CLAUDE_FILE_PATH\" == *.py ]]; then ruff check \"$CLAUDE_FILE_PATH\" --fix --silent 2>/dev/null || true; fi"
+          }
+        ]
+      }
+    ],
+    "PreCommit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruff check src/ml/ --silent 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}
