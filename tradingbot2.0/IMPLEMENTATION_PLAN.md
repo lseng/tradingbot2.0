@@ -1,7 +1,7 @@
 # Implementation Plan - MES Futures Scalping Bot
 
 > Last Updated: 2026-01-15
-> Status: ACTIVE - Phase 1 (Data Pipeline)
+> Status: ACTIVE - Phase 3 (Backtesting Engine)
 > Verified: All findings confirmed via codebase analysis
 
 ---
@@ -56,13 +56,13 @@
 
 | Module | Directory | Priority | Status | Files Needed |
 |--------|-----------|----------|--------|--------------|
-| Risk Management | `src/risk/` | **P1 - CRITICAL** | NOT IMPLEMENTED | risk_manager.py, position_sizing.py, stops.py, eod_manager.py, circuit_breakers.py |
+| Risk Management | `src/risk/` | **P1 - CRITICAL** | **COMPLETED** | risk_manager.py, position_sizing.py, stops.py, eod_manager.py, circuit_breakers.py |
 | Backtesting Engine | `src/backtest/` | **P1 - CRITICAL** | NOT IMPLEMENTED | engine.py, costs.py, slippage.py, metrics.py, logging.py |
 | TopstepX API | `src/api/` | P2 - HIGH | NOT IMPLEMENTED | topstepx_client.py, topstepx_rest.py, topstepx_ws.py |
 | Live Trading | `src/trading/` | P2 - HIGH | NOT IMPLEMENTED | live_trader.py, signal_generator.py, order_executor.py, position_manager.py, rt_features.py, recovery.py |
 | DataBento Client | `src/data/` | P3 - MEDIUM | NOT IMPLEMENTED | databento_client.py |
 | Shared Utilities | `src/lib/` | P3 - MEDIUM | NOT IMPLEMENTED | config.py, logging.py, time_utils.py |
-| Tests | `tests/` | P3 - MEDIUM | **PARTIAL** (26 tests for parquet_loader) | Remaining test files |
+| Tests | `tests/` | P3 - MEDIUM | **PARTIAL** (153 tests: 26 parquet_loader + 50 scalping_features + 77 risk_manager) | Remaining test files |
 
 ### Critical Bug Summary
 
@@ -160,28 +160,30 @@ Implemented `ScalpingFeatureEngineer` class with all required features:
 
 ## Phase 2: CRITICAL - Risk Management Module (Week 2-3)
 
-**Status**: ENTIRE MODULE NOT IMPLEMENTED
-**Directory**: `src/risk/` (NEW - directory does not exist)
+**Status**: COMPLETED (2026-01-15)
+**Directory**: `src/risk/`
 **Spec**: `specs/risk-management.md`
 
 ### 2.1 Core Risk Manager
-**File**: `src/risk/risk_manager.py` (NEW)
+**Status**: COMPLETED (2026-01-15)
+**File**: `src/risk/risk_manager.py`
 
 Per spec, this is NON-NEGOTIABLE for $1,000 account:
-- [ ] Daily loss limit: $50 (5% of $1,000) -> stop trading
-- [ ] Daily drawdown limit: $75 (7.5%) -> stop trading
-- [ ] Per-trade max risk: $25 (2.5%)
-- [ ] Max consecutive losses: 5 -> 30-min pause
-- [ ] Kill switch: $300 cumulative loss -> halt permanently
-- [ ] Minimum account balance: $700 -> cannot trade below this
-- [ ] Account drawdown $200 (20%) -> stop, manual review required
-- [ ] Thread-safe state tracking (async-compatible)
+- [x] Daily loss limit: $50 (5% of $1,000) -> stop trading
+- [x] Daily drawdown limit: $75 (7.5%) -> stop trading
+- [x] Per-trade max risk: $25 (2.5%)
+- [x] Max consecutive losses: 5 -> 30-min pause
+- [x] Kill switch: $300 cumulative loss -> halt permanently
+- [x] Minimum account balance: $700 -> cannot trade below this
+- [x] Account drawdown $200 (20%) -> stop, manual review required
+- [x] Thread-safe state tracking (async-compatible)
 
 ### 2.2 Position Sizing
-**File**: `src/risk/position_sizing.py` (NEW)
+**Status**: COMPLETED (2026-01-15)
+**File**: `src/risk/position_sizing.py`
 
-- [ ] Calculate position size from: account balance, risk %, stop distance, tick value
-- [ ] Scaling rules by account balance tier:
+- [x] Calculate position size from: account balance, risk %, stop distance, tick value
+- [x] Scaling rules by account balance tier:
 
 | Balance | Max Contracts | Risk % |
 |---------|---------------|--------|
@@ -191,7 +193,7 @@ Per spec, this is NON-NEGOTIABLE for $1,000 account:
 | $2,000-$3,000 | 4 | 2% |
 | $3,000+ | 5+ | 1.5% |
 
-- [ ] Confidence-based multipliers:
+- [x] Confidence-based multipliers:
 
 | Confidence | Multiplier |
 |------------|------------|
@@ -202,36 +204,39 @@ Per spec, this is NON-NEGOTIABLE for $1,000 account:
 | > 90% | 2.0x (capped) |
 
 ### 2.3 Stop Loss Strategy
-**File**: `src/risk/stops.py` (NEW)
+**Status**: COMPLETED (2026-01-15)
+**File**: `src/risk/stops.py`
 
-- [ ] ATR-based stops (recommended): Stop = Entry +/- (ATR x 1.5 multiplier)
-- [ ] Fixed tick stops (e.g., 8 ticks = $10 risk per contract)
-- [ ] Structure-based stops (swing high/low)
-- [ ] Trailing stop logic (move stop to breakeven after X profit)
-- [ ] EOD tightening rules (tighter stops near market close)
+- [x] ATR-based stops (recommended): Stop = Entry +/- (ATR x 1.5 multiplier)
+- [x] Fixed tick stops (e.g., 8 ticks = $10 risk per contract)
+- [x] Structure-based stops (swing high/low)
+- [x] Trailing stop logic (move stop to breakeven after X profit)
+- [x] EOD tightening rules (tighter stops near market close)
 
 ### 2.4 EOD Flatten Logic
-**File**: `src/risk/eod_manager.py` (NEW)
+**Status**: COMPLETED (2026-01-15)
+**File**: `src/risk/eod_manager.py`
 
 **HARD REQUIREMENT**: All positions must be flat by 4:30 PM NY
-- [ ] 4:00 PM NY: Reduce position sizing by 50%
-- [ ] 4:15 PM NY: No new positions, close existing only
-- [ ] 4:25 PM NY: Begin market order exits (aggressive)
-- [ ] 4:30 PM NY: MUST be flat (no exceptions)
-- [ ] Timezone-aware datetime handling (pytz or zoneinfo)
+- [x] 4:00 PM NY: Reduce position sizing by 50%
+- [x] 4:15 PM NY: No new positions, close existing only
+- [x] 4:25 PM NY: Begin market order exits (aggressive)
+- [x] 4:30 PM NY: MUST be flat (no exceptions)
+- [x] Timezone-aware datetime handling (pytz or zoneinfo)
 
 ### 2.5 Circuit Breakers
-**File**: `src/risk/circuit_breakers.py` (NEW)
+**Status**: COMPLETED (2026-01-15)
+**File**: `src/risk/circuit_breakers.py`
 
-- [ ] 3 consecutive losses -> 15-min pause (auto-resume)
-- [ ] 5 consecutive losses -> 30-min pause (auto-resume)
-- [ ] Daily loss limit hit -> stop for day (resume next day 9:30 AM)
-- [ ] Max drawdown hit -> indefinite pause (manual review required)
-- [ ] Volatility > 3x normal ATR -> reduce size 50% or pause
-- [ ] Spread widening > 2 ticks ($2.50) -> pause until spread <= 1 tick
-- [ ] Low volume (< 10% of avg) -> reduce size or pause
+- [x] 3 consecutive losses -> 15-min pause (auto-resume)
+- [x] 5 consecutive losses -> 30-min pause (auto-resume)
+- [x] Daily loss limit hit -> stop for day (resume next day 9:30 AM)
+- [x] Max drawdown hit -> indefinite pause (manual review required)
+- [x] Volatility > 3x normal ATR -> reduce size 50% or pause
+- [x] Spread widening > 2 ticks ($2.50) -> pause until spread <= 1 tick
+- [x] Low volume (< 10% of avg) -> reduce size or pause
 
-**Acceptance Criteria** (Circuit Breakers):
+**Acceptance Criteria** (Circuit Breakers - ALL MET):
 - All triggers tested in simulation with synthetic loss sequences
 - Pause timers accurate to within 1 second
 - State persists across bot restarts (daily loss tracked in file/DB)
@@ -597,15 +602,15 @@ class Position:
 
 ## Phase 8: MEDIUM - Testing (Ongoing)
 
-**Status**: PARTIAL - tests/ directory created with 76 unit tests (26 for parquet_loader, 50 for scalping_features)
+**Status**: PARTIAL - tests/ directory created with 153 unit tests (26 parquet_loader + 50 scalping_features + 77 risk_manager)
 **Directory**: `tests/`
 
 ### 8.1 Unit Tests
 
 - [x] `tests/test_parquet_loader.py` - parquet loading, session filtering, timezone handling (26 tests, all passing)
 - [x] `tests/test_scalping_features.py` - scalping feature engineering for 1-second data (50 tests, all passing)
+- [x] `tests/test_risk_manager.py` - all risk limits, position sizing, EOD flatten, circuit breakers (77 tests, all passing)
 - [ ] `tests/test_feature_engineering.py` - feature calculations, no NaN leakage, no lookahead
-- [ ] `tests/test_risk_manager.py` - all risk limits, position sizing, EOD flatten
 - [ ] `tests/test_backtest.py` - cost model, slippage, order fill logic
 - [ ] `tests/test_models.py` - model forward pass, output shape, 3-class output
 - [ ] `tests/test_signal_generator.py` - signal logic, confidence thresholds
@@ -868,7 +873,7 @@ Before going live with real capital, the system must:
 ## Notes
 
 - The existing `src/ml/` code is a solid foundation but needs significant rework for scalping timeframes
-- **76 tests exist** (26 for parquet_loader, 50 for scalping_features) - remaining modules need test coverage
+- **153 tests exist** (26 parquet_loader + 50 scalping_features + 77 risk_manager) - remaining modules need test coverage
 - The 227MB 1-second parquet dataset is the primary asset but isn't being used
 - TopstepX API is for **live trading only** (7-14 day historical limit)
 - DataBento is for historical data (already have 2 years in parquet)
@@ -947,3 +952,7 @@ Before going live with real capital, the system must:
 | 2026-01-15 | All features normalized for neural network input, lagged to prevent lookahead bias |
 | 2026-01-15 | **Tests ADDED**: Created `tests/test_scalping_features.py` with 50 comprehensive unit tests (all passing) |
 | 2026-01-15 | Total test count now 76 (26 parquet_loader + 50 scalping_features) |
+| 2026-01-15 | **Phase 2 COMPLETED**: Implemented full Risk Management Module (`src/risk/`) |
+| 2026-01-15 | Created 5 core files: risk_manager.py, position_sizing.py, stops.py, eod_manager.py, circuit_breakers.py |
+| 2026-01-15 | Added 77 comprehensive unit tests in `tests/test_risk_manager.py` |
+| 2026-01-15 | Total test count now 153 (26 parquet_loader + 50 scalping_features + 77 risk_manager) |
