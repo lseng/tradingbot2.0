@@ -36,7 +36,7 @@ python scripts/run_live.py --capital 2000 --max-daily-loss 100 --min-confidence 
 
 Run these after implementing to get immediate feedback:
 
-- Tests: `pytest tests/` (470 tests)
+- Tests: `pytest tests/` (858 tests)
 - Typecheck: `mypy src/ml/`
 - Lint: `ruff check src/ml/`
 
@@ -73,7 +73,7 @@ src/
 scripts/
 ├── run_backtest.py        # Backtest entry point
 └── run_live.py            # Live trading entry point
-tests/                     # 470 unit tests
+tests/                     # 858 tests (unit + integration)
 ```
 
 ### Codebase Patterns

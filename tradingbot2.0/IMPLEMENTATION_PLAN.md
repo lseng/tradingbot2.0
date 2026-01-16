@@ -609,8 +609,8 @@ class Position:
 
 ## Phase 8: MEDIUM - Testing (Ongoing)
 
-**Status**: PARTIAL - tests/ directory created with 760 unit tests
-**Test Coverage**: 73% (target: >80%)
+**Status**: PARTIAL - tests/ directory created with 858 unit tests
+**Test Coverage**: 74% (target: >80%)
 **Directory**: `tests/`
 
 ### 8.1 Unit Tests
@@ -629,13 +629,15 @@ class Position:
 - [x] `tests/test_order_executor_unit.py` - ExecutionStatus, EntryResult, ExecutorConfig, signal dispatch (33 tests, coverage 25% → 39%)
 - [x] `tests/test_topstepx_ws_unit.py` - Quote, OrderFill, PositionUpdate, AccountUpdate, SignalR, WebSocket (66 tests, coverage 37% → 42%)
 - [x] `tests/test_evaluation.py` - ClassificationMetrics, TradingMetrics, TradingSimulator, backtesting (38 tests, coverage 0% → 54%)
+- [x] `tests/test_train_futures_model.py` - CLI argument parsing, seed setting, config building (39 tests, all passing)
 - [x] `tests/conftest.py` - pytest fixtures (sample data, mock clients, position manager) - COMPLETED
 
 ### 8.2 Integration Tests
+**Status**: PARTIAL
 **Directory**: `tests/integration/` (NEW)
 
-- [ ] End-to-end backtest run on sample data (100 trades minimum)
-- [ ] API mock tests (httpx mock or responses library)
+- [x] `tests/integration/test_backtest_e2e.py` - E2E backtest validation, walk-forward, risk limits, EOD flatten (23 tests, all passing)
+- [x] `tests/integration/test_api_mock.py` - TopstepX API mocking, rate limiting, error handling (36 tests, all passing)
 - [ ] Walk-forward validation produces expected fold count
 - [ ] Risk limits properly halt trading in simulation
 - [ ] EOD flatten fires at correct time
@@ -643,8 +645,8 @@ class Position:
 ### 8.3 Test Configuration
 
 - [x] `pytest.ini` or `pyproject.toml` pytest config - COMPLETED (pytest.ini created with asyncio_mode=auto, strict markers, test discovery)
-- [x] Test coverage: 73% (760 tests passing, improved from 62% → 73%)
-- [ ] Test coverage target: > 80% (need ~7% more coverage)
+- [x] Test coverage: 74% (858 tests passing, improved from 62% → 74%)
+- [ ] Test coverage target: > 80% (need ~6% more coverage)
 - [ ] CI/CD integration (GitHub Actions)
 
 ---
@@ -1034,3 +1036,9 @@ Before going live with real capital, the system must:
 | 2026-01-16 | Enhanced `tests/conftest.py` with comprehensive fixtures for mocking |
 | 2026-01-16 | Fixed PyTorch compatibility: Removed deprecated `verbose` parameter from ReduceLROnPlateau |
 | 2026-01-16 | Created git tag v0.0.10 for test coverage milestone |
+| 2026-01-16 | **Phase 8.2 PARTIAL**: Created tests/integration/ directory with E2E tests |
+| 2026-01-16 | Added `tests/integration/test_backtest_e2e.py` - 23 E2E backtest tests |
+| 2026-01-16 | Added `tests/integration/test_api_mock.py` - 36 API mock tests |
+| 2026-01-16 | Added `tests/test_train_futures_model.py` - 39 tests for CLI script |
+| 2026-01-16 | Test count increased from 760 to 858 tests (98 new tests) |
+| 2026-01-16 | Test coverage improved from 73% to 74% |
