@@ -61,7 +61,7 @@
 | TopstepX API | `src/api/` | P2 - HIGH | **COMPLETED** | __init__.py, topstepx_client.py, topstepx_rest.py, topstepx_ws.py |
 | Live Trading | `src/trading/` | P2 - HIGH | COMPLETED | live_trader.py, signal_generator.py, order_executor.py, position_manager.py, rt_features.py, recovery.py |
 | DataBento Client | `src/data/` | P3 - MEDIUM | NOT IMPLEMENTED | databento_client.py |
-| Shared Utilities | `src/lib/` | P3 - MEDIUM | NOT IMPLEMENTED | config.py, logging.py, time_utils.py |
+| Shared Utilities | `src/lib/` | P3 - MEDIUM | **COMPLETED** | config.py, logging_utils.py, time_utils.py, constants.py |
 | Model Architecture | `src/ml/models/` | P2 - HIGH | **PARTIAL** (4.1 COMPLETED, 4.2-4.4 pending) | 4.1 done: 3-class output, CrossEntropyLoss |
 | Tests | `tests/` | P3 - MEDIUM | **PARTIAL** (437 tests: 26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest + 55 models + 68 topstepx_api + 77 trading) | Remaining test files |
 
@@ -609,7 +609,7 @@ class Position:
 
 ## Phase 8: MEDIUM - Testing (Ongoing)
 
-**Status**: COMPLETED - tests/ directory created with 1235 unit tests
+**Status**: COMPLETED - tests/ directory created with 1305 unit tests
 **Test Coverage**: 85% (target: >80%) ✓ ACHIEVED
 **Directory**: `tests/`
 
@@ -679,20 +679,21 @@ class Position:
 - [ ] Walk-forward equity stitching (combined OOS equity)
 
 ### 9.3 Configuration Management
-**Status**: PARTIAL - `configs/default_config.yaml` exists but is orphaned (not loaded by any code)
+**Status**: COMPLETED
 
-- [ ] `src/lib/config.py` - Unified config loader
-- [ ] Environment variable support for secrets (API keys)
-- [ ] Config validation at startup (pydantic or marshmallow)
+- [x] `src/lib/config.py` - Unified config loader
+- [x] Environment variable support for secrets (API keys)
+- [x] Config validation at startup (dataclasses with validation)
 - [ ] Config versioning for reproducibility
 
 ### 9.4 Shared Utilities Library
-**Directory**: `src/lib/` (NEW - directory does not exist)
+**Status**: COMPLETED
+**Directory**: `src/lib/`
 
-- [ ] `src/lib/config.py` - Unified config loader (YAML + env vars)
-- [ ] `src/lib/logging.py` - Structured logging with rotation
-- [ ] `src/lib/time_utils.py` - NY timezone, session times, market calendar
-- [ ] `src/lib/constants.py` - MES tick size, point value, session times
+- [x] `src/lib/config.py` - Unified config loader (YAML + env vars)
+- [x] `src/lib/logging_utils.py` - Structured logging with TradingFormatter and TradingLogger
+- [x] `src/lib/time_utils.py` - NY timezone, session times, EOD phases, market calendar
+- [x] `src/lib/constants.py` - MES tick size, point value, session times, ContractSpec
 
 ---
 
@@ -900,7 +901,7 @@ Before going live with real capital, the system must:
 ## Notes
 
 - The existing `src/ml/` code is a solid foundation but needs significant rework for scalping timeframes
-- **1235 tests exist** with 85% coverage - comprehensive test suite covering all major modules
+- **1305 tests exist** with 85% coverage - comprehensive test suite covering all major modules
 - The 227MB 1-second parquet dataset is the primary asset but isn't being used
 - TopstepX API is for **live trading only** (7-14 day historical limit)
 - DataBento is for historical data (already have 2 years in parquet)
@@ -1085,3 +1086,10 @@ Before going live with real capital, the system must:
 | 2026-01-16 | Total test count increased from 1206 to 1235 |
 | 2026-01-16 | Fixed pytest asyncio warnings - removed global pytestmark from test_topstepx_api.py (60 warnings → 11) |
 | 2026-01-16 | **Phase 8.3 CI/CD COMPLETED**: Created .github/workflows/ci.yml with test, lint, and security jobs |
+| 2026-01-16 | **Phase 9.3/9.4 COMPLETED**: Implemented shared utilities library (`src/lib/`) |
+| 2026-01-16 | Created `src/lib/constants.py` - Contract specifications (MES, ES, MNQ, NQ), session times, risk parameters |
+| 2026-01-16 | Created `src/lib/time_utils.py` - Timezone handling, session detection, EOD phases, market calendar |
+| 2026-01-16 | Created `src/lib/config.py` - Unified config loader with YAML support, env overrides, validation |
+| 2026-01-16 | Created `src/lib/logging_utils.py` - TradingFormatter, TradingLogger with structured trade logging |
+| 2026-01-16 | Added 70 tests in `tests/test_lib.py` for all src/lib/ modules |
+| 2026-01-16 | Total test count now 1305 (1235 + 70 new tests for src/lib/) |
