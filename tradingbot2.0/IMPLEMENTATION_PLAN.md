@@ -1,7 +1,7 @@
 # Implementation Plan - MES Futures Scalping Bot
 
 > Last Updated: 2026-01-16
-> Status: **BLOCKED** - 2 REMAINING CRITICAL ISSUES prevent safe live trading (9 P0 bugs VERIFIED FIXED 2026-01-16)
+> Status: **BLOCKED** - 1 REMAINING CRITICAL ISSUE prevents safe live trading (10 P0 bugs VERIFIED FIXED 2026-01-16)
 > Verified: Ultra-deep codebase analysis (2026-01-16) with 20 parallel Sonnet subagents confirmed all bugs
 
 ---
@@ -10,16 +10,16 @@
 
 **Current State**: Core infrastructure complete (Phases 1-9 done, 2331 tests, 91% coverage), but critical gaps exist in live trading safety, backtest accuracy, and method compatibility.
 
-**🚨 CRITICAL ISSUES VERIFIED (9 of 11 FIXED on 2026-01-16)**:
+**🚨 CRITICAL ISSUES VERIFIED (10 of 11 FIXED on 2026-01-16)**:
 1. ~~Risk manager initialized but **NOT enforced**~~ - **VERIFIED FIXED 2026-01-16**: `approve_trade()` IS called at lines 480-487
 2. ~~WebSocket auto-reconnect **NEVER started**~~ - **VERIFIED FIXED 2026-01-16**: Added asyncio.create_task in connect()
 3. ~~EOD phase method **WRONG NAME**~~ - **VERIFIED FIXED 2026-01-16**: Changed to get_status().phase
 4. ~~Backtest slippage **NOT deducted** from P&L~~ - **VERIFIED FIXED 2026-01-16**: net_pnl now includes slippage_cost
 5. ~~OCO cancellation **race condition**~~ - **VERIFIED FIXED 2026-01-16**: Added timeout and verification to OCO cancellation in order_executor.py
-6. ~~Daily loss check **NOT in trading loop**~~ - **FIXED 2026-01-16**: `can_trade()` check added in live_trader.py:315-332
-7. ~~Circuit breaker **NOT instantiated**~~ - **FIXED 2026-01-16**: CircuitBreakers now instantiated in _startup() with position change callback
-8. ~~Account drawdown check **MISSING**~~ - **FIXED 2026-01-16**: MANUAL_REVIEW status check added in live_trader.py:324-332
-9. **REMAINING**: 7 features hardcoded to 0.0 in rt_features.py - **SEVERE DISTRIBUTION MISMATCH**
+6. ~~Daily loss check **NOT in trading loop**~~ - **VERIFIED FIXED 2026-01-16**: `can_trade()` check at lines 321-328 at start of each trading loop iteration
+7. ~~Circuit breaker **NOT instantiated**~~ - **VERIFIED FIXED 2026-01-16**: Import at line 35, instance at line 254, win/loss recording at lines 406-410, can_trade() at lines 450-451
+8. ~~Account drawdown check **MISSING**~~ - **VERIFIED FIXED 2026-01-16**: MANUAL_REVIEW status check at lines 330-338 in trading loop
+9. ~~7 features hardcoded to 0.0~~ - **VERIFIED FIXED 2026-01-16**: Proper calculation methods added (_calculate_volume_delta_norm, _calculate_obv_roc, _calculate_htf_trend, _calculate_htf_momentum, _calculate_htf_volatility)
 10. **REMAINING**: OOS evaluation uses same data as IS - overfitting detection broken
 
 **Capital Protection**: Starting capital is $1,000. Risk limits are now properly enforced after bug fixes.
@@ -33,11 +33,11 @@
 | **P0-BLOCKING** | WebSocket & Scripts | ~~3~~ **0** | ~~Bot crashes / won't reconnect~~ **ALL VERIFIED FIXED 2026-01-16** |
 | **P0-SAFETY** | Live Trading Risk | ~~5~~ **0** | ~~Risk limits BYPASSED~~ **ALL VERIFIED FIXED 2026-01-16** (10A.1-10A.5, 10B.3) |
 | **P0-ACCURACY** | Backtest & Optimization | ~~2~~ **1** | ~~False profitability~~ Slippage VERIFIED FIXED, OOS remaining |
-| **P0-FEATURE** | Feature Distribution Mismatch | 1 | Training/live distribution mismatch |
+| ~~**P0-FEATURE**~~ | ~~Feature Distribution Mismatch~~ | ~~1~~ **0** | ~~Training/live distribution mismatch~~ **VERIFIED FIXED 2026-01-16** |
 | **P1-HIGH** | Integration Gaps | 4 | Incorrect position sizing / missing features |
-| **Total** | | ~~15~~ **2** | **Must fix before ANY live trading** |
+| **Total** | | ~~15~~ **1** | **Must fix before ANY live trading** |
 
-### TOP 10 VERIFIED CRITICAL BUGS (9 FIXED)
+### TOP 10 VERIFIED CRITICAL BUGS (10 FIXED)
 
 1. ~~**WebSocket auto-reconnect NEVER STARTED**~~ - **VERIFIED FIXED 2026-01-16**: Added `asyncio.create_task(self._auto_reconnect_loop())` in connect() at line 711-713
 2. ~~**EOD Phase method name WRONG**~~ - **VERIFIED FIXED 2026-01-16**: Changed `get_current_phase()` to `get_status().phase` at line 377-378
@@ -45,10 +45,10 @@
 4. ~~**approve_trade() NEVER called**~~ - **VERIFIED FIXED 2026-01-16**: Verified lines 480-487 in live_trader.py show `approve_trade()` IS being called before order execution
 5. ~~**Slippage NOT deducted from P&L**~~ - **VERIFIED FIXED 2026-01-16**: Verified line 783 in engine.py shows `net_pnl = gross_pnl - commission - slippage_cost`
 6. ~~**OCO cancellation race condition**~~ - **VERIFIED FIXED 2026-01-16**: Added timeout and verification to OCO cancellation in order_executor.py
-7. ~~**Daily Loss Check NOT in Trading Loop**~~ - **VERIFIED FIXED 2026-01-16**: Added can_trade() check at start of trading loop (lines 311-322)
-8. ~~**Circuit Breaker NOT Instantiated**~~ - **VERIFIED FIXED 2026-01-16**: Integrated CircuitBreakers in LiveTrader (init, _startup, _on_position_change, _process_bar)
-9. ~~**Account Drawdown Check Missing**~~ - **VERIFIED FIXED 2026-01-16**: Added MANUAL_REVIEW status check in trading loop (lines 324-332)
-10. **REMAINING: 7 features hardcoded to 0.0** - rt_features.py lines 499-502: trend_1m, trend_5m, momentum_1m, momentum_5m, vol_1m, volume_delta_norm, obv_roc all return 0.0 → **BLOCKING FOR LIVE DEPLOYMENT**
+7. ~~**Daily Loss Check NOT in Trading Loop**~~ - **VERIFIED FIXED 2026-01-16**: can_trade() checked at lines 321-328 at start of each trading loop iteration
+8. ~~**Circuit Breaker NOT Instantiated**~~ - **VERIFIED FIXED 2026-01-16**: Import at line 35, instance at line 254, win/loss at lines 406-410, can_trade() at lines 450-451
+9. ~~**Account Drawdown Check Missing**~~ - **VERIFIED FIXED 2026-01-16**: MANUAL_REVIEW status checked at lines 330-338 in trading loop
+10. ~~**7 features hardcoded to 0.0**~~ - **VERIFIED FIXED 2026-01-16**: Proper calculation methods added to rt_features.py (_calculate_volume_delta_norm, _calculate_obv_roc, _calculate_htf_trend, _calculate_htf_momentum, _calculate_htf_volatility)
 
 ### FALSE BUGS REMOVED (Verified as NOT bugs)
 
@@ -1385,15 +1385,16 @@ Before going live with real capital, the system must:
 ### Recent Updates (Last 20 Entries)
 | Date | Change |
 |------|--------|
+| 2026-01-16 | **VERIFIED FIXED 10.3**: Multi-timeframe features - Added _calculate_volume_delta_norm(), _calculate_obv_roc(), _calculate_htf_trend(), _calculate_htf_momentum(), _calculate_htf_volatility() methods to rt_features.py |
+| 2026-01-16 | **VERIFIED FIXED 10A.2**: Daily Loss Check - can_trade() now checked at lines 321-328 at start of each trading loop iteration |
+| 2026-01-16 | **VERIFIED FIXED 10A.3**: Circuit Breaker - Import at line 35, instance at line 254, record_win/loss at lines 406-410, can_trade() at lines 450-451 |
+| 2026-01-16 | **VERIFIED FIXED 10A.4**: Account Drawdown - MANUAL_REVIEW status checked at lines 330-338 in trading loop |
+| 2026-01-16 | **10 BUGS VERIFIED FIXED**: 10.0.1-10.0.3, 10.3, 10A.1-10A.5, 10B.3 - All P0 safety and feature bugs resolved |
 | 2026-01-16 | **VERIFIED IMPLEMENTED 10A.1**: approve_trade() IS called at line 534 in live_trader.py |
 | 2026-01-16 | **VERIFIED IMPLEMENTED 10A.2**: can_trade() IS checked at line 321 in trading loop |
 | 2026-01-16 | **VERIFIED IMPLEMENTED 10A.3**: CircuitBreakers instantiated at line 254, record_win/loss at lines 407-410, can_trade() at line 450 |
 | 2026-01-16 | **VERIFIED IMPLEMENTED 10A.4**: MANUAL_REVIEW status IS checked at lines 330-337 |
 | 2026-01-16 | **BUG DOES NOT EXIST 10A.5**: Line 783 shows `net_pnl = gross_pnl - commission - slippage_cost` - was ALWAYS correct |
-| 2026-01-16 | **VERIFIED FIXED 10A.2**: Daily Loss Check - Added can_trade() check at start of trading loop (lines 311-322) |
-| 2026-01-16 | **VERIFIED FIXED 10A.3**: Circuit Breaker Integration - Integrated CircuitBreakers in LiveTrader (init, _startup, _on_position_change, _process_bar) |
-| 2026-01-16 | **VERIFIED FIXED 10A.4**: Account Drawdown Check - Added MANUAL_REVIEW status check in trading loop (lines 324-332) |
-| 2026-01-16 | **9 BUGS VERIFIED FIXED**: 10.0.1-10.0.3 (WebSocket, EOD, LSTM), 10A.1-10A.5 (Risk validation, Daily loss, Circuit breaker, Drawdown, Slippage), 10B.3 (OCO race condition) |
 | 2026-01-16 | **VERIFIED FIXED 10B.3**: OCO cancellation race condition - Added timeout and verification to OCO cancellation in order_executor.py |
 | 2026-01-16 | **6 BUGS VERIFIED FIXED**: 10.0.1 (WebSocket reconnect at line 711-713), 10.0.2 (EOD phase at line 377-378), 10.0.3 (LSTM tuple at line 134-136), 10A.1 (approve_trade at lines 480-487), 10A.5 (slippage at line 783), 10B.3 (OCO race condition) |
 | 2026-01-16 | **VERIFIED 10A.1**: Risk manager trade validation - `approve_trade()` IS called at lines 480-487 in live_trader.py |
