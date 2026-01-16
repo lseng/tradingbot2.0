@@ -281,7 +281,8 @@ class PositionSizer:
         # Find tier boundaries
         prev_threshold = self.config.min_balance
         for threshold, _, _ in self.config.balance_tiers:
-            if account_balance < threshold:
+            # Use <= to make boundary inclusive (matches _get_tier_params)
+            if account_balance <= threshold:
                 return {
                     "balance": account_balance,
                     "tier_min": prev_threshold,
@@ -313,7 +314,8 @@ class PositionSizer:
             Tuple of (max_contracts, risk_percentage)
         """
         for threshold, max_contracts, risk_pct in self.config.balance_tiers:
-            if account_balance < threshold:
+            # Use <= to make boundary inclusive (at exactly $1,000, use 1 contract tier)
+            if account_balance <= threshold:
                 return max_contracts, risk_pct
 
         # Return last tier if above all thresholds
