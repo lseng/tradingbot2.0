@@ -60,7 +60,7 @@
 | Backtesting Engine | `src/backtest/` | **P1 - CRITICAL** | **COMPLETED** | engine.py, costs.py, slippage.py, metrics.py, trade_logger.py |
 | TopstepX API | `src/api/` | P2 - HIGH | **COMPLETED** | __init__.py, topstepx_client.py, topstepx_rest.py, topstepx_ws.py |
 | Live Trading | `src/trading/` | P2 - HIGH | COMPLETED | live_trader.py, signal_generator.py, order_executor.py, position_manager.py, rt_features.py, recovery.py |
-| DataBento Client | `src/data/` | P3 - MEDIUM | NOT IMPLEMENTED | databento_client.py |
+| DataBento Client | `src/data/` | P3 - MEDIUM | **COMPLETED** | databento_client.py |
 | Shared Utilities | `src/lib/` | P3 - MEDIUM | **COMPLETED** | config.py, logging_utils.py, time_utils.py, constants.py |
 | Parameter Optimization | `src/optimization/` | P3 - MEDIUM | **COMPLETED** | parameter_space.py, results.py, optimizer_base.py, grid_search.py, random_search.py, bayesian_optimizer.py |
 | Model Architecture | `src/ml/models/` | P2 - HIGH | **PARTIAL** (4.1 COMPLETED, 4.2-4.4 pending) | 4.1 done: 3-class output, CrossEntropyLoss |
@@ -571,46 +571,46 @@ class Position:
 
 ## Phase 7: MEDIUM - DataBento Integration (Week 7-8)
 
-**Status**: NOT IMPLEMENTED (parquet data exists but no update mechanism)
-**Directory**: `src/data/` (NEW - directory does not exist)
+**Status**: COMPLETED (2026-01-16)
+**Directory**: `src/data/`
 **Spec**: `specs/databento-historical-data.md`
 
 ### 7.1 DataBento Client
-**File**: `src/data/databento_client.py` (NEW)
+**File**: `src/data/databento_client.py`
 
-- [ ] Initialize with API key from `DATABENTO_API_KEY` env var
-- [ ] Fetch OHLCV data at multiple timeframes (1s, 1m, 1h, 1d)
-- [ ] Handle continuous contracts (MES.FUT, ES.FUT, MNQ.FUT, NQ.FUT)
-- [ ] Store in parquet format with year/month partitioning
-- [ ] Schema validation on download
+- [x] Initialize with API key from `DATABENTO_API_KEY` env var
+- [x] Fetch OHLCV data at multiple timeframes (1s, 1m, 1h, 1d)
+- [x] Handle continuous contracts (MES.FUT, ES.FUT, MNQ.FUT, NQ.FUT)
+- [x] Store in parquet format with year/month partitioning
+- [x] Schema validation on download
 
 ### 7.2 Data Download Script
-**File**: `scripts/download_data.py` (NEW)
+**File**: `scripts/download_data.py`
 
-- [ ] Initial bulk download (3+ years of 1-second data)
-- [ ] Incremental daily updates (append to parquet)
-- [ ] Gap detection and backfill
-- [ ] Data validation:
+- [x] Initial bulk download (3+ years of 1-second data)
+- [x] Incremental daily updates (append to parquet)
+- [x] Gap detection and backfill
+- [x] Data validation:
   - OHLC relationships (L <= O,C <= H for all bars)
   - No gaps during trading hours (weekdays 6 PM - 5 PM ET)
   - Volume sanity checks (no negative, no extreme outliers)
   - Timestamps in UTC
-- [ ] Progress logging and resumption
+- [x] Progress logging and resumption
 
 ### 7.3 Data Quality Acceptance Criteria
 **Spec Reference**: `specs/databento-historical-data.md` (Data Quality section)
 
-- [ ] All OHLC relationships valid: `low <= open <= high` and `low <= close <= high`
-- [ ] No gaps during trading hours (alert on missing bars)
-- [ ] Volume data present for all bars (no nulls)
-- [ ] Timestamps correctly in UTC
-- [ ] Continuous contract stitching produces smooth price series (no jumps at roll)
+- [x] All OHLC relationships valid: `low <= open <= high` and `low <= close <= high`
+- [x] No gaps during trading hours (alert on missing bars)
+- [x] Volume data present for all bars (no nulls)
+- [x] Timestamps correctly in UTC
+- [x] Continuous contract stitching produces smooth price series (no jumps at roll)
 
 ---
 
 ## Phase 8: MEDIUM - Testing (Ongoing)
 
-**Status**: COMPLETED - tests/ directory created with 1508 unit tests
+**Status**: COMPLETED - tests/ directory created with 1551 unit tests
 **Test Coverage**: 85% (target: >80%) ✓ ACHIEVED
 **Directory**: `tests/`
 
@@ -651,7 +651,7 @@ class Position:
 ### 8.3 Test Configuration
 
 - [x] `pytest.ini` or `pyproject.toml` pytest config - COMPLETED (pytest.ini created with asyncio_mode=auto, strict markers, test discovery)
-- [x] Test coverage: 85% (1470 tests passing, improved from 62% → 74% → 77% → 79% → 85%)
+- [x] Test coverage: 85% (1551 tests passing, improved from 62% → 74% → 77% → 79% → 85%)
 - [x] Test coverage target: > 80% ✓ ACHIEVED (85% coverage)
 - [x] CI/CD integration (GitHub Actions) - COMPLETED
 
@@ -778,7 +778,7 @@ tradingbot2.0/
 │   │   ├── rt_features.py
 │   │   └── recovery.py
 │   │
-│   ├── data/                  # NEW - External data (0% implemented)
+│   ├── data/                  # COMPLETED - External data (Phase 7)
 │   │   ├── __init__.py
 │   │   └── databento_client.py
 │   │
@@ -804,9 +804,9 @@ tradingbot2.0/
 │       ├── test_backtest_e2e.py
 │       └── test_api_mock.py
 │
-├── scripts/                   # Entry points (PARTIAL - 2 of 3 implemented)
+├── scripts/                   # Entry points (COMPLETED - 3 of 3 implemented)
 │   ├── __init__.py             # EXISTS
-│   ├── download_data.py        # NOT IMPLEMENTED (Phase 7)
+│   ├── download_data.py        # EXISTS - CLI for DataBento data download (Phase 7)
 │   ├── run_backtest.py         # EXISTS - CLI for backtesting
 │   └── run_live.py             # EXISTS - CLI for live trading
 │
@@ -914,7 +914,7 @@ Before going live with real capital, the system must:
 ## Notes
 
 - The existing `src/ml/` code is a solid foundation but needs significant rework for scalping timeframes
-- **1470 tests exist** with 85% coverage - comprehensive test suite covering all major modules
+- **1551 tests exist** with 85% coverage - comprehensive test suite covering all major modules
 - The 227MB 1-second parquet dataset is the primary asset but isn't being used
 - TopstepX API is for **live trading only** (7-14 day historical limit)
 - DataBento is for historical data (already have 2 years in parquet)
@@ -1124,3 +1124,9 @@ Before going live with real capital, the system must:
 | 2026-01-16 | Added 38 tests in tests/test_train_scalping_model.py (all passing) |
 | 2026-01-16 | Total test count increased from 1470 to 1508 |
 | 2026-01-16 | Phase 1 data pipeline (parquet_loader + scalping_features) now fully connected to Phase 4 training pipeline |
+| 2026-01-16 | **Phase 7 COMPLETED**: Implemented DataBento Historical Data Integration |
+| 2026-01-16 | Created `src/data/__init__.py` and `src/data/databento_client.py` |
+| 2026-01-16 | Created `scripts/download_data.py` - CLI for bulk download, incremental updates, gap detection |
+| 2026-01-16 | Added 43 tests in `tests/test_databento.py` (all passing) |
+| 2026-01-16 | Added databento>=0.20.0 to requirements.txt |
+| 2026-01-16 | Total test count increased from 1508 to 1551 |

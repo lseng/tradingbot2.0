@@ -36,13 +36,26 @@ python scripts/run_live.py
 
 # Run live trading with custom parameters
 python scripts/run_live.py --capital 2000 --max-daily-loss 100 --min-confidence 0.70
+
+# Download historical data from DataBento
+# Requires: export DATABENTO_API_KEY='your-api-key'
+python scripts/download_data.py
+
+# Download specific contract with date range
+python scripts/download_data.py --symbol MES --start 2024-01-01 --end 2024-12-31
+
+# Incremental update (append new data to existing parquet)
+python scripts/download_data.py --incremental
+
+# Download with gap detection and backfill
+python scripts/download_data.py --backfill-gaps --validate
 ```
 
 ## Validation
 
 Run these after implementing to get immediate feedback:
 
-- Tests: `pytest tests/` (1508 tests)
+- Tests: `pytest tests/` (1551 tests)
 - Typecheck: `mypy src/ml/`
 - Lint: `ruff check src/ml/`
 
