@@ -902,7 +902,7 @@ Before going live with real capital, the system must:
 3. [ ] All risk limits enforced and verified in simulation
 4. [x] EOD flatten works 100% of the time (verified across DST boundaries) - **VERIFIED with DST tests**
 5. [ ] Inference latency < 10ms (measured on target hardware)
-6. [ ] No lookahead bias in features or targets (temporal unit tests pass)
+6. [x] No lookahead bias in features or targets (temporal unit tests pass) - **VERIFIED with 29 comprehensive tests**
 7. [ ] Unit test coverage > 80%
 8. [ ] Paper trading for minimum 2 weeks without critical errors
 9. [ ] Position sizing matches spec for all account balance tiers
@@ -915,7 +915,7 @@ Before going live with real capital, the system must:
 ## Notes
 
 - The existing `src/ml/` code is a solid foundation but needs significant rework for scalping timeframes
-- **1600 tests exist** with 85% coverage - comprehensive test suite covering all major modules
+- **1656 tests exist** with 85% coverage - comprehensive test suite covering all major modules
 - The 227MB 1-second parquet dataset is the primary asset but isn't being used
 - TopstepX API is for **live trading only** (7-14 day historical limit)
 - DataBento is for historical data (already have 2 years in parquet)
@@ -1138,3 +1138,17 @@ Before going live with real capital, the system must:
 | 2026-01-16 | Added `plotly>=5.0.0` to requirements.txt |
 | 2026-01-16 | Added 49 tests in `tests/test_visualization.py` (all passing) |
 | 2026-01-16 | Total test count increased from 1551 to 1600 |
+| 2026-01-16 | **Go-Live Checklist #6 COMPLETED**: Added comprehensive lookahead bias tests |
+| 2026-01-16 | Created `tests/test_lookahead_bias.py` with 29 tests validating no lookahead bias: |
+| 2026-01-16 | - Rolling window tests (SMA, EMA, stddev) only use past data |
+| 2026-01-16 | - Return calculations use backward shift |
+| 2026-01-16 | - VWAP, volatility, momentum features validated |
+| 2026-01-16 | - End-to-end pipeline feature/target temporal isolation |
+| 2026-01-16 | - Statistical correlation decay validation |
+| 2026-01-16 | Created `tests/test_go_live_validation.py` with 27 tests for Go-Live checklist: |
+| 2026-01-16 | - Profitability metrics (Sharpe, Calmar calculation) |
+| 2026-01-16 | - Risk limits enforcement (daily loss, kill switch, min balance) |
+| 2026-01-16 | - Inference latency benchmarking infrastructure |
+| 2026-01-16 | - Position sizing tier validation |
+| 2026-01-16 | - Kill switch halt/reset behavior |
+| 2026-01-16 | Total test count increased from 1600 to 1656 (56 new tests) |
