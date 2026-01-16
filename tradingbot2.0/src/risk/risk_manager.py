@@ -506,6 +506,72 @@ class RiskManager:
         self.state.halt_reason = reason
         logger.critical(f"KILL SWITCH TRIGGERED: {reason}")
 
+    def halt(self, reason: str = "Manual halt requested") -> None:
+        """
+        Manually halt all trading immediately.
+
+        This is the public interface for the kill switch, allowing operators
+        to immediately stop all trading in emergency situations.
+
+        Go-Live Checklist #12: Manual kill switch accessible and tested.
+
+        Args:
+            reason: Reason for the halt (logged for audit trail)
+
+        Usage:
+            manager.halt("Detected unusual market conditions")
+            manager.halt("Emergency stop - operator decision")
+        """
+        with self._lock:
+            self.state.status = TradingStatus.HALTED
+            self.state.halt_reason = f"Manual halt: {reason}"
+            logger.critical(f"MANUAL HALT TRIGGERED: {reason}")
+
+            if self.auto_persist:
+                self._persist_state()
+
+    def reset_halt(self, new_balance: Optional[float] = None) -> bool:
+        """
+        Reset from a halted state after manual review.
+
+        This requires manual intervention and should only be called
+        after a human operator has reviewed the situation.
+
+        Args:
+            new_balance: Optional new account balance to set
+
+        Returns:
+            True if successfully reset, False if reset not allowed
+
+        Usage:
+            # After manual review
+            manager.reset_halt(new_balance=800.0)
+        """
+        with self._lock:
+            if self.state.status != TradingStatus.HALTED:
+                logger.warning("reset_halt called but not in HALTED state")
+                return False
+
+            if new_balance is not None:
+                self.state.account_balance = new_balance
+                self.state.peak_balance = max(self.state.peak_balance, new_balance)
+
+            # Reset cumulative loss when manually resetting
+            self.state.cumulative_loss = 0.0
+            self.state.consecutive_losses = 0
+            self.state.status = TradingStatus.ACTIVE
+            self.state.halt_reason = None
+
+            logger.info(
+                f"Trading MANUALLY RESET from halt, balance=${self.state.account_balance:.2f}, "
+                f"cumulative_loss reset to $0.00"
+            )
+
+            if self.auto_persist:
+                self._persist_state()
+
+            return True
+
     def _persist_state(self) -> None:
         """Save current state to file."""
         if not self.state_file:

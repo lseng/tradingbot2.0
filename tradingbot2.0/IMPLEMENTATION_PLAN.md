@@ -609,7 +609,7 @@ class Position:
 
 ## Phase 8: MEDIUM - Testing (Ongoing)
 
-**Status**: COMPLETED - tests/ directory created with 1206 unit tests
+**Status**: COMPLETED - tests/ directory created with 1235 unit tests
 **Test Coverage**: 85% (target: >80%) ✓ ACHIEVED
 **Directory**: `tests/`
 
@@ -636,19 +636,20 @@ class Position:
 - [x] `tests/conftest.py` - pytest fixtures (sample data, mock clients, position manager) - COMPLETED
 
 ### 8.2 Integration Tests
-**Status**: PARTIAL
+**Status**: COMPLETED
 **Directory**: `tests/integration/` (NEW)
 
 - [x] `tests/integration/test_backtest_e2e.py` - E2E backtest validation, walk-forward, risk limits, EOD flatten (23 tests, all passing)
 - [x] `tests/integration/test_api_mock.py` - TopstepX API mocking, rate limiting, error handling (36 tests, all passing)
-- [ ] Walk-forward validation produces expected fold count
-- [ ] Risk limits properly halt trading in simulation
-- [ ] EOD flatten fires at correct time
+- [x] `tests/integration/test_phase82_comprehensive.py` - Comprehensive Phase 8.2 tests (29 tests, all passing)
+- [x] Walk-forward validation produces expected fold count
+- [x] Risk limits properly halt trading in simulation
+- [x] EOD flatten fires at correct time (including DST boundaries)
 
 ### 8.3 Test Configuration
 
 - [x] `pytest.ini` or `pyproject.toml` pytest config - COMPLETED (pytest.ini created with asyncio_mode=auto, strict markers, test discovery)
-- [x] Test coverage: 85% (1206 tests passing, improved from 62% → 74% → 77% → 79% → 85%)
+- [x] Test coverage: 85% (1235 tests passing, improved from 62% → 74% → 77% → 79% → 85%)
 - [x] Test coverage target: > 80% ✓ ACHIEVED (85% coverage)
 - [ ] CI/CD integration (GitHub Actions)
 
@@ -882,9 +883,9 @@ Week 8+: Phase 9 - Optimization
 Before going live with real capital, the system must:
 
 1. [ ] Walk-forward backtest shows consistent profitability (Sharpe > 1.0, Calmar > 0.5)
-2. [ ] Out-of-sample accuracy > 52% on 3-class (better than random)
+2. [~] Out-of-sample accuracy > 52% on 3-class (better than random) - **Infrastructure and tests ready, needs actual OOS measurement**
 3. [ ] All risk limits enforced and verified in simulation
-4. [ ] EOD flatten works 100% of the time (verified across DST boundaries)
+4. [x] EOD flatten works 100% of the time (verified across DST boundaries) - **VERIFIED with DST tests**
 5. [ ] Inference latency < 10ms (measured on target hardware)
 6. [ ] No lookahead bias in features or targets (temporal unit tests pass)
 7. [ ] Unit test coverage > 80%
@@ -892,14 +893,14 @@ Before going live with real capital, the system must:
 9. [ ] Position sizing matches spec for all account balance tiers
 10. [ ] Circuit breakers tested and working (simulated loss scenarios)
 11. [ ] API reconnection works (tested with network interruption)
-12. [ ] Manual kill switch accessible and tested
+12. [x] Manual kill switch accessible and tested - **IMPLEMENTED and TESTED (halt/reset_halt methods)**
 
 ---
 
 ## Notes
 
 - The existing `src/ml/` code is a solid foundation but needs significant rework for scalping timeframes
-- **1206 tests exist** with 85% coverage - comprehensive test suite covering all major modules
+- **1235 tests exist** with 85% coverage - comprehensive test suite covering all major modules
 - The 227MB 1-second parquet dataset is the primary asset but isn't being used
 - TopstepX API is for **live trading only** (7-14 day historical limit)
 - DataBento is for historical data (already have 2 years in parquet)
@@ -1073,3 +1074,12 @@ Before going live with real capital, the system must:
 | 2026-01-16 | Fixed bug in live_trader.py: size <= 0 → size.contracts <= 0 (position size comparison) |
 | 2026-01-16 | Test count increased from 998 to 1206 tests (208 new tests) |
 | 2026-01-16 | **Target 80% coverage ACHIEVED** - now at 85% overall coverage |
+| 2026-01-16 | **Phase 8.2 COMPLETED**: Added 29 comprehensive integration tests for Phase 8.2 |
+| 2026-01-16 | Created `tests/integration/test_phase82_comprehensive.py` with: |
+| 2026-01-16 | - 6 walk-forward fold count validation tests (exact fold count, edge cases, overlap prevention) |
+| 2026-01-16 | - 6 risk limits halt verification tests (trading actually STOPS after limit hit) |
+| 2026-01-16 | - 8 EOD flatten DST transition tests (spring/fall DST, UTC conversion) |
+| 2026-01-16 | - 3 out-of-sample accuracy validation tests (Go-Live #2) |
+| 2026-01-16 | - 6 manual kill switch tests (Go-Live #12) |
+| 2026-01-16 | Added public halt() and reset_halt() methods to RiskManager for manual kill switch (Go-Live #12) |
+| 2026-01-16 | Total test count increased from 1206 to 1235 |
