@@ -28,9 +28,9 @@ pytest-cov>=4.0.0
 # Optional: For Databento data fetching (if using live data)
 # databento>=0.20.0
 
-# Optional: For hyperparameter optimization
-# optuna>=3.3.0
-# ray[tune]>=2.6.0
+# Hyperparameter optimization
+optuna>=3.3.0
+# ray[tune]>=2.6.0  # Optional: distributed tuning
 
 # Optional: For experiment tracking
 # mlflow>=2.6.0
