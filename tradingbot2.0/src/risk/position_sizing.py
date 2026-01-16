@@ -281,8 +281,8 @@ class PositionSizer:
         # Find tier boundaries
         prev_threshold = self.config.min_balance
         for threshold, _, _ in self.config.balance_tiers:
-            # Use <= to make boundary inclusive (matches _get_tier_params)
-            if account_balance <= threshold:
+            # Use < to match _get_tier_params (boundary belongs to next tier)
+            if account_balance < threshold:
                 return {
                     "balance": account_balance,
                     "tier_min": prev_threshold,

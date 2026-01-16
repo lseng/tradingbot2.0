@@ -96,6 +96,7 @@ class GridSearchOptimizer(BaseOptimizer):
         parameter_space: ParameterSpace,
         objective_fn: Callable[[Dict[str, Any]], Dict[str, float]],
         config: Optional[GridSearchConfig] = None,
+        holdout_objective_fn: Optional[Callable[[Dict[str, Any]], Dict[str, float]]] = None,
     ):
         """
         Initialize grid search optimizer.
@@ -104,9 +105,11 @@ class GridSearchOptimizer(BaseOptimizer):
             parameter_space: Parameter space to search
             objective_fn: Function that takes params and returns metrics
             config: Grid search configuration
+            holdout_objective_fn: Optional separate objective for OOS evaluation.
+                                  Use create_split_objective() to generate both functions.
         """
         config = config or GridSearchConfig()
-        super().__init__(parameter_space, objective_fn, config)
+        super().__init__(parameter_space, objective_fn, config, holdout_objective_fn)
         self.grid_config = config
 
     def _run_optimization(self) -> OptimizationResult:

@@ -93,6 +93,7 @@ class RandomSearchOptimizer(BaseOptimizer):
         objective_fn: Callable[[Dict[str, Any]], Dict[str, float]],
         config: Optional[RandomSearchConfig] = None,
         n_iterations: Optional[int] = None,
+        holdout_objective_fn: Optional[Callable[[Dict[str, Any]], Dict[str, float]]] = None,
     ):
         """
         Initialize random search optimizer.
@@ -102,12 +103,14 @@ class RandomSearchOptimizer(BaseOptimizer):
             objective_fn: Function that takes params and returns metrics
             config: Random search configuration
             n_iterations: Shortcut for config.n_iterations
+            holdout_objective_fn: Optional separate objective for OOS evaluation.
+                                  Use create_split_objective() to generate both functions.
         """
         config = config or RandomSearchConfig()
         if n_iterations is not None:
             config.n_iterations = n_iterations
 
-        super().__init__(parameter_space, objective_fn, config)
+        super().__init__(parameter_space, objective_fn, config, holdout_objective_fn)
         self.random_config = config
 
         # Track sampled combinations for deduplication
@@ -272,6 +275,7 @@ class AdaptiveRandomSearch(RandomSearchOptimizer):
         config: Optional[RandomSearchConfig] = None,
         exploration_ratio: float = 0.3,
         min_radius: float = 0.1,
+        holdout_objective_fn: Optional[Callable[[Dict[str, Any]], Dict[str, float]]] = None,
     ):
         """
         Initialize adaptive random search.
@@ -282,8 +286,10 @@ class AdaptiveRandomSearch(RandomSearchOptimizer):
             config: Random search configuration
             exploration_ratio: Fraction of iterations for pure exploration
             min_radius: Minimum sampling radius (as fraction of range)
+            holdout_objective_fn: Optional separate objective for OOS evaluation.
+                                  Use create_split_objective() to generate both functions.
         """
-        super().__init__(parameter_space, objective_fn, config)
+        super().__init__(parameter_space, objective_fn, config, holdout_objective_fn=holdout_objective_fn)
         self.exploration_ratio = exploration_ratio
         self.min_radius = min_radius
 

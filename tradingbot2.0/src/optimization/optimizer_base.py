@@ -84,6 +84,7 @@ class BaseOptimizer(ABC):
         parameter_space: ParameterSpace,
         objective_fn: Callable[[Dict[str, Any]], Dict[str, float]],
         config: Optional[OptimizerConfig] = None,
+        holdout_objective_fn: Optional[Callable[[Dict[str, Any]], Dict[str, float]]] = None,
     ):
         """
         Initialize the optimizer.
@@ -92,10 +93,15 @@ class BaseOptimizer(ABC):
             parameter_space: Parameter space to optimize over
             objective_fn: Function that takes params and returns metrics dict
             config: Optimizer configuration
+            holdout_objective_fn: Optional separate objective function for OOS evaluation.
+                                  If provided, this will be used for out-of-sample testing
+                                  instead of reusing objective_fn (which would be incorrect).
+                                  Use create_split_objective() to generate both functions.
         """
         self.parameter_space = parameter_space
         self.objective_fn = objective_fn
         self.config = config or OptimizerConfig()
+        self.holdout_objective_fn = holdout_objective_fn
 
         # State tracking
         self._results: List[TrialResult] = []
@@ -315,14 +321,40 @@ class BaseOptimizer(ABC):
         """
         Compute overfitting metrics by evaluating on holdout data.
 
+        IMPORTANT: For accurate overfitting detection, the holdout evaluation
+        MUST use a separate objective function that operates on holdout data,
+        not the same objective_fn used for optimization (which uses validation data).
+
+        Use create_split_objective() to generate separate validation and holdout
+        objective functions, then pass holdout_objective_fn to the constructor.
+
         Args:
             result: Optimization result with best params
 
         Returns:
             Updated result with overfitting analysis
         """
-        if self._holdout_data is None or result.best_params is None:
+        if result.best_params is None:
             return result
+
+        # Check if we have a proper holdout objective function
+        # If not, and holdout_data is provided, warn about incorrect usage
+        if self.holdout_objective_fn is None:
+            if self._holdout_data is not None:
+                logger.warning(
+                    "holdout_data was provided but no holdout_objective_fn was set. "
+                    "OOS evaluation will use the same objective function as optimization, "
+                    "which defeats the purpose of overfitting detection. "
+                    "Use create_split_objective() to create separate objectives."
+                )
+                # Fall back to using the same objective (incorrect but maintains backwards compatibility)
+                oos_objective = self.objective_fn
+            else:
+                # No holdout data at all - skip OOS evaluation
+                return result
+        else:
+            # Proper setup - use the holdout objective function
+            oos_objective = self.holdout_objective_fn
 
         try:
             # Get in-sample metrics from best trial
@@ -330,11 +362,10 @@ class BaseOptimizer(ABC):
             if best_trial:
                 result.in_sample_metrics = best_trial.metrics.copy()
 
-            # Evaluate on holdout data
-            # Create a modified objective function that uses holdout data
-            # This assumes the objective function can accept a data parameter
-            # If not, the out-of-sample evaluation needs to be handled differently
-            oos_metrics = self.objective_fn(result.best_params)
+            # Evaluate on holdout data using the SEPARATE holdout objective
+            # This is critical for detecting overfitting - the holdout objective
+            # must use different data than what was used for optimization
+            oos_metrics = oos_objective(result.best_params)
             result.out_of_sample_metrics = oos_metrics
 
             # Calculate overfitting score

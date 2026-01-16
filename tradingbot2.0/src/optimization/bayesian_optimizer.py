@@ -123,6 +123,7 @@ class BayesianOptimizer(BaseOptimizer):
         objective_fn: Callable[[Dict[str, Any]], Dict[str, float]],
         config: Optional[BayesianConfig] = None,
         n_trials: Optional[int] = None,
+        holdout_objective_fn: Optional[Callable[[Dict[str, Any]], Dict[str, float]]] = None,
     ):
         """
         Initialize Bayesian optimizer.
@@ -132,6 +133,8 @@ class BayesianOptimizer(BaseOptimizer):
             objective_fn: Function that takes params and returns metrics
             config: Bayesian optimization configuration
             n_trials: Shortcut for config.n_trials
+            holdout_objective_fn: Optional separate objective for OOS evaluation.
+                                  Use create_split_objective() to generate both functions.
 
         Raises:
             ImportError: If optuna is not installed
@@ -146,7 +149,7 @@ class BayesianOptimizer(BaseOptimizer):
         if n_trials is not None:
             config.n_trials = n_trials
 
-        super().__init__(parameter_space, objective_fn, config)
+        super().__init__(parameter_space, objective_fn, config, holdout_objective_fn)
         self.bayesian_config = config
         self._study: Optional["optuna.Study"] = None
 
