@@ -1528,7 +1528,7 @@ tradingbot2.0/
 ### Critical Gaps Identified
 1. ~~**Live Trading Risk Bypass** (Phase 10A): Risk manager initialized but NEVER validates trades~~ - **ALL FIXED 2026-01-16**: 10A.1-10A.4 now fully integrated (approve_trade, daily loss check, circuit breakers, drawdown check)
 2. ~~**Backtest P&L Optimism**: Slippage calculated but not deducted from net P&L~~ - **VERIFIED FIXED 2026-01-16**: engine.py:783 now deducts slippage_cost
-3. **Feature Distribution Mismatch** (10.3): 7 features hardcoded to 0.0 in rt_features.py - model predictions unreliable
+3. ~~**Feature Distribution Mismatch** (10.3): 7 features hardcoded to 0.0 in rt_features.py~~ - **VERIFIED FIXED 2026-01-16**: All 7 features now properly calculated via _calculate_volume_delta_norm(), _calculate_obv_roc(), _calculate_htf_trend(), _calculate_htf_momentum(), _calculate_htf_volatility() methods
 4. **Optimization Overfitting** (10.1): OOS evaluation uses same data as IS evaluation - defeats overfitting detection
 
 ### Test Quality Concerns
