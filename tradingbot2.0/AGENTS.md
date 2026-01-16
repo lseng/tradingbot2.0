@@ -12,6 +12,12 @@ python src/ml/train_futures_model.py --data data/historical/MES/MES_full_1min_co
 # Run with LSTM model
 python src/ml/train_futures_model.py --data data/historical/MES/MES_full_1min_continuous_UNadjusted.txt --model lstm --epochs 100
 
+# Train 3-class scalping model on 1-second parquet data (recommended)
+python src/ml/train_scalping_model.py
+
+# Train scalping model with custom parameters
+python src/ml/train_scalping_model.py --model lstm --epochs 100 --lookahead 30
+
 # Run backtest with default settings
 python scripts/run_backtest.py
 
@@ -36,7 +42,7 @@ python scripts/run_live.py --capital 2000 --max-daily-loss 100 --min-confidence 
 
 Run these after implementing to get immediate feedback:
 
-- Tests: `pytest tests/` (858 tests)
+- Tests: `pytest tests/` (1508 tests)
 - Typecheck: `mypy src/ml/`
 - Lint: `ruff check src/ml/`
 
@@ -73,7 +79,7 @@ src/
 scripts/
 ├── run_backtest.py        # Backtest entry point
 └── run_live.py            # Live trading entry point
-tests/                     # 858 tests (unit + integration)
+tests/                     # 1508 tests (unit + integration)
 ```
 
 ### Codebase Patterns
