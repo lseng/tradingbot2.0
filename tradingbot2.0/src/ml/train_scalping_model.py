@@ -601,7 +601,9 @@ def main():
     with torch.no_grad():
         for i in range(0, len(X_test_t), eval_batch_size):
             batch = X_test_t[i:i+eval_batch_size].to(device)
-            logits = model(batch)
+            output = model(batch)
+            # Handle LSTM which returns (logits, hidden_state) tuple
+            logits = output[0] if isinstance(output, tuple) else output
             probs = torch.softmax(logits, dim=1).cpu()
             all_probs.append(probs)
             # Clear GPU cache periodically
