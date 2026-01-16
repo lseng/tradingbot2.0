@@ -409,8 +409,8 @@ def run_backtest(
 
     # Add features
     logger.info("Computing features...")
-    feature_engineer = ScalpingFeatureEngineer()
-    df = feature_engineer.add_all_features(df)
+    feature_engineer = ScalpingFeatureEngineer(df)
+    df = feature_engineer.generate_all_features()
 
     # Create target variable
     df = loader.create_target_variable(df, lookahead_seconds=30, threshold_ticks=3.0)
