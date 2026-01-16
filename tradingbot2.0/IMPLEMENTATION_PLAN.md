@@ -924,7 +924,7 @@ Before going live with real capital, the system must:
 4. [x] EOD flatten works 100% of the time (verified across DST boundaries) - **VERIFIED with DST tests**
 5. [x] Inference latency < 10ms (measured on target hardware) - **VERIFIED with inference benchmark tests**
 6. [x] No lookahead bias in features or targets (temporal unit tests pass) - **VERIFIED with 29 comprehensive tests**
-7. [x] Unit test coverage > 80% - **ACHIEVED (85% coverage, 2006 tests)**
+7. [x] Unit test coverage > 80% - **ACHIEVED (87% coverage, 2087 tests)**
 8. [ ] Paper trading for minimum 2 weeks without critical errors
 9. [x] Position sizing matches spec for all account balance tiers - **VERIFIED with 53 comprehensive tests**
 10. [x] Circuit breakers tested and working (simulated loss scenarios) - **VERIFIED with 40 comprehensive tests**
@@ -936,7 +936,7 @@ Before going live with real capital, the system must:
 ## Notes
 
 - The existing `src/ml/` code is a solid foundation but needs significant rework for scalping timeframes
-- **2006 tests exist** with 85% coverage - comprehensive test suite covering all major modules
+- **2087 tests exist** with 87% coverage - comprehensive test suite covering all major modules
 - The 227MB 1-second parquet dataset is the primary asset but isn't being used
 - TopstepX API is for **live trading only** (7-14 day historical limit)
 - DataBento is for historical data (already have 2 years in parquet)
@@ -1234,3 +1234,9 @@ Before going live with real capital, the system must:
 | 2026-01-16 | **Test Coverage Milestone**: Improved train_scalping_model.py coverage from 23% to 97% (309 statements, only 10 missing) |
 | 2026-01-16 | Added tests/test_train_scalping_model_integration.py with 43 new integration tests (end-to-end main() tests, error handling, model saving, evaluation) |
 | 2026-01-16 | Total test count increased from 1964 to 2006 (42 new tests) |
+| 2026-01-16 | **Extended Test Coverage**: Added tests/test_bayesian_optimizer_extended.py with 25 tests (coverage 63% → 94%) |
+| 2026-01-16 | Bayesian optimizer tests cover: unknown sampler/pruner fallback, trial failure handling, save/load study, get_importance, visualizations |
+| 2026-01-16 | **Extended Test Coverage**: Added tests/test_time_utils_extended.py with 56 tests (coverage 71% → 99%) |
+| 2026-01-16 | Time utils tests cover: ETH edge cases (Sunday, Friday, CME reset), session start/end, EOD phases, trading day calendar, normalize_to_session |
+| 2026-01-16 | Total test count increased from 2006 to 2087 (81 new tests) |
+| 2026-01-16 | Overall test coverage improved from 86% to 87% |
