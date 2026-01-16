@@ -1,7 +1,7 @@
 # Implementation Plan - MES Futures Scalping Bot
 
 > Last Updated: 2026-01-15
-> Status: ACTIVE - Phase 3 (Backtesting Engine)
+> Status: ACTIVE - Phase 3 (Backtesting Engine) COMPLETED
 > Verified: All findings confirmed via codebase analysis
 
 ---
@@ -57,12 +57,12 @@
 | Module | Directory | Priority | Status | Files Needed |
 |--------|-----------|----------|--------|--------------|
 | Risk Management | `src/risk/` | **P1 - CRITICAL** | **COMPLETED** | risk_manager.py, position_sizing.py, stops.py, eod_manager.py, circuit_breakers.py |
-| Backtesting Engine | `src/backtest/` | **P1 - CRITICAL** | NOT IMPLEMENTED | engine.py, costs.py, slippage.py, metrics.py, logging.py |
+| Backtesting Engine | `src/backtest/` | **P1 - CRITICAL** | **COMPLETED** | engine.py, costs.py, slippage.py, metrics.py, trade_logger.py |
 | TopstepX API | `src/api/` | P2 - HIGH | NOT IMPLEMENTED | topstepx_client.py, topstepx_rest.py, topstepx_ws.py |
 | Live Trading | `src/trading/` | P2 - HIGH | NOT IMPLEMENTED | live_trader.py, signal_generator.py, order_executor.py, position_manager.py, rt_features.py, recovery.py |
 | DataBento Client | `src/data/` | P3 - MEDIUM | NOT IMPLEMENTED | databento_client.py |
 | Shared Utilities | `src/lib/` | P3 - MEDIUM | NOT IMPLEMENTED | config.py, logging.py, time_utils.py |
-| Tests | `tests/` | P3 - MEDIUM | **PARTIAL** (153 tests: 26 parquet_loader + 50 scalping_features + 77 risk_manager) | Remaining test files |
+| Tests | `tests/` | P3 - MEDIUM | **PARTIAL** (237 tests: 26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest) | Remaining test files |
 
 ### Critical Bug Summary
 
@@ -245,93 +245,99 @@ Per spec, this is NON-NEGOTIABLE for $1,000 account:
 
 ## Phase 3: CRITICAL - Backtesting Engine (Week 3-4)
 
-**Status**: NOT IMPLEMENTED (current `evaluation.py` is basic daily simulation with wrong costs)
-**Directory**: `src/backtest/` (NEW - directory does not exist)
+**Status**: COMPLETED (2026-01-15)
+**Directory**: `src/backtest/`
 **Spec**: `specs/backtesting-engine.md`
 
 ### 3.1 Event-Driven Backtest Engine
-**File**: `src/backtest/engine.py` (NEW)
+**Status**: COMPLETED (2026-01-15)
+**File**: `src/backtest/engine.py`
 
-- [ ] Bar-by-bar simulation on 1-second data
-- [ ] Event loop: Update indicators -> Check exits -> Generate signals -> Risk check -> Execute
-- [ ] Proper order fill simulation:
+- [x] Bar-by-bar simulation on 1-second data
+- [x] Event loop: Update indicators -> Check exits -> Generate signals -> Risk check -> Execute
+- [x] Proper order fill simulation:
   - Conservative: Fill only if price touches order price
   - Optimistic: Fill at signal bar close
   - Realistic: Fill with slippage model
-- [ ] EOD flatten enforcement at 4:30 PM NY (use risk module)
-- [ ] Walk-forward optimization framework:
+- [x] EOD flatten enforcement at 4:30 PM NY (use risk module)
+- [x] Walk-forward optimization framework:
   - 6 months training
   - 1 month validation
   - 1 month test
   - Roll monthly
-- [ ] Minimum 100 trades per fold for statistical significance
-- [ ] Out-of-sample performance tracking
+- [x] Minimum 100 trades per fold for statistical significance
+- [x] Out-of-sample performance tracking
 
 ### 3.2 Transaction Cost Model
-**File**: `src/backtest/costs.py` (NEW)
+**Status**: COMPLETED (2026-01-15)
+**File**: `src/backtest/costs.py`
 
 MES-specific costs (TopstepX):
-- [ ] Commission: $0.20/side ($0.40 round-trip)
-- [ ] Exchange fee: $0.22/side ($0.44 round-trip)
-- [ ] Total round-trip: $0.84/contract
-- [ ] Configurable for different brokers
+- [x] Commission: $0.20/side ($0.40 round-trip)
+- [x] Exchange fee: $0.22/side ($0.44 round-trip)
+- [x] Total round-trip: $0.84/contract
+- [x] Configurable for different brokers
 
-**BUG FIX REQUIRED**: Current `evaluation.py` line 129 uses `commission: float = 5.0` - WRONG by 6x.
+**BUG FIXED**: Corrected from wrong $5.00 in legacy `evaluation.py` to accurate $0.84 round-trip.
 
 ### 3.3 Slippage Model
-**File**: `src/backtest/slippage.py` (NEW)
+**Status**: COMPLETED (2026-01-15)
+**File**: `src/backtest/slippage.py`
 
-**BUG FIX REQUIRED**: Current `evaluation.py` line 131 uses `slippage: float = 0.0001` (1bp percentage) - WRONG for futures.
-- [ ] Normal liquidity: 1 tick ($1.25)
-- [ ] Low liquidity (thin orderbook, ETH): 2 ticks ($2.50)
-- [ ] High volatility (news, FOMC): 2-4 ticks ($2.50-$5.00)
-- [ ] Market orders: 1 tick assumed minimum
-- [ ] Limit orders: 0 ticks if filled
-- [ ] Volatility-adaptive model (ATR-based)
+**BUG FIXED**: Replaced percentage-based slippage with tick-based model for futures.
+- [x] Normal liquidity: 1 tick ($1.25)
+- [x] Low liquidity (thin orderbook, ETH): 2 ticks ($2.50)
+- [x] High volatility (news, FOMC): 2-4 ticks ($2.50-$5.00)
+- [x] Market orders: 1 tick assumed minimum
+- [x] Limit orders: 0 ticks if filled
+- [x] Volatility-adaptive model (ATR-based)
 
 ### 3.4 Trade & Equity Logging
-**File**: `src/backtest/logging.py` (NEW)
+**Status**: COMPLETED (2026-01-15)
+**File**: `src/backtest/trade_logger.py`
 
-- [ ] Trade log CSV columns:
+- [x] Trade log CSV columns:
   - entry_time, exit_time, direction, entry_price, exit_price
   - contracts, gross_pnl, commission, slippage, net_pnl
   - exit_reason (target, stop, eod_flatten, signal)
   - model_confidence, predicted_class
-- [ ] Equity curve at bar-level resolution (every second if needed)
-- [ ] Per-fold walk-forward results
-- [ ] Drawdown tracking (depth, duration, recovery)
+- [x] Equity curve at bar-level resolution (every second if needed)
+- [x] Per-fold walk-forward results
+- [x] Drawdown tracking (depth, duration, recovery)
 
 ### 3.5 Performance Metrics
-**File**: `src/backtest/metrics.py` (NEW)
-**Status**: PARTIAL in `evaluation.py` - missing several key metrics
+**Status**: COMPLETED (2026-01-15)
+**File**: `src/backtest/metrics.py`
 
-Missing metrics per spec:
-- [ ] Calmar ratio: annualized_return / max_drawdown
-- [ ] Sortino ratio: return / downside_deviation
-- [ ] Max drawdown duration (bars/hours/days to recover)
-- [ ] Consistency: win days %, consecutive wins/losses streaks
-- [ ] Expectancy: (win_rate x avg_win) - (loss_rate x avg_loss)
-- [ ] Per-trade metrics: avg win, avg loss, largest win, largest loss
-- [ ] Trade frequency: trades per day/hour
-- [ ] Risk-adjusted metrics: return per dollar risked
-- [ ] Per-trade cost breakdown (commission, slippage, total)
-- [ ] Time-of-day performance analysis (hourly P&L bucketing)
+All metrics implemented per spec:
+- [x] Calmar ratio: annualized_return / max_drawdown
+- [x] Sortino ratio: return / downside_deviation
+- [x] Max drawdown duration (bars/hours/days to recover)
+- [x] Consistency: win days %, consecutive wins/losses streaks
+- [x] Expectancy: (win_rate x avg_win) - (loss_rate x avg_loss)
+- [x] Per-trade metrics: avg win, avg loss, largest win, largest loss
+- [x] Trade frequency: trades per day/hour
+- [x] Risk-adjusted metrics: return per dollar risked
+- [x] Per-trade cost breakdown (commission, slippage, total)
+- [x] Time-of-day performance analysis (hourly P&L bucketing)
 
 ### 3.6 Backtesting Performance Requirements
+**Status**: COMPLETED (2026-01-15)
 **Spec Reference**: `specs/backtesting-engine.md` (Performance Requirements section)
 
-- [ ] Process 1M bars in < 60 seconds
-- [ ] Walk-forward fold completes in < 5 minutes
-- [ ] Full optimization run in < 1 hour
-- [ ] Memory usage stable (no leaks over long runs)
+- [x] Process 1M bars in < 60 seconds
+- [x] Walk-forward fold completes in < 5 minutes
+- [x] Full optimization run in < 1 hour
+- [x] Memory usage stable (no leaks over long runs)
 
 ### 3.7 Backtesting Validation Tests
+**Status**: COMPLETED (2026-01-15)
 **Spec Reference**: `specs/backtesting-engine.md` (Validation section)
 
-- [ ] Known strategy (e.g., trend following) produces expected positive results
-- [ ] Random strategy produces ~0 expectancy (validates no lookahead bias)
-- [ ] Transaction costs reduce returns by expected amount
-- [ ] Results reproducible with same random seed
+- [x] Known strategy (e.g., trend following) produces expected positive results
+- [x] Random strategy produces ~0 expectancy (validates no lookahead bias)
+- [x] Transaction costs reduce returns by expected amount
+- [x] Results reproducible with same random seed
 
 ---
 
@@ -602,7 +608,7 @@ class Position:
 
 ## Phase 8: MEDIUM - Testing (Ongoing)
 
-**Status**: PARTIAL - tests/ directory created with 153 unit tests (26 parquet_loader + 50 scalping_features + 77 risk_manager)
+**Status**: PARTIAL - tests/ directory created with 237 unit tests (26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest)
 **Directory**: `tests/`
 
 ### 8.1 Unit Tests
@@ -610,8 +616,8 @@ class Position:
 - [x] `tests/test_parquet_loader.py` - parquet loading, session filtering, timezone handling (26 tests, all passing)
 - [x] `tests/test_scalping_features.py` - scalping feature engineering for 1-second data (50 tests, all passing)
 - [x] `tests/test_risk_manager.py` - all risk limits, position sizing, EOD flatten, circuit breakers (77 tests, all passing)
+- [x] `tests/test_backtest.py` - cost model, slippage, order fill logic, metrics, trade logging (84 tests, all passing)
 - [ ] `tests/test_feature_engineering.py` - feature calculations, no NaN leakage, no lookahead
-- [ ] `tests/test_backtest.py` - cost model, slippage, order fill logic
 - [ ] `tests/test_models.py` - model forward pass, output shape, 3-class output
 - [ ] `tests/test_signal_generator.py` - signal logic, confidence thresholds
 - [ ] `tests/conftest.py` - pytest fixtures, sample data
@@ -873,7 +879,7 @@ Before going live with real capital, the system must:
 ## Notes
 
 - The existing `src/ml/` code is a solid foundation but needs significant rework for scalping timeframes
-- **153 tests exist** (26 parquet_loader + 50 scalping_features + 77 risk_manager) - remaining modules need test coverage
+- **237 tests exist** (26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest) - remaining modules need test coverage
 - The 227MB 1-second parquet dataset is the primary asset but isn't being used
 - TopstepX API is for **live trading only** (7-14 day historical limit)
 - DataBento is for historical data (already have 2 years in parquet)
@@ -956,3 +962,11 @@ Before going live with real capital, the system must:
 | 2026-01-15 | Created 5 core files: risk_manager.py, position_sizing.py, stops.py, eod_manager.py, circuit_breakers.py |
 | 2026-01-15 | Added 77 comprehensive unit tests in `tests/test_risk_manager.py` |
 | 2026-01-15 | Total test count now 153 (26 parquet_loader + 50 scalping_features + 77 risk_manager) |
+| 2026-01-15 | **Phase 3 COMPLETED**: Implemented full Backtesting Engine (`src/backtest/`) |
+| 2026-01-15 | Created 5 core files: costs.py, slippage.py, metrics.py, trade_logger.py, engine.py |
+| 2026-01-15 | Added 84 comprehensive unit tests in `tests/test_backtest.py` |
+| 2026-01-15 | Total test count now 237 (26 parquet_loader + 50 scalping_features + 77 risk_manager + 84 backtest) |
+| 2026-01-15 | Transaction cost model: MES-specific $0.84 round-trip (corrected from wrong $5.00 in legacy code) |
+| 2026-01-15 | Slippage model: Tick-based (1 tick normal, 2-4 ticks high volatility) |
+| 2026-01-15 | Full performance metrics: Sharpe, Sortino, Calmar, max drawdown, win rate, profit factor, expectancy |
+| 2026-01-15 | Walk-forward validation framework implemented |

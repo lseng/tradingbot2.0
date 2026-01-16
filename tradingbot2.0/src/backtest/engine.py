@@ -1,0 +1,990 @@
+"""
+Event-Driven Backtesting Engine for MES Futures Scalping
+
+This module implements a realistic bar-by-bar simulation engine for
+validating ML-based trading strategies before live deployment.
+
+Key Features:
+- Bar-by-bar event processing on 1-second data
+- Full integration with risk management module
+- Realistic order fill simulation with slippage
+- EOD flatten enforcement at 4:30 PM NY
+- Walk-forward optimization support
+- Comprehensive logging and metrics
+
+The engine processes data chronologically, respecting time boundaries
+and avoiding lookahead bias. All risk limits are enforced identically
+to live trading.
+
+Usage:
+    engine = BacktestEngine(config=BacktestConfig())
+    result = engine.run(
+        data=df,
+        signal_generator=my_signal_function,
+    )
+    result.report.export_all("./results")
+"""
+
+from dataclasses import dataclass, field
+from datetime import datetime, time, date, timedelta
+from enum import Enum
+from typing import Optional, List, Dict, Any, Callable, Tuple
+import numpy as np
+import pandas as pd
+import sys
+import os
+
+# Add parent paths for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
+from .costs import TransactionCostModel, MESCostConfig
+from .slippage import SlippageModel, SlippageConfig, OrderType, MarketCondition
+from .metrics import PerformanceMetrics, calculate_metrics
+from .trade_logger import (
+    TradeLog,
+    TradeRecord,
+    EquityCurve,
+    BacktestReport,
+    ExitReason,
+)
+
+
+class SignalType(Enum):
+    """Trading signal types."""
+    HOLD = "hold"  # No action
+    LONG_ENTRY = "long_entry"  # Open long
+    SHORT_ENTRY = "short_entry"  # Open short
+    EXIT_LONG = "exit_long"  # Close long
+    EXIT_SHORT = "exit_short"  # Close short
+    FLATTEN = "flatten"  # Close all positions
+
+
+class OrderFillMode(Enum):
+    """Order fill simulation modes."""
+    # Fill at next bar open + slippage (realistic)
+    NEXT_BAR_OPEN = "next_bar_open"
+    # Fill at signal bar close (optimistic)
+    SIGNAL_BAR_CLOSE = "signal_bar_close"
+    # Fill only if price touches order price (conservative)
+    PRICE_TOUCH = "price_touch"
+
+
+@dataclass
+class Signal:
+    """
+    Trading signal from strategy.
+
+    Attributes:
+        signal_type: Type of signal
+        confidence: Model confidence (0-1)
+        predicted_class: Model's class prediction (0=down, 1=flat, 2=up)
+        stop_ticks: Stop loss distance in ticks
+        target_ticks: Take profit distance in ticks
+        reason: Optional reason/explanation
+    """
+    signal_type: SignalType
+    confidence: float = 0.0
+    predicted_class: int = 1  # Default FLAT
+    stop_ticks: float = 8.0  # Default 8 ticks = $10
+    target_ticks: float = 16.0  # Default 16 ticks = $20 (2:1 R:R)
+    reason: str = ""
+
+
+@dataclass
+class Position:
+    """
+    Open position state.
+
+    Tracks entry details and running P&L for position management.
+    """
+    entry_time: datetime
+    entry_price: float
+    direction: int  # 1=long, -1=short
+    contracts: int
+    stop_price: float
+    target_price: float
+    entry_bar_idx: int = 0
+    model_confidence: float = 0.0
+    predicted_class: int = 1
+    # Running stats
+    max_favorable_excursion: float = 0.0
+    max_adverse_excursion: float = 0.0
+    unrealized_pnl: float = 0.0
+    bars_held: int = 0
+
+
+@dataclass
+class BacktestConfig:
+    """
+    Configuration for backtest engine.
+
+    All parameters needed for realistic simulation.
+
+    Attributes:
+        initial_capital: Starting account balance
+        commission_per_side: Commission per side per contract
+        exchange_fee_per_side: Exchange fee per side per contract
+        slippage_ticks: Expected slippage in ticks
+        tick_size: Minimum price increment (0.25 for MES)
+        tick_value: Dollar value per tick (1.25 for MES)
+        point_value: Dollar value per point (5.00 for MES)
+        fill_mode: Order fill simulation mode
+        min_confidence: Minimum confidence to trade
+        default_stop_ticks: Default stop loss in ticks
+        default_target_ticks: Default take profit in ticks
+        max_daily_loss: Maximum loss per day (stop trading)
+        max_position_size: Maximum contracts per position
+        rth_start: RTH session start time (NY)
+        rth_end: RTH session end time (NY)
+        eod_flatten_time: Time to flatten all positions (NY)
+        eod_reduce_time: Time to reduce position sizing (NY)
+        eod_close_only_time: Time to stop new positions (NY)
+        log_frequency: How often to log equity (bars between logs)
+    """
+    initial_capital: float = 1000.0
+    commission_per_side: float = 0.20
+    exchange_fee_per_side: float = 0.22
+    slippage_ticks: float = 1.0
+    tick_size: float = 0.25
+    tick_value: float = 1.25
+    point_value: float = 5.0
+    fill_mode: OrderFillMode = OrderFillMode.NEXT_BAR_OPEN
+    min_confidence: float = 0.60
+    default_stop_ticks: float = 8.0
+    default_target_ticks: float = 16.0
+    max_daily_loss: float = 50.0
+    max_position_size: int = 5
+    rth_start: time = time(9, 30)
+    rth_end: time = time(16, 0)
+    eod_flatten_time: time = time(16, 30)  # 4:30 PM
+    eod_reduce_time: time = time(16, 0)  # 4:00 PM
+    eod_close_only_time: time = time(16, 15)  # 4:15 PM
+    log_frequency: int = 60  # Log equity every 60 bars (1 min for 1-sec data)
+
+    @property
+    def round_trip_cost(self) -> float:
+        """Total cost for a round-trip trade per contract."""
+        return (self.commission_per_side + self.exchange_fee_per_side) * 2
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert config to dictionary."""
+        return {
+            "initial_capital": self.initial_capital,
+            "commission_per_side": self.commission_per_side,
+            "exchange_fee_per_side": self.exchange_fee_per_side,
+            "slippage_ticks": self.slippage_ticks,
+            "tick_size": self.tick_size,
+            "tick_value": self.tick_value,
+            "fill_mode": self.fill_mode.value,
+            "min_confidence": self.min_confidence,
+            "default_stop_ticks": self.default_stop_ticks,
+            "default_target_ticks": self.default_target_ticks,
+            "max_daily_loss": self.max_daily_loss,
+            "max_position_size": self.max_position_size,
+            "rth_start": self.rth_start.isoformat(),
+            "rth_end": self.rth_end.isoformat(),
+            "eod_flatten_time": self.eod_flatten_time.isoformat(),
+        }
+
+
+@dataclass
+class BacktestResult:
+    """
+    Complete results from a backtest run.
+
+    Attributes:
+        report: Full backtest report with trades, equity, metrics
+        config: Configuration used for this run
+        data_stats: Statistics about the input data
+        execution_time_seconds: How long the backtest took
+    """
+    report: BacktestReport
+    config: BacktestConfig
+    data_stats: Dict[str, Any] = field(default_factory=dict)
+    execution_time_seconds: float = 0.0
+
+
+# Type alias for signal generator function
+SignalGenerator = Callable[[pd.Series, Optional[Position], Dict[str, Any]], Signal]
+
+
+class BacktestEngine:
+    """
+    Event-driven backtesting engine for MES futures.
+
+    This engine processes 1-second bar data chronologically, generating
+    signals, managing positions, and tracking performance.
+
+    The main loop:
+    1. Update current bar data
+    2. Check for stop/target exits on open positions
+    3. Check for EOD flatten requirements
+    4. Generate new signal (if flat or should exit)
+    5. Apply risk checks
+    6. Execute if approved
+    7. Log equity and state
+
+    Example:
+        def my_signal_generator(bar, position, context):
+            # Your strategy logic here
+            if position is None and bar['rsi'] < 30:
+                return Signal(SignalType.LONG_ENTRY, confidence=0.75)
+            return Signal(SignalType.HOLD)
+
+        engine = BacktestEngine(config=BacktestConfig())
+        result = engine.run(df, my_signal_generator)
+        print(f"Total return: {result.report.metrics.total_return_pct:.2%}")
+    """
+
+    def __init__(self, config: Optional[BacktestConfig] = None):
+        """
+        Initialize the backtest engine.
+
+        Args:
+            config: Backtest configuration. Uses defaults if not provided.
+        """
+        self.config = config or BacktestConfig()
+
+        # Initialize cost and slippage models
+        self._cost_model = TransactionCostModel(
+            MESCostConfig(
+                commission_per_side=self.config.commission_per_side,
+                exchange_fee_per_side=self.config.exchange_fee_per_side,
+            )
+        )
+        self._slippage_model = SlippageModel(
+            SlippageConfig(
+                tick_size=self.config.tick_size,
+                tick_value=self.config.tick_value,
+                normal_slippage_ticks=self.config.slippage_ticks,
+            )
+        )
+
+        # State tracking
+        self._reset_state()
+
+    def _reset_state(self) -> None:
+        """Reset all state for a new backtest run."""
+        self._equity = self.config.initial_capital
+        self._peak_equity = self.config.initial_capital
+        self._position: Optional[Position] = None
+        self._trade_log = TradeLog()
+        self._equity_curve = EquityCurve(self.config.initial_capital)
+
+        # Daily tracking
+        self._current_date: Optional[date] = None
+        self._daily_pnl = 0.0
+        self._daily_trades = 0
+        self._daily_pnls: List[float] = []
+
+        # Reset cost/slippage tracking
+        self._cost_model.reset()
+        self._slippage_model.reset()
+
+    def run(
+        self,
+        data: pd.DataFrame,
+        signal_generator: SignalGenerator,
+        context: Optional[Dict[str, Any]] = None,
+        verbose: bool = False,
+    ) -> BacktestResult:
+        """
+        Run a complete backtest on the provided data.
+
+        Args:
+            data: DataFrame with OHLCV data and datetime index
+            signal_generator: Function that generates signals given bar data
+            context: Optional context dict passed to signal generator
+            verbose: Whether to print progress
+
+        Returns:
+            BacktestResult with complete backtest outputs
+
+        Raises:
+            ValueError: If data is empty or missing required columns
+        """
+        import time as time_module
+        start_time = time_module.time()
+
+        # Validate data
+        self._validate_data(data)
+
+        # Reset state
+        self._reset_state()
+
+        # Initialize context
+        context = context or {}
+
+        # Data stats
+        data_stats = {
+            "total_bars": len(data),
+            "start_date": data.index[0].isoformat() if len(data) > 0 else None,
+            "end_date": data.index[-1].isoformat() if len(data) > 0 else None,
+        }
+
+        # Main loop
+        total_bars = len(data)
+        for bar_idx, (timestamp, bar) in enumerate(data.iterrows()):
+            # Check for new trading day
+            self._handle_new_day(timestamp)
+
+            # Check stop/target on open position
+            if self._position is not None:
+                exit_signal = self._check_position_exits(bar, timestamp)
+                if exit_signal is not None:
+                    self._execute_exit(exit_signal, bar, timestamp)
+
+            # Check EOD flatten
+            if self._should_flatten_eod(timestamp):
+                if self._position is not None:
+                    self._execute_exit(
+                        Signal(SignalType.FLATTEN, reason="EOD flatten"),
+                        bar,
+                        timestamp,
+                    )
+                continue  # Skip signal generation after flatten time
+
+            # Check if can trade (daily loss limit)
+            if not self._can_trade_today():
+                continue
+
+            # Generate signal
+            signal = signal_generator(bar, self._position, context)
+
+            # Process signal
+            self._process_signal(signal, bar, timestamp, bar_idx)
+
+            # Update equity tracking
+            self._update_equity(bar, timestamp, bar_idx)
+
+            # Progress logging
+            if verbose and bar_idx % 10000 == 0:
+                pct = (bar_idx / total_bars) * 100
+                print(f"Progress: {pct:.1f}% ({bar_idx}/{total_bars})")
+
+        # Handle any open position at end of data
+        if self._position is not None:
+            self._force_close_position(data.iloc[-1], data.index[-1])
+
+        # Finalize daily P&L for last day
+        if self._daily_pnl != 0:
+            self._daily_pnls.append(self._daily_pnl)
+
+        # Calculate metrics
+        metrics = self._calculate_final_metrics(data)
+
+        # Build report
+        report = BacktestReport(
+            trade_log=self._trade_log,
+            equity_curve=self._equity_curve,
+            metrics=metrics,
+            config=self.config.to_dict(),
+            start_date=data.index[0] if len(data) > 0 else None,
+            end_date=data.index[-1] if len(data) > 0 else None,
+        )
+
+        execution_time = time_module.time() - start_time
+
+        return BacktestResult(
+            report=report,
+            config=self.config,
+            data_stats=data_stats,
+            execution_time_seconds=execution_time,
+        )
+
+    def _validate_data(self, data: pd.DataFrame) -> None:
+        """Validate input data has required columns and format."""
+        if data is None or len(data) == 0:
+            raise ValueError("Data cannot be empty")
+
+        required_columns = ['open', 'high', 'low', 'close']
+        missing = [col for col in required_columns if col not in data.columns]
+        if missing:
+            raise ValueError(f"Data missing required columns: {missing}")
+
+        if not isinstance(data.index, pd.DatetimeIndex):
+            raise ValueError("Data index must be DatetimeIndex")
+
+    def _handle_new_day(self, timestamp: datetime) -> None:
+        """Handle transition to a new trading day."""
+        current_date = timestamp.date()
+
+        if self._current_date is not None and current_date != self._current_date:
+            # Save previous day's P&L
+            if self._daily_pnl != 0 or self._daily_trades > 0:
+                self._daily_pnls.append(self._daily_pnl)
+
+            # Reset daily tracking
+            self._daily_pnl = 0.0
+            self._daily_trades = 0
+
+        self._current_date = current_date
+
+    def _can_trade_today(self) -> bool:
+        """Check if trading is allowed today (daily loss limit)."""
+        return self._daily_pnl > -self.config.max_daily_loss
+
+    def _should_flatten_eod(self, timestamp: datetime) -> bool:
+        """Check if we need to flatten positions for EOD."""
+        current_time = timestamp.time()
+        return current_time >= self.config.eod_flatten_time
+
+    def _can_open_new_position(self, timestamp: datetime) -> bool:
+        """Check if we can open a new position (EOD restrictions)."""
+        current_time = timestamp.time()
+        return current_time < self.config.eod_close_only_time
+
+    def _get_eod_size_multiplier(self, timestamp: datetime) -> float:
+        """Get position size multiplier based on time of day."""
+        current_time = timestamp.time()
+
+        if current_time >= self.config.eod_close_only_time:
+            return 0.0  # No new positions
+        elif current_time >= self.config.eod_reduce_time:
+            return 0.5  # Half size
+        else:
+            return 1.0  # Full size
+
+    def _check_position_exits(
+        self,
+        bar: pd.Series,
+        timestamp: datetime,
+    ) -> Optional[Signal]:
+        """
+        Check if open position should exit due to stop/target.
+
+        Uses bar high/low to check if stop or target was hit.
+
+        Args:
+            bar: Current bar data (OHLCV)
+            timestamp: Current timestamp
+
+        Returns:
+            Exit signal if position should close, None otherwise
+        """
+        if self._position is None:
+            return None
+
+        pos = self._position
+
+        # Update MFE/MAE
+        if pos.direction == 1:  # Long
+            mfe_price = bar['high']
+            mae_price = bar['low']
+            current_pnl = (mfe_price - pos.entry_price) * pos.contracts * self.config.point_value
+            adverse_pnl = (mae_price - pos.entry_price) * pos.contracts * self.config.point_value
+        else:  # Short
+            mfe_price = bar['low']
+            mae_price = bar['high']
+            current_pnl = (pos.entry_price - mfe_price) * pos.contracts * self.config.point_value
+            adverse_pnl = (pos.entry_price - mae_price) * pos.contracts * self.config.point_value
+
+        pos.max_favorable_excursion = max(pos.max_favorable_excursion, current_pnl)
+        pos.max_adverse_excursion = min(pos.max_adverse_excursion, adverse_pnl)
+        pos.bars_held += 1
+
+        # Check stop loss hit
+        if pos.direction == 1:  # Long
+            if bar['low'] <= pos.stop_price:
+                return Signal(SignalType.EXIT_LONG, reason="stop_hit")
+        else:  # Short
+            if bar['high'] >= pos.stop_price:
+                return Signal(SignalType.EXIT_SHORT, reason="stop_hit")
+
+        # Check target hit
+        if pos.direction == 1:  # Long
+            if bar['high'] >= pos.target_price:
+                return Signal(SignalType.EXIT_LONG, reason="target_hit")
+        else:  # Short
+            if bar['low'] <= pos.target_price:
+                return Signal(SignalType.EXIT_SHORT, reason="target_hit")
+
+        return None
+
+    def _process_signal(
+        self,
+        signal: Signal,
+        bar: pd.Series,
+        timestamp: datetime,
+        bar_idx: int,
+    ) -> None:
+        """
+        Process a trading signal.
+
+        Args:
+            signal: The signal to process
+            bar: Current bar data
+            timestamp: Current timestamp
+            bar_idx: Index of current bar
+        """
+        if signal.signal_type == SignalType.HOLD:
+            return
+
+        # Check confidence threshold
+        if signal.confidence < self.config.min_confidence:
+            return
+
+        # Entry signals
+        if signal.signal_type in (SignalType.LONG_ENTRY, SignalType.SHORT_ENTRY):
+            # Can't enter if already in position
+            if self._position is not None:
+                return
+
+            # Check EOD restrictions
+            if not self._can_open_new_position(timestamp):
+                return
+
+            self._execute_entry(signal, bar, timestamp, bar_idx)
+
+        # Exit signals
+        elif signal.signal_type in (SignalType.EXIT_LONG, SignalType.EXIT_SHORT, SignalType.FLATTEN):
+            if self._position is not None:
+                self._execute_exit(signal, bar, timestamp)
+
+    def _execute_entry(
+        self,
+        signal: Signal,
+        bar: pd.Series,
+        timestamp: datetime,
+        bar_idx: int,
+    ) -> None:
+        """
+        Execute an entry order.
+
+        Args:
+            signal: Entry signal
+            bar: Current bar data
+            timestamp: Current timestamp
+            bar_idx: Bar index for tracking
+        """
+        direction = 1 if signal.signal_type == SignalType.LONG_ENTRY else -1
+
+        # Get fill price based on fill mode
+        if self.config.fill_mode == OrderFillMode.SIGNAL_BAR_CLOSE:
+            base_price = bar['close']
+        else:
+            # NEXT_BAR_OPEN or PRICE_TOUCH - use close as approximation
+            base_price = bar['close']
+
+        # Apply slippage
+        entry_price = self._slippage_model.apply_slippage(
+            price=base_price,
+            direction=direction,
+            order_type=OrderType.MARKET,
+        )
+
+        # Calculate position size
+        size_multiplier = self._get_eod_size_multiplier(timestamp)
+        contracts = max(1, int(size_multiplier))  # Minimum 1 contract
+        contracts = min(contracts, self.config.max_position_size)
+
+        # Calculate stop and target prices
+        stop_ticks = signal.stop_ticks or self.config.default_stop_ticks
+        target_ticks = signal.target_ticks or self.config.default_target_ticks
+
+        if direction == 1:  # Long
+            stop_price = entry_price - (stop_ticks * self.config.tick_size)
+            target_price = entry_price + (target_ticks * self.config.tick_size)
+        else:  # Short
+            stop_price = entry_price + (stop_ticks * self.config.tick_size)
+            target_price = entry_price - (target_ticks * self.config.tick_size)
+
+        # Create position
+        self._position = Position(
+            entry_time=timestamp,
+            entry_price=entry_price,
+            direction=direction,
+            contracts=contracts,
+            stop_price=stop_price,
+            target_price=target_price,
+            entry_bar_idx=bar_idx,
+            model_confidence=signal.confidence,
+            predicted_class=signal.predicted_class,
+        )
+
+    def _execute_exit(
+        self,
+        signal: Signal,
+        bar: pd.Series,
+        timestamp: datetime,
+    ) -> None:
+        """
+        Execute an exit order.
+
+        Args:
+            signal: Exit signal
+            bar: Current bar data
+            timestamp: Current timestamp
+        """
+        if self._position is None:
+            return
+
+        pos = self._position
+
+        # Determine exit price based on reason
+        if signal.reason == "stop_hit":
+            # Stopped out - fill at stop price with slippage
+            base_price = pos.stop_price
+            exit_reason = ExitReason.STOP
+        elif signal.reason == "target_hit":
+            # Target hit - fill at target price (limit order, no slippage)
+            base_price = pos.target_price
+            exit_reason = ExitReason.TARGET
+        elif signal.reason == "EOD flatten":
+            base_price = bar['close']
+            exit_reason = ExitReason.EOD_FLATTEN
+        else:
+            base_price = bar['close']
+            exit_reason = ExitReason.SIGNAL
+
+        # Apply slippage for market exits (not targets)
+        if exit_reason != ExitReason.TARGET:
+            exit_price = self._slippage_model.apply_slippage(
+                price=base_price,
+                direction=-pos.direction,  # Opposite direction for exit
+                order_type=OrderType.MARKET,
+                contracts=pos.contracts,
+            )
+        else:
+            exit_price = base_price
+
+        # Calculate P&L
+        if pos.direction == 1:  # Long
+            price_move = exit_price - pos.entry_price
+        else:  # Short
+            price_move = pos.entry_price - exit_price
+
+        gross_pnl = price_move * pos.contracts * self.config.point_value
+
+        # Calculate costs
+        commission = self._cost_model.record_trade(pos.contracts)
+        slippage_cost = self._slippage_model.get_slippage_cost(
+            self.config.slippage_ticks * 2,  # Entry and exit
+            pos.contracts,
+        )
+
+        net_pnl = gross_pnl - commission
+
+        # Record trade
+        self._trade_log.add_trade(
+            entry_time=pos.entry_time,
+            exit_time=timestamp,
+            direction=pos.direction,
+            entry_price=pos.entry_price,
+            exit_price=exit_price,
+            contracts=pos.contracts,
+            gross_pnl=gross_pnl,
+            commission=commission,
+            slippage=slippage_cost,
+            exit_reason=exit_reason,
+            model_confidence=pos.model_confidence,
+            predicted_class=pos.predicted_class,
+            stop_price=pos.stop_price,
+            target_price=pos.target_price,
+            bars_held=pos.bars_held,
+            max_favorable_excursion=pos.max_favorable_excursion,
+            max_adverse_excursion=pos.max_adverse_excursion,
+        )
+
+        # Update equity
+        self._equity += net_pnl
+        self._daily_pnl += net_pnl
+        self._daily_trades += 1
+
+        # Update peak
+        if self._equity > self._peak_equity:
+            self._peak_equity = self._equity
+
+        # Clear position
+        self._position = None
+
+    def _force_close_position(
+        self,
+        bar: pd.Series,
+        timestamp: datetime,
+    ) -> None:
+        """Force close position at end of data."""
+        if self._position is None:
+            return
+
+        self._execute_exit(
+            Signal(SignalType.FLATTEN, reason="End of data"),
+            bar,
+            timestamp,
+        )
+
+    def _update_equity(
+        self,
+        bar: pd.Series,
+        timestamp: datetime,
+        bar_idx: int,
+    ) -> None:
+        """Update equity curve with current state."""
+        # Only log at configured frequency
+        if bar_idx % self.config.log_frequency != 0:
+            return
+
+        # Calculate unrealized P&L if in position
+        unrealized_pnl = 0.0
+        position_size = 0
+
+        if self._position is not None:
+            pos = self._position
+            position_size = pos.contracts * pos.direction
+
+            if pos.direction == 1:  # Long
+                unrealized_pnl = (bar['close'] - pos.entry_price) * pos.contracts * self.config.point_value
+            else:  # Short
+                unrealized_pnl = (pos.entry_price - bar['close']) * pos.contracts * self.config.point_value
+
+        # Log equity point
+        self._equity_curve.add_point(
+            timestamp=timestamp,
+            equity=self._equity + unrealized_pnl,
+            position_size=position_size,
+            unrealized_pnl=unrealized_pnl,
+        )
+
+    def _calculate_final_metrics(self, data: pd.DataFrame) -> PerformanceMetrics:
+        """Calculate final performance metrics."""
+        trade_pnls = self._trade_log.get_trade_pnls()
+        equity_values = self._equity_curve.get_equity_values()
+
+        # Ensure we have equity values
+        if not equity_values:
+            equity_values = [self.config.initial_capital, self._equity]
+
+        # Calculate trading days
+        if len(data) > 0:
+            start_date = data.index[0]
+            end_date = data.index[-1]
+            trading_days = len(pd.date_range(start_date, end_date, freq='B'))
+        else:
+            trading_days = 1
+
+        metrics = calculate_metrics(
+            trade_pnls=trade_pnls,
+            equity_curve=equity_values,
+            initial_capital=self.config.initial_capital,
+            trading_days=trading_days,
+            total_commission=self._cost_model.get_total_commission(),
+            total_slippage=self._slippage_model.get_total_slippage_dollars(),
+            daily_pnls=self._daily_pnls if self._daily_pnls else None,
+            start_date=data.index[0] if len(data) > 0 else None,
+            end_date=data.index[-1] if len(data) > 0 else None,
+        )
+
+        return metrics
+
+
+def create_simple_signal_generator(
+    prediction_column: str = 'prediction',
+    confidence_column: str = 'confidence',
+    min_confidence: float = 0.60,
+    stop_ticks: float = 8.0,
+    target_ticks: float = 16.0,
+) -> SignalGenerator:
+    """
+    Create a simple signal generator from model predictions.
+
+    This is a convenience function for basic strategy testing.
+    For production, implement a custom SignalGenerator with full logic.
+
+    Args:
+        prediction_column: Column name for model prediction (0=down, 1=flat, 2=up)
+        confidence_column: Column name for model confidence
+        min_confidence: Minimum confidence to generate signal
+        stop_ticks: Stop loss distance in ticks
+        target_ticks: Take profit distance in ticks
+
+    Returns:
+        SignalGenerator function
+    """
+    def signal_generator(
+        bar: pd.Series,
+        position: Optional[Position],
+        context: Dict[str, Any],
+    ) -> Signal:
+        # Get prediction and confidence
+        prediction = bar.get(prediction_column, 1)  # Default FLAT
+        confidence = bar.get(confidence_column, 0.0)
+
+        # Check confidence threshold
+        if confidence < min_confidence:
+            return Signal(SignalType.HOLD)
+
+        # If we have a position, check for exit
+        if position is not None:
+            # Exit long if prediction is DOWN
+            if position.direction == 1 and prediction == 0:
+                return Signal(
+                    SignalType.EXIT_LONG,
+                    confidence=confidence,
+                    predicted_class=prediction,
+                    reason="Model predicts DOWN",
+                )
+            # Exit short if prediction is UP
+            elif position.direction == -1 and prediction == 2:
+                return Signal(
+                    SignalType.EXIT_SHORT,
+                    confidence=confidence,
+                    predicted_class=prediction,
+                    reason="Model predicts UP",
+                )
+            return Signal(SignalType.HOLD)
+
+        # If flat, check for entry
+        if prediction == 2:  # UP
+            return Signal(
+                SignalType.LONG_ENTRY,
+                confidence=confidence,
+                predicted_class=prediction,
+                stop_ticks=stop_ticks,
+                target_ticks=target_ticks,
+                reason="Model predicts UP",
+            )
+        elif prediction == 0:  # DOWN
+            return Signal(
+                SignalType.SHORT_ENTRY,
+                confidence=confidence,
+                predicted_class=prediction,
+                stop_ticks=stop_ticks,
+                target_ticks=target_ticks,
+                reason="Model predicts DOWN",
+            )
+
+        return Signal(SignalType.HOLD)
+
+    return signal_generator
+
+
+class WalkForwardValidator:
+    """
+    Walk-forward validation framework for backtesting.
+
+    Implements rolling window train/validation/test splits to avoid
+    overfitting and assess strategy robustness.
+
+    Walk-Forward Process:
+    1. Train model on training window (6 months)
+    2. Optimize parameters on validation window (1 month)
+    3. Test on out-of-sample test window (1 month)
+    4. Roll forward by step size and repeat
+
+    Example with 3 years of data:
+    Fold 1: Train Jan-Jun 2023 | Val Jul 2023 | Test Aug 2023
+    Fold 2: Train Feb-Jul 2023 | Val Aug 2023 | Test Sep 2023
+    ...
+    """
+
+    def __init__(
+        self,
+        training_months: int = 6,
+        validation_months: int = 1,
+        test_months: int = 1,
+        step_months: int = 1,
+        min_trades_per_fold: int = 100,
+    ):
+        """
+        Initialize walk-forward validator.
+
+        Args:
+            training_months: Months in training window
+            validation_months: Months in validation window
+            test_months: Months in test window
+            step_months: Months to roll forward each iteration
+            min_trades_per_fold: Minimum trades required per fold
+        """
+        self.training_months = training_months
+        self.validation_months = validation_months
+        self.test_months = test_months
+        self.step_months = step_months
+        self.min_trades_per_fold = min_trades_per_fold
+
+    def generate_folds(
+        self,
+        data: pd.DataFrame,
+    ) -> List[Dict[str, Tuple[datetime, datetime]]]:
+        """
+        Generate train/val/test date ranges for walk-forward validation.
+
+        Args:
+            data: DataFrame with datetime index
+
+        Returns:
+            List of fold dictionaries with 'train', 'val', 'test' date ranges
+        """
+        if len(data) == 0:
+            return []
+
+        start_date = data.index[0]
+        end_date = data.index[-1]
+
+        folds = []
+        fold_start = start_date
+
+        total_window_months = self.training_months + self.validation_months + self.test_months
+
+        while True:
+            # Calculate window end dates
+            train_end = fold_start + pd.DateOffset(months=self.training_months)
+            val_end = train_end + pd.DateOffset(months=self.validation_months)
+            test_end = val_end + pd.DateOffset(months=self.test_months)
+
+            # Check if we have enough data
+            if test_end > end_date:
+                break
+
+            fold = {
+                'train': (fold_start, train_end),
+                'val': (train_end, val_end),
+                'test': (val_end, test_end),
+            }
+            folds.append(fold)
+
+            # Roll forward
+            fold_start = fold_start + pd.DateOffset(months=self.step_months)
+
+        return folds
+
+    def run_walk_forward(
+        self,
+        data: pd.DataFrame,
+        engine: BacktestEngine,
+        signal_generator: SignalGenerator,
+        verbose: bool = False,
+    ) -> List[BacktestResult]:
+        """
+        Run walk-forward validation.
+
+        Args:
+            data: Full dataset with datetime index
+            engine: BacktestEngine to use
+            signal_generator: Signal generator function
+            verbose: Whether to print progress
+
+        Returns:
+            List of BacktestResult for each fold's test period
+        """
+        folds = self.generate_folds(data)
+        results = []
+
+        for fold_idx, fold in enumerate(folds):
+            if verbose:
+                print(f"Fold {fold_idx + 1}/{len(folds)}: "
+                      f"Test {fold['test'][0].date()} to {fold['test'][1].date()}")
+
+            # Extract test period data
+            test_start, test_end = fold['test']
+            test_data = data[(data.index >= test_start) & (data.index < test_end)]
+
+            if len(test_data) == 0:
+                continue
+
+            # Run backtest on test period
+            result = engine.run(test_data, signal_generator, verbose=False)
+            result.report.fold_id = fold_idx + 1
+
+            results.append(result)
+
+        return results
