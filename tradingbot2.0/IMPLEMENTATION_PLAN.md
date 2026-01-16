@@ -1253,3 +1253,7 @@ Before going live with real capital, the system must:
 | 2026-01-16 | **Test Coverage Improvement**: evaluation.py coverage improved from 73% to 92% (20 new tests) |
 | 2026-01-16 | Added tests/test_evaluation_plots.py with 20 comprehensive tests covering: plot_results function, print_evaluation_report, matplotlib integration, edge cases (empty trades, single point equity, negative/mixed PnL) |
 | 2026-01-16 | Total test count increased from 2224 to 2244 (20 new tests) |
+| 2026-01-16 | **Test Coverage Improvement**: databento_client.py coverage improved from 75% to 93% (29 new tests) |
+| 2026-01-16 | Added tests/test_databento_extended.py with 29 comprehensive tests covering: retry logic (rate limit, auth errors), _process_ohlcv_dataframe edge cases, validate_data edge cases (missing columns, gaps), download_incremental schema detection, backfill_gaps function |
+| 2026-01-16 | Total test count increased from 2244 to 2273 (29 new tests) |
+| 2026-01-16 | Overall test coverage improved from 90% to 91% |
