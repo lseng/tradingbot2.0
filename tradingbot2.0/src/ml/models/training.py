@@ -149,8 +149,7 @@ class ModelTrainer:
             self.optimizer,
             mode='min',
             factor=0.5,
-            patience=scheduler_patience,
-            verbose=True
+            patience=scheduler_patience
         )
 
         # Training history
