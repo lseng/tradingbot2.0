@@ -164,9 +164,29 @@ class TestLimitOrderPlacement:
             config=config,
         )
 
+        # 10C.10 FIX: Mock stop and target orders to return valid responses
+        mock_stop_order = OrderResponse(
+            order_id="STOP001",
+            account_id=12345,
+            status=OrderStatus.WORKING,
+            type=OrderType.STOP,
+            side=OrderSide.SELL,
+            size=1,
+            contract_id="CON.F.US.MES.H26",
+        )
+        mock_target_order = OrderResponse(
+            order_id="TARGET001",
+            account_id=12345,
+            status=OrderStatus.WORKING,
+            type=OrderType.LIMIT,
+            side=OrderSide.SELL,
+            size=1,
+            contract_id="CON.F.US.MES.H26",
+        )
+
         with patch.object(executor, '_wait_for_fill', AsyncMock(return_value=5000.5)):
-            with patch.object(executor, '_place_stop_order', AsyncMock(return_value=None)):
-                with patch.object(executor, '_place_target_order', AsyncMock(return_value=None)):
+            with patch.object(executor, '_place_stop_order', AsyncMock(return_value=mock_stop_order)):
+                with patch.object(executor, '_place_target_order', AsyncMock(return_value=mock_target_order)):
                     result = await executor.execute_entry(
                         contract_id="CON.F.US.MES.H26",
                         direction=1,
@@ -209,9 +229,29 @@ class TestLimitOrderPlacement:
             config=config,
         )
 
+        # 10C.10 FIX: Mock stop and target orders to return valid responses
+        mock_stop_order = OrderResponse(
+            order_id="STOP002",
+            account_id=12345,
+            status=OrderStatus.WORKING,
+            type=OrderType.STOP,
+            side=OrderSide.BUY,
+            size=1,
+            contract_id="CON.F.US.MES.H26",
+        )
+        mock_target_order = OrderResponse(
+            order_id="TARGET002",
+            account_id=12345,
+            status=OrderStatus.WORKING,
+            type=OrderType.LIMIT,
+            side=OrderSide.BUY,
+            size=1,
+            contract_id="CON.F.US.MES.H26",
+        )
+
         with patch.object(executor, '_wait_for_fill', AsyncMock(return_value=4999.5)):
-            with patch.object(executor, '_place_stop_order', AsyncMock(return_value=None)):
-                with patch.object(executor, '_place_target_order', AsyncMock(return_value=None)):
+            with patch.object(executor, '_place_stop_order', AsyncMock(return_value=mock_stop_order)):
+                with patch.object(executor, '_place_target_order', AsyncMock(return_value=mock_target_order)):
                     result = await executor.execute_entry(
                         contract_id="CON.F.US.MES.H26",
                         direction=-1,  # Short
@@ -474,6 +514,12 @@ class TestCancelOperations:
     async def test_cancel_order_safe_success(self, mock_rest_client, mock_position_manager):
         """Test _cancel_order_safe removes order from tracking on success."""
         mock_rest_client.cancel_order = AsyncMock()
+
+        # 10C.9 FIX: Mock get_order to return cancelled order for verification
+        cancelled_order = MagicMock()
+        cancelled_order.is_cancelled = True
+        cancelled_order.is_filled = False
+        mock_rest_client.get_order = AsyncMock(return_value=cancelled_order)
 
         executor = OrderExecutor(
             rest_client=mock_rest_client,
@@ -987,10 +1033,30 @@ class TestLatencyWarnings:
             else:
                 return 100.8  # Fill received
 
+        # 10C.10 FIX: Mock stop and target orders to return valid responses
+        mock_stop_order = OrderResponse(
+            order_id="STOP001",
+            account_id=12345,
+            status=OrderStatus.WORKING,
+            type=OrderType.STOP,
+            side=OrderSide.SELL,
+            size=1,
+            contract_id="CON.F.US.MES.H26",
+        )
+        mock_target_order = OrderResponse(
+            order_id="TARGET001",
+            account_id=12345,
+            status=OrderStatus.WORKING,
+            type=OrderType.LIMIT,
+            side=OrderSide.SELL,
+            size=1,
+            contract_id="CON.F.US.MES.H26",
+        )
+
         with patch('time.perf_counter', mock_perf_counter):
             with patch.object(executor, '_wait_for_fill', AsyncMock(return_value=5000.0)):
-                with patch.object(executor, '_place_stop_order', AsyncMock(return_value=None)):
-                    with patch.object(executor, '_place_target_order', AsyncMock(return_value=None)):
+                with patch.object(executor, '_place_stop_order', AsyncMock(return_value=mock_stop_order)):
+                    with patch.object(executor, '_place_target_order', AsyncMock(return_value=mock_target_order)):
                         result = await executor.execute_entry(
                             contract_id="CON.F.US.MES.H26",
                             direction=1,
@@ -1038,10 +1104,30 @@ class TestLatencyWarnings:
             else:
                 return 101.5  # Fill received (1500ms total)
 
+        # 10C.10 FIX: Mock stop and target orders to return valid responses
+        mock_stop_order = OrderResponse(
+            order_id="STOP002",
+            account_id=12345,
+            status=OrderStatus.WORKING,
+            type=OrderType.STOP,
+            side=OrderSide.SELL,
+            size=1,
+            contract_id="CON.F.US.MES.H26",
+        )
+        mock_target_order = OrderResponse(
+            order_id="TARGET002",
+            account_id=12345,
+            status=OrderStatus.WORKING,
+            type=OrderType.LIMIT,
+            side=OrderSide.SELL,
+            size=1,
+            contract_id="CON.F.US.MES.H26",
+        )
+
         with patch('time.perf_counter', mock_perf_counter):
             with patch.object(executor, '_wait_for_fill', AsyncMock(return_value=5000.0)):
-                with patch.object(executor, '_place_stop_order', AsyncMock(return_value=None)):
-                    with patch.object(executor, '_place_target_order', AsyncMock(return_value=None)):
+                with patch.object(executor, '_place_stop_order', AsyncMock(return_value=mock_stop_order)):
+                    with patch.object(executor, '_place_target_order', AsyncMock(return_value=mock_target_order)):
                         result = await executor.execute_entry(
                             contract_id="CON.F.US.MES.H26",
                             direction=1,

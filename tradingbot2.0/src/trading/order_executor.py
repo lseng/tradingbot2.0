@@ -395,7 +395,7 @@ class OrderExecutor:
                 stop_price = fill_price + stop_distance
                 target_price = fill_price - target_distance
 
-            # 4. Place stop loss order
+            # 4. Place stop loss order - CRITICAL, must succeed
             stop_order = await self._place_stop_order(
                 contract_id=contract_id,
                 side=OrderSide.SELL if direction == 1 else OrderSide.BUY,
@@ -403,13 +403,56 @@ class OrderExecutor:
                 stop_price=stop_price,
             )
 
-            # 5. Place take profit order
+            # 10C.10 FIX: Stop order is CRITICAL - fail entry if stop placement fails
+            # A position without stop loss protection is unacceptable risk
+            if stop_order is None:
+                logger.critical(
+                    f"STOP ORDER PLACEMENT FAILED - position without protection! "
+                    f"Entry order {entry_order.order_id} filled at {fill_price}. "
+                    f"Attempting emergency exit to avoid unprotected position."
+                )
+                # Attempt to close the position immediately
+                try:
+                    exit_order = await self._rest.place_order(
+                        contract_id=contract_id,
+                        side=OrderSide.SELL if direction == 1 else OrderSide.BUY,
+                        size=size,
+                        order_type=OrderType.MARKET,
+                        custom_tag="EMERGENCY_EXIT_NO_STOP",
+                    )
+                    logger.warning(
+                        f"Emergency exit order placed: {exit_order.order_id} "
+                        f"to close unprotected position"
+                    )
+                except Exception as exit_err:
+                    logger.critical(
+                        f"CRITICAL: Emergency exit also failed: {exit_err}. "
+                        f"UNPROTECTED POSITION EXISTS - MANUAL INTERVENTION REQUIRED!"
+                    )
+
+                return EntryResult(
+                    status=ExecutionStatus.FAILED,
+                    entry_fill_price=fill_price,
+                    entry_fill_size=size,
+                    entry_order_id=entry_order.order_id,
+                    error_message="Stop order placement failed - position closed or requires manual intervention",
+                    timing=timing,
+                )
+
+            # 5. Place take profit order (non-critical - can proceed without target)
             target_order = await self._place_target_order(
                 contract_id=contract_id,
                 side=OrderSide.SELL if direction == 1 else OrderSide.BUY,
                 size=size,
                 target_price=target_price,
             )
+
+            # 10C.10 FIX: Log warning if target fails but continue (stop is more important)
+            if target_order is None:
+                logger.warning(
+                    f"Target order placement failed - position opened with stop only. "
+                    f"Entry: {entry_order.order_id}, Stop: {stop_order.order_id}"
+                )
 
             # 6. Update position manager
             fill = Fill(
@@ -878,48 +921,89 @@ class OrderExecutor:
         Cancel order with error handling and verification.
 
         10.23 FIX: Verifies cancellation was successful before removing from tracking.
+        10C.9 FIX: Only remove from tracking after confirmed terminal state (CANCELLED or FILLED).
 
         Args:
             order_id: Order ID to cancel
 
         Returns:
-            True if cancellation verified, False otherwise
+            True if cancellation verified (order in terminal state), False otherwise
         """
+        max_verify_retries = 3
+        verify_delay = 0.3  # seconds between verification attempts
+
         try:
             await self._rest.cancel_order(order_id)
             logger.debug(f"Cancel request sent for order: {order_id}")
 
-            # 10.23 FIX: Verify cancellation was successful
-            # Query order state to confirm cancellation
-            try:
-                order = await self._rest.get_order(order_id)
-                if order and order.is_filled:
-                    # Order filled before cancellation completed - this is a race condition
-                    logger.warning(
-                        f"Order {order_id} filled before cancellation could complete - "
-                        "checking for dual fill"
-                    )
-                    self._filled_oco_orders.add(order_id)
-                    return False
-                elif order and order.is_cancelled:
-                    logger.debug(f"Order {order_id} confirmed cancelled")
-            except Exception as verify_err:
-                # Verification failed but cancellation may have succeeded
-                logger.debug(f"Could not verify cancellation for {order_id}: {verify_err}")
+            # 10C.9 FIX: Verify cancellation reached terminal state before removing from tracking
+            # Retry verification to handle async cancellation processing
+            for attempt in range(max_verify_retries):
+                try:
+                    order = await self._rest.get_order(order_id)
 
-            # Remove from open orders
-            self._open_orders.pop(order_id, None)
-            return True
+                    if order is None:
+                        # Order not found - likely already cancelled/removed
+                        logger.debug(f"Order {order_id} not found (likely cancelled)")
+                        self._open_orders.pop(order_id, None)
+                        return True
+
+                    if order.is_filled:
+                        # Order filled before cancellation completed - race condition
+                        logger.warning(
+                            f"Order {order_id} filled before cancellation could complete - "
+                            "checking for dual fill"
+                        )
+                        self._filled_oco_orders.add(order_id)
+                        self._open_orders.pop(order_id, None)
+                        return False  # Return False because cancel wasn't successful
+
+                    if order.is_cancelled:
+                        logger.debug(f"Order {order_id} confirmed cancelled")
+                        self._open_orders.pop(order_id, None)
+                        return True
+
+                    # Order still pending - wait and retry verification
+                    if attempt < max_verify_retries - 1:
+                        logger.debug(
+                            f"Order {order_id} not yet cancelled (attempt {attempt + 1}/{max_verify_retries}), "
+                            f"waiting {verify_delay}s"
+                        )
+                        await asyncio.sleep(verify_delay)
+                    else:
+                        # Max retries reached - order still not in terminal state
+                        # 10C.9 FIX: Do NOT remove from tracking if verification fails
+                        logger.error(
+                            f"Order {order_id} still pending after {max_verify_retries} verification attempts - "
+                            "keeping in local tracking. Order may be orphaned on broker."
+                        )
+                        return False
+
+                except Exception as verify_err:
+                    # Verification request failed - don't assume cancellation succeeded
+                    if attempt < max_verify_retries - 1:
+                        logger.debug(
+                            f"Verification failed for {order_id} (attempt {attempt + 1}): {verify_err}"
+                        )
+                        await asyncio.sleep(verify_delay)
+                    else:
+                        # 10C.9 FIX: Keep in tracking if we can't verify
+                        logger.warning(
+                            f"Could not verify cancellation for {order_id} after {max_verify_retries} attempts: {verify_err}. "
+                            "Keeping in local tracking for safety."
+                        )
+                        return False
+
+            # Should not reach here, but just in case
+            return False
 
         except Exception as e:
-            logger.warning(f"Failed to cancel order {order_id}: {e}")
-            # 10.23 FIX: Still remove from tracking since we can't manage it
-            # but log the critical state for monitoring
-            if order_id in self._open_orders:
-                logger.error(
-                    f"Order {order_id} cancellation failed - "
-                    "order may still be active on broker"
-                )
+            # 10C.9 FIX: If cancel request itself fails, keep order in tracking
+            # The order is likely still active on the broker
+            logger.error(
+                f"Cancel request failed for order {order_id}: {e}. "
+                "Order kept in local tracking - may still be active on broker."
+            )
             return False
 
     async def _cancel_oco_orders(self) -> None:

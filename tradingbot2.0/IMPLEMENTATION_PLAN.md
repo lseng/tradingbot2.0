@@ -1,7 +1,7 @@
 # Implementation Plan - MES Futures Scalping Bot
 
 > **Last Updated**: 2026-01-17 UTC
-> **Status**: **0 P0 BUGS BLOCKING** - ALL P0 BUGS FIXED
+> **Status**: **ALL P0 BUGS FIXED** | **ALL P1 BUGS FIXED**
 > **Verified**: All bugs confirmed via direct code inspection at specific file:line references
 > **BUGS_FOUND.md**: 9 historical deployment bugs - ALL FIXED (verified)
 > **Test Coverage**: 2,520 test functions across 61 test files, 91% coverage
@@ -25,7 +25,7 @@ The codebase is substantially complete (Phases 1-9 done). **All P0 bugs have bee
 | ~~4~~ | ~~**10.22**~~ | ~~Scaler mismatch in inference (silent failure)~~ | ~~1h~~ | **FIXED 2026-01-17** |
 | ~~5~~ | ~~**10.23**~~ | ~~OCO double-fill race condition~~ | ~~3h~~ | **FIXED 2026-01-17** |
 
-Additionally, **9 P1 bugs** affect extended trading sessions (>90 min), and **4 P2 items** need attention during paper trading.
+Additionally, **all 9 P1 bugs have been FIXED** (2026-01-17), and **4 P2 items** need attention during paper trading.
 
 ---
 
@@ -104,49 +104,49 @@ Additionally, **9 P1 bugs** affect extended trading sessions (>90 min), and **4 
 
 ---
 
-## TIER 1: P1 - FIX BEFORE EXTENDED LIVE SESSIONS (>90 min)
+## TIER 1: P1 - FIX BEFORE EXTENDED LIVE SESSIONS (>90 min) - ALL FIXED
 
 | Task | Location | Issue | Status | Impact | Effort |
 |------|----------|-------|--------|--------|--------|
 | **10C.1** | `topstepx_client.py:338-346` | WebSocket auth token expiry | **FIXED** | Token refresh works (10-min margin before 90-min expiry) | N/A |
-| **10C.2** | `live_trader.py:275` | No position sync after WebSocket reconnect | **NOT FIXED** | `_sync_positions()` only called at startup; stale position state after disconnect | 2-3h |
-| **10C.3** | `topstepx_ws.py` | No rate limiting for WebSocket operations | **NOT FIXED** | REST has 50/30s limit; WS invoke/send have NO throttling | 3-4h |
-| **10C.4** | `risk_manager.py` + `circuit_breakers.py` | Duplicate consecutive loss tracking | **CONFIRMED** | Both track independently; inconsistent pause state | 2-3h |
-| **10C.5** | `live_trader.py` | `update_market_conditions()` never called | **CONFIRMED** | Method exists (circuit_breakers.py:232-298) but never called; volatility circuit breakers inactive | 1-2h |
-| **10C.6** | `topstepx_ws.py:325-328` | WebSocket concurrent connect() race | **NEW** | Multiple connections possible; lost futures | 2h |
-| **10C.7** | `topstepx_client.py:337-346` | Token refresh race condition | **NEW** | Multiple authentications simultaneously | 1h |
-| **10C.8** | `topstepx_ws.py:334-335` | Session leak on reconnect | **NEW** | Old sessions never closed; resource exhaustion | 1h |
-| **10C.9** | `order_executor.py:799-806` | Cancel order doesn't verify | **NEW** | Order removed from tracking without confirming cancellation | 2h |
-| **10C.10** | `order_executor.py:393-407` | Stop order failure continues | **NEW** | Position created without stop loss protection | 1h |
+| **10C.2** | `live_trader.py:275` | No position sync after WebSocket reconnect | **FIXED 2026-01-17** | Added reconnect callback mechanism | N/A |
+| **10C.3** | `topstepx_ws.py` | No rate limiting for WebSocket operations | **FIXED 2026-01-17** | Added rate limiting to invoke/send | N/A |
+| **10C.4** | `risk_manager.py` + `circuit_breakers.py` | Duplicate consecutive loss tracking | **FIXED 2026-01-17** | Consolidated into CircuitBreakers, RiskManager delegates | N/A |
+| **10C.5** | `live_trader.py` | `update_market_conditions()` never called | **FIXED 2026-01-17** | Added periodic calls in trading loop | N/A |
+| **10C.6** | `topstepx_ws.py:325-328` | WebSocket concurrent connect() race | **FIXED 2026-01-17** | Added _connect_lock | N/A |
+| **10C.7** | `topstepx_client.py:337-346` | Token refresh race condition | **FIXED 2026-01-17** | Extended lock scope in _ensure_authenticated | N/A |
+| **10C.8** | `topstepx_ws.py:334-335` | Session leak on reconnect | **FIXED 2026-01-17** | Added session lifecycle tracking | N/A |
+| **10C.9** | `order_executor.py:799-806` | Cancel order doesn't verify | **FIXED 2026-01-17** | Added retry verification before removing from tracking | N/A |
+| **10C.10** | `order_executor.py:393-407` | Stop order failure continues | **FIXED 2026-01-17** | Added early return and emergency exit on stop failure | N/A |
 
-### 10C.2 Details: Position Sync After Reconnect
+### ~~10C.2 Details: Position Sync After Reconnect~~ ✅ FIXED (2026-01-17)
 
 **Problem**: `_sync_positions()` is only called during startup (line 275), not after WebSocket reconnect in `_auto_reconnect_loop()`.
 
-**Fix**: Add reconnection callback to `TopstepXWebSocket` that calls `_sync_positions()`.
+**Fix**: Added reconnect callback mechanism to `TopstepXWebSocket` that calls `_sync_positions()`.
 
-### 10C.3 Details: WebSocket Rate Limiting
+### ~~10C.3 Details: WebSocket Rate Limiting~~ ✅ FIXED (2026-01-17)
 
 **Problem**: REST API has `RateLimiter` (50 req/30s in topstepx_rest.py) but WebSocket `invoke`/`send` have no throttling.
 
-**Fix**: Add rate limiter to WebSocket operations similar to REST.
+**Fix**: Added rate limiting to invoke/send operations similar to REST.
 
-### 10C.4 Details: Duplicate Tracking
+### ~~10C.4 Details: Duplicate Tracking~~ ✅ FIXED (2026-01-17)
 
 **Problem**: Both modules track consecutive losses independently:
 - Circuit breakers: lines 126, 173-191 (`_consecutive_losses`)
 - Risk manager: `state.consecutive_losses`
 - Both updated in `live_trader.py:484-489`
 
-**Fix**: Consolidate tracking into CircuitBreakers only; RiskManager should delegate.
+**Fix**: Consolidated tracking into CircuitBreakers only; RiskManager now delegates to CircuitBreakers.
 
-### 10C.5 Details: Dead Code
+### ~~10C.5 Details: Dead Code~~ ✅ FIXED (2026-01-17)
 
 **Problem**: `CircuitBreakers.update_market_conditions()` (lines 232-298) handles HIGH_VOLATILITY, WIDE_SPREAD, LOW_VOLUME breakers but is NEVER called anywhere in the codebase.
 
-**Fix**: Add periodic market condition updates in trading loop (every minute).
+**Fix**: Added periodic market condition updates in trading loop (every minute).
 
-### 10C.6 Details: WebSocket Concurrent Connect Race [NEW]
+### ~~10C.6 Details: WebSocket Concurrent Connect Race~~ ✅ FIXED (2026-01-17)
 
 **Problem**: The state check in `SignalRConnection.connect()` (line 327) is not atomic. Two concurrent `connect()` calls can both pass the check before either updates state to `CONNECTING` (line 330).
 
@@ -157,31 +157,31 @@ Thread B: checks state = DISCONNECTED ✓
 Both proceed to create connections
 ```
 
-**Fix**: Add mutex/lock around connection state check and update.
+**Fix**: Added `_connect_lock` mutex around connection state check and update.
 
-### 10C.7 Details: Token Refresh Race Condition [NEW]
+### ~~10C.7 Details: Token Refresh Race Condition~~ ✅ FIXED (2026-01-17)
 
 **Problem**: `_auth_lock` is only held during `authenticate()` call, not during the refresh check in `_ensure_authenticated()`. Multiple concurrent requests could see the token is expiring and all call `authenticate()` simultaneously.
 
-**Fix**: Hold `_auth_lock` during the entire expiry check + refresh flow.
+**Fix**: Extended `_auth_lock` scope to cover the entire expiry check + refresh flow in `_ensure_authenticated()`.
 
-### 10C.8 Details: Session Leak on Reconnect [NEW]
+### ~~10C.8 Details: Session Leak on Reconnect~~ ✅ FIXED (2026-01-17)
 
 **Problem**: If `connect()` is called multiple times with `self._session = None`, new sessions are created but old sessions may not be properly closed. Sessions stored in `self._session` can be overwritten.
 
-**Fix**: Ensure old session is closed before creating new one; add session lifecycle tracking.
+**Fix**: Added session lifecycle tracking; old session is now properly closed before creating new one.
 
-### 10C.9 Details: Cancel Order Doesn't Verify [NEW]
+### ~~10C.9 Details: Cancel Order Doesn't Verify~~ ✅ FIXED (2026-01-17)
 
 **Problem**: `_cancel_order_safe()` calls `cancel_order()` and removes from local tracking, but doesn't verify if cancel was successful. If API returns error but exception is caught, order remains open on broker while removed from local tracking.
 
-**Fix**: Verify cancel response status before removing from tracking; query order state if uncertain.
+**Fix**: Added retry verification before removing from tracking; now queries order state if uncertain.
 
-### 10C.10 Details: Stop Order Failure Continues [NEW]
+### ~~10C.10 Details: Stop Order Failure Continues~~ ✅ FIXED (2026-01-17)
 
 **Problem**: In `execute_entry()` (lines 393-407), stop order is placed first, then target order. If stop order placement returns None (line 603), the code continues anyway and tries to track it. This can result in a position without stop loss protection.
 
-**Fix**: Return early if stop order fails; do not proceed to target order without valid stop.
+**Fix**: Added early return on stop order failure; emergency exit triggered if stop cannot be placed.
 
 ---
 
@@ -440,18 +440,18 @@ All bugs discovered during RunPod training have been **VERIFIED FIXED**:
 | **10.22** | NEW | Scaler mismatch silent failure - live_trader.py:573-576 fallback to unscaled |
 | **10.23** | NEW | OCO double-fill race - order_executor.py:710-746 async task scheduling |
 
-### P1 Bugs Verified
-| Bug | Status | Evidence |
+### P1 Bugs Verified - ALL FIXED (2026-01-17)
+| Bug | Status | Fix Applied |
 |-----|--------|----------|
-| **10C.2** | CONFIRMED | _sync_positions only at startup line 275, not after reconnect |
-| **10C.3** | CONFIRMED | REST has RateLimiter but WebSocket invoke/send have no throttling |
-| **10C.4** | CONFIRMED | Duplicate tracking in circuit_breakers + risk_manager |
-| **10C.5** | CONFIRMED | update_market_conditions() never called (method at circuit_breakers.py:232-298) |
-| **10C.6** | NEW | WebSocket connect() race - topstepx_ws.py:325-328 non-atomic state check |
-| **10C.7** | NEW | Token refresh race - topstepx_client.py:337-346 lock not held during check |
-| **10C.8** | NEW | Session leak - topstepx_ws.py:334-335 old sessions not closed |
-| **10C.9** | NEW | Cancel order no verify - order_executor.py:799-806 removes without confirmation |
-| **10C.10** | NEW | Stop failure continues - order_executor.py:393-407 position without stop |
+| **10C.2** | **FIXED** | Added reconnect callback mechanism |
+| **10C.3** | **FIXED** | Added rate limiting to invoke/send |
+| **10C.4** | **FIXED** | Consolidated into CircuitBreakers, RiskManager delegates |
+| **10C.5** | **FIXED** | Added periodic calls in trading loop |
+| **10C.6** | **FIXED** | Added _connect_lock |
+| **10C.7** | **FIXED** | Extended lock scope in _ensure_authenticated |
+| **10C.8** | **FIXED** | Added session lifecycle tracking |
+| **10C.9** | **FIXED** | Added retry verification before removing from tracking |
+| **10C.10** | **FIXED** | Added early return and emergency exit on stop failure |
 
 ### P2 Bugs Verified
 | Bug | Status | Evidence |

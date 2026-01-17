@@ -571,8 +571,9 @@ class TestTopstepXClientEnsureAuthenticated:
         """Test _ensure_authenticated calls authenticate when not authenticated."""
         client = TopstepXClient(config=client_config)
 
+        # 10C.7 FIX: _ensure_authenticated now calls _authenticate_internal directly
         mock_authenticate = AsyncMock()
-        with patch.object(client, 'authenticate', mock_authenticate):
+        with patch.object(client, '_authenticate_internal', mock_authenticate):
             await client._ensure_authenticated()
 
         mock_authenticate.assert_called_once()
@@ -586,8 +587,9 @@ class TestTopstepXClientEnsureAuthenticated:
         client._token_expiry = datetime.utcnow() + timedelta(minutes=5)
         client.config.token_refresh_margin = 600  # 10 minutes
 
+        # 10C.7 FIX: _ensure_authenticated now calls _authenticate_internal directly
         mock_authenticate = AsyncMock()
-        with patch.object(client, 'authenticate', mock_authenticate):
+        with patch.object(client, '_authenticate_internal', mock_authenticate):
             await client._ensure_authenticated()
 
         mock_authenticate.assert_called_once()
@@ -599,8 +601,9 @@ class TestTopstepXClientEnsureAuthenticated:
         client._access_token = "test_token"
         client._token_expiry = datetime.utcnow() + timedelta(hours=1)
 
+        # 10C.7 FIX: _ensure_authenticated now calls _authenticate_internal directly
         mock_authenticate = AsyncMock()
-        with patch.object(client, 'authenticate', mock_authenticate):
+        with patch.object(client, '_authenticate_internal', mock_authenticate):
             await client._ensure_authenticated()
 
         mock_authenticate.assert_not_called()

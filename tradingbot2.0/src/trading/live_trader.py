@@ -199,6 +199,15 @@ class LiveTrader:
         self._bar_processor_task: Optional[asyncio.Task] = None
         self._queue_warning_logged: bool = False  # Prevent log spam
 
+        # 10C.5 FIX: Market conditions tracking for circuit breaker updates
+        self._last_market_conditions_update: Optional[datetime] = None
+        self._market_conditions_update_interval: int = 60  # Update every 60 seconds
+        self._recent_atr_values: list[float] = []  # Rolling ATR for baseline calculation
+        self._atr_lookback: int = 20  # Number of ATR values for baseline
+        self._current_spread_ticks: float = 0.0  # Current spread in ticks
+        self._recent_volumes: list[int] = []  # Rolling volume for average calculation
+        self._volume_lookback: int = 20  # Number of volume values for average
+
         # Shutdown handling
         self._shutdown_event = asyncio.Event()
 
@@ -263,6 +272,10 @@ class LiveTrader:
         self._eod_manager = EODManager()
         self._position_sizer = PositionSizer()
         self._circuit_breaker = CircuitBreakers()  # 10A.3: Circuit breaker integration
+
+        # 10C.4 FIX: Link risk manager to circuit breakers (single source of truth for consecutive losses)
+        self._risk_manager.set_circuit_breakers(self._circuit_breaker)
+
         logger.info(f"   Balance: ${self._risk_manager.state.account_balance:.2f}")
 
         # 3. Initialize position manager
@@ -309,6 +322,12 @@ class LiveTrader:
         logger.info("10. Connecting to WebSocket...")
         await self._ws.connect()
         self._ws.on_quote(self._on_quote)
+
+        # 10C.2 FIX: Register position sync callback for reconnection events
+        # After WebSocket reconnect, positions must be synced with API as source of truth
+        self._ws.on_reconnect(self._sync_positions)
+        logger.info("   Registered reconnection callback for position sync")
+
         await self._ws.subscribe_quotes([self.config.contract_id])
         logger.info(f"   Subscribed to {self.config.contract_id}")
 
@@ -383,6 +402,18 @@ class LiveTrader:
         during high-volume periods (10.5).
         """
         try:
+            # 10C.5 FIX: Track spread for market conditions update
+            # Use try/except to handle Mock objects in tests gracefully
+            try:
+                ask = float(quote.ask) if hasattr(quote, 'ask') else 0
+                bid = float(quote.bid) if hasattr(quote, 'bid') else 0
+                if ask > 0 and bid > 0:
+                    spread_ticks = (ask - bid) / 0.25  # MES tick size
+                    self._current_spread_ticks = spread_ticks
+            except (TypeError, ValueError):
+                # Ignore if quote attributes are not numeric (e.g., Mock objects)
+                pass
+
             # Aggregate into 1-second bars
             completed_bar = self._bar_aggregator.add_tick(quote)
 
@@ -457,6 +488,80 @@ class LiveTrader:
         # 10A.7: Update bar range for reversal constraint tracking
         if self._signal_generator:
             self._signal_generator.update_bar_range(bar.high, bar.low, bar.close)
+
+        # 10C.5 FIX: Track ATR and volume for market conditions
+        if bar:
+            # Calculate this bar's range (proxy for volatility/ATR)
+            bar_range = bar.high - bar.low
+            self._recent_atr_values.append(bar_range)
+            if len(self._recent_atr_values) > self._atr_lookback:
+                self._recent_atr_values.pop(0)
+
+            # Track volume
+            self._recent_volumes.append(bar.volume)
+            if len(self._recent_volumes) > self._volume_lookback:
+                self._recent_volumes.pop(0)
+
+            # Periodically update market conditions
+            self._update_circuit_breaker_market_conditions()
+
+    def _update_circuit_breaker_market_conditions(self) -> None:
+        """
+        Update circuit breaker market conditions.
+
+        10C.5 FIX: Periodically calls circuit_breaker.update_market_conditions()
+        to enable volatility, spread, and volume circuit breakers.
+        """
+        if not self._circuit_breaker:
+            return
+
+        now = datetime.now()
+
+        # Only update every _market_conditions_update_interval seconds
+        if self._last_market_conditions_update:
+            elapsed = (now - self._last_market_conditions_update).total_seconds()
+            if elapsed < self._market_conditions_update_interval:
+                return
+
+        self._last_market_conditions_update = now
+
+        # Calculate current and baseline ATR
+        current_atr = None
+        normal_atr = None
+        if len(self._recent_atr_values) >= 5:
+            # Current ATR: average of last 5 bars
+            current_atr = sum(self._recent_atr_values[-5:]) / 5
+            # Baseline ATR: average of all tracked bars
+            normal_atr = sum(self._recent_atr_values) / len(self._recent_atr_values)
+
+        # Calculate volume percentage of average
+        volume_pct = None
+        if len(self._recent_volumes) >= 5:
+            avg_volume = sum(self._recent_volumes) / len(self._recent_volumes)
+            if avg_volume > 0:
+                current_volume = self._recent_volumes[-1] if self._recent_volumes else 0
+                volume_pct = current_volume / avg_volume
+
+        # Current spread (already tracked from quotes)
+        spread_ticks = self._current_spread_ticks
+
+        # Update circuit breaker
+        self._circuit_breaker.update_market_conditions(
+            current_atr=current_atr,
+            normal_atr=normal_atr,
+            spread_ticks=spread_ticks,
+            volume_pct=volume_pct,
+        )
+
+        # Log market conditions periodically
+        if current_atr and normal_atr and normal_atr > 0:
+            vol_ratio = current_atr / normal_atr
+            logger.debug(
+                f"Market conditions updated: ATR ratio={vol_ratio:.2f}, "
+                f"spread={spread_ticks:.1f} ticks, volume_pct={volume_pct:.1%}" if volume_pct else
+                f"Market conditions updated: ATR ratio={vol_ratio:.2f}, "
+                f"spread={spread_ticks:.1f} ticks"
+            )
 
     def _on_position_change(self, change: PositionChange) -> None:
         """

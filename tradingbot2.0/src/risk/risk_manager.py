@@ -15,12 +15,16 @@ Key Parameters (from spec):
 
 from dataclasses import dataclass, field
 from datetime import datetime, date
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from enum import Enum
 import threading
 import logging
 import json
 from pathlib import Path
+
+# 10C.4 FIX: Import CircuitBreakers for delegation
+if TYPE_CHECKING:
+    from src.risk.circuit_breakers import CircuitBreakers
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +144,7 @@ class RiskManager:
         limits: Optional[RiskLimits] = None,
         state_file: Optional[Path] = None,
         auto_persist: bool = True,
+        circuit_breakers: Optional["CircuitBreakers"] = None,
     ):
         """
         Initialize risk manager.
@@ -148,6 +153,7 @@ class RiskManager:
             limits: Risk limit configuration (uses defaults if None)
             state_file: Path to persist state (optional)
             auto_persist: Whether to auto-save state after updates
+            circuit_breakers: CircuitBreakers instance for consecutive loss tracking (10C.4 FIX)
         """
         self.limits = limits or RiskLimits()
         self.state = RiskState(
@@ -158,6 +164,9 @@ class RiskManager:
         self.auto_persist = auto_persist
         self._lock = threading.RLock()
 
+        # 10C.4 FIX: Use circuit breakers for consecutive loss tracking (single source of truth)
+        self._circuit_breakers = circuit_breakers
+
         # Load persisted state if available
         if state_file and state_file.exists():
             self._load_state()
@@ -167,6 +176,18 @@ class RiskManager:
             f"daily_loss_limit=${self.limits.max_daily_loss:.2f}, "
             f"per_trade_risk=${self.limits.max_per_trade_risk:.2f}"
         )
+
+    def set_circuit_breakers(self, circuit_breakers: "CircuitBreakers") -> None:
+        """
+        Set circuit breakers instance for consecutive loss delegation.
+
+        10C.4 FIX: Allows setting circuit breakers after initialization.
+
+        Args:
+            circuit_breakers: CircuitBreakers instance to use
+        """
+        self._circuit_breakers = circuit_breakers
+        logger.debug("CircuitBreakers instance linked to RiskManager")
 
     def can_trade(self) -> bool:
         """
@@ -317,11 +338,18 @@ class RiskManager:
             if is_win:
                 self.state.wins_today += 1
                 self.state.total_wins += 1
+                # 10C.4 FIX: Delegate to circuit breakers (single source of truth)
+                # Keep local state in sync for persistence, but circuit breakers is authoritative
                 self.state.consecutive_losses = 0
+                if self._circuit_breakers:
+                    self._circuit_breakers.record_win()
             else:
                 self.state.losses_today += 1
                 self.state.total_losses += 1
+                # 10C.4 FIX: Delegate to circuit breakers (single source of truth)
                 self.state.consecutive_losses += 1
+                if self._circuit_breakers:
+                    self._circuit_breakers.record_loss()
 
                 # Track cumulative loss for kill switch
                 if pnl < 0:
@@ -329,13 +357,20 @@ class RiskManager:
 
             self.state.total_trades += 1
 
+            # 10C.4 FIX: Get authoritative consecutive losses from circuit breakers for logging
+            consecutive_losses_display = self.state.consecutive_losses
+            if self._circuit_breakers:
+                status = self._circuit_breakers.get_status()
+                consecutive_losses_display = status.get("consecutive_losses", self.state.consecutive_losses)
+
             # Log result
             logger.info(
                 f"Trade recorded: pnl=${pnl:+.2f}, balance=${self.state.account_balance:.2f}, "
-                f"daily_pnl=${self.state.daily_pnl:+.2f}, consecutive_losses={self.state.consecutive_losses}"
+                f"daily_pnl=${self.state.daily_pnl:+.2f}, consecutive_losses={consecutive_losses_display}"
             )
 
-            # Check circuit breakers
+            # 10C.4 FIX: Circuit breakers handle pause logic via record_loss()
+            # Only check non-circuit-breaker limits here
             self._check_circuit_breakers()
 
             # Check risk limits
@@ -443,7 +478,35 @@ class RiskManager:
             }
 
     def _check_circuit_breakers(self) -> None:
-        """Check and trigger circuit breakers based on consecutive losses."""
+        """Check circuit breakers and sync pause state.
+
+        10C.4 FIX: Consecutive loss tracking and pause logic is delegated to
+        CircuitBreakers. This method now checks if circuit breakers triggered
+        a pause and syncs that state to RiskManager.
+        """
+        # 10C.4 FIX: If we have circuit breakers, check their state
+        if self._circuit_breakers:
+            status = self._circuit_breakers.get_status()
+            if status.get("is_paused") and not self.state.status == TradingStatus.PAUSED:
+                # Circuit breaker triggered a pause - sync state
+                pause_until_str = status.get("pause_until")
+                if pause_until_str:
+                    try:
+                        from datetime import datetime
+                        self.state.pause_until = datetime.fromisoformat(pause_until_str)
+                    except (ValueError, TypeError):
+                        # Fallback: circuit breaker controls pause, we just mark paused
+                        pass
+                self.state.status = TradingStatus.PAUSED
+                logger.info(f"Synced pause state from circuit breakers: {status.get('pause_reason')}")
+            elif status.get("is_halted"):
+                # Circuit breaker triggered halt
+                self.state.status = TradingStatus.HALTED
+                self.state.halt_reason = status.get("halt_reason", "Circuit breaker halt")
+            return
+
+        # Fallback: if no circuit breakers instance, use legacy local tracking
+        # This maintains backward compatibility for tests that don't set circuit_breakers
         if self.state.consecutive_losses >= self.limits.max_consecutive_losses:
             self._pause_trading(
                 self.limits.consecutive_loss_pause_seconds,

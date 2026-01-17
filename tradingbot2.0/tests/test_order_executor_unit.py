@@ -628,9 +628,29 @@ class TestExecuteEntryAsync:
             position_manager=mock_position_manager,
         )
 
+        # 10C.10 FIX: Mock stop and target orders to return valid responses
+        mock_stop_order = OrderResponse(
+            order_id="STOP001",
+            account_id=12345,
+            status=OrderStatus.WORKING,
+            type=OrderType.STOP,
+            side=OrderSide.BUY,  # Opposite side for short
+            size=1,
+            contract_id="CON.F.US.MES.H26",
+        )
+        mock_target_order = OrderResponse(
+            order_id="TARGET001",
+            account_id=12345,
+            status=OrderStatus.WORKING,
+            type=OrderType.LIMIT,
+            side=OrderSide.BUY,  # Opposite side for short
+            size=1,
+            contract_id="CON.F.US.MES.H26",
+        )
+
         with patch.object(executor, '_wait_for_fill', AsyncMock(return_value=5000.0)):
-            with patch.object(executor, '_place_stop_order', AsyncMock(return_value=None)):
-                with patch.object(executor, '_place_target_order', AsyncMock(return_value=None)):
+            with patch.object(executor, '_place_stop_order', AsyncMock(return_value=mock_stop_order)):
+                with patch.object(executor, '_place_target_order', AsyncMock(return_value=mock_target_order)):
                     result = await executor.execute_entry(
                         contract_id="CON.F.US.MES.H26",
                         direction=-1,  # Short

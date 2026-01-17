@@ -279,6 +279,54 @@ class TopstepXClient:
             await self._session.close()
             self._session = None
 
+    async def _authenticate_internal(self) -> bool:
+        """Internal authentication without lock - must be called with lock held.
+
+        10C.7 FIX: Separated from authenticate() to allow _ensure_authenticated()
+        to hold the lock during the entire check + refresh flow.
+        """
+        if not self.config.username or not self.config.password:
+            raise ValueError("Username and password must be configured")
+
+        session = await self._get_session()
+
+        payload = {
+            "userName": self.config.username,
+            "password": self.config.password,
+            "deviceId": self.config.device_id,
+            "appId": self.config.app_id,
+            "appVersion": self.config.app_version,
+        }
+
+        url = f"{self.config.base_url}/api/Auth/loginKey"
+
+        try:
+            async with session.post(url, json=payload) as response:
+                data = await response.json()
+
+                if response.status != 200 or not data.get("success", True):
+                    error_msg = data.get("errorMessage", "Authentication failed")
+                    logger.error(f"Authentication failed: {error_msg}")
+                    raise TopstepXAuthError(
+                        error_msg,
+                        status_code=response.status,
+                        response=data
+                    )
+
+                self._access_token = data.get("accessToken")
+                self._user_id = data.get("userId")
+                self._accounts = data.get("accounts", [])
+
+                # Token expires in ~90 minutes, set expiry with margin
+                self._token_expiry = datetime.utcnow() + timedelta(minutes=90)
+
+                logger.info(f"Authenticated as user {self._user_id} with {len(self._accounts)} accounts")
+                return True
+
+        except aiohttp.ClientError as e:
+            logger.error(f"Connection error during authentication: {e}")
+            raise TopstepXConnectionError(f"Connection error: {e}")
+
     async def authenticate(self) -> bool:
         """Authenticate with the TopstepX API.
 
@@ -291,59 +339,27 @@ class TopstepXClient:
             TopstepXAuthError: If authentication fails
             ValueError: If credentials not configured
         """
-        if not self.config.username or not self.config.password:
-            raise ValueError("Username and password must be configured")
-
         async with self._auth_lock:
-            session = await self._get_session()
-
-            payload = {
-                "userName": self.config.username,
-                "password": self.config.password,
-                "deviceId": self.config.device_id,
-                "appId": self.config.app_id,
-                "appVersion": self.config.app_version,
-            }
-
-            url = f"{self.config.base_url}/api/Auth/loginKey"
-
-            try:
-                async with session.post(url, json=payload) as response:
-                    data = await response.json()
-
-                    if response.status != 200 or not data.get("success", True):
-                        error_msg = data.get("errorMessage", "Authentication failed")
-                        logger.error(f"Authentication failed: {error_msg}")
-                        raise TopstepXAuthError(
-                            error_msg,
-                            status_code=response.status,
-                            response=data
-                        )
-
-                    self._access_token = data.get("accessToken")
-                    self._user_id = data.get("userId")
-                    self._accounts = data.get("accounts", [])
-
-                    # Token expires in ~90 minutes, set expiry with margin
-                    self._token_expiry = datetime.utcnow() + timedelta(minutes=90)
-
-                    logger.info(f"Authenticated as user {self._user_id} with {len(self._accounts)} accounts")
-                    return True
-
-            except aiohttp.ClientError as e:
-                logger.error(f"Connection error during authentication: {e}")
-                raise TopstepXConnectionError(f"Connection error: {e}")
+            return await self._authenticate_internal()
 
     async def _ensure_authenticated(self) -> None:
-        """Ensure client is authenticated, refreshing token if needed."""
-        if not self.is_authenticated:
-            await self.authenticate()
-        elif self._token_expiry:
-            # Refresh token if close to expiry
-            margin = timedelta(seconds=self.config.token_refresh_margin)
-            if datetime.utcnow() + margin >= self._token_expiry:
-                logger.info("Token expiring soon, refreshing...")
-                await self.authenticate()
+        """Ensure client is authenticated, refreshing token if needed.
+
+        10C.7 FIX: Holds _auth_lock during the entire expiry check + refresh flow
+        to prevent multiple concurrent requests from all attempting to refresh.
+        """
+        # 10C.7 FIX: Acquire lock for the entire check + refresh operation
+        # This prevents multiple concurrent requests from racing to refresh
+        async with self._auth_lock:
+            # Re-check conditions INSIDE the lock (double-checked locking pattern)
+            if not self.is_authenticated:
+                await self._authenticate_internal()
+            elif self._token_expiry:
+                # Refresh token if close to expiry
+                margin = timedelta(seconds=self.config.token_refresh_margin)
+                if datetime.utcnow() + margin >= self._token_expiry:
+                    logger.info("Token expiring soon, refreshing...")
+                    await self._authenticate_internal()
 
     async def request(
         self,

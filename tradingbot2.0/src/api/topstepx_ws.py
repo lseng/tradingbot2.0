@@ -257,10 +257,18 @@ class SignalRConnection:
     - Handshake protocol
     - Ping/pong heartbeats
     - Invocation tracking
+
+    10C.6 FIX: Added _connect_lock to prevent concurrent connect() race condition.
+    10C.8 FIX: Proper session lifecycle management to prevent leaks.
+    10C.3 FIX: Added rate limiting for WebSocket operations.
     """
 
     # SignalR record separator
     RECORD_SEPARATOR = "\x1e"
+
+    # 10C.3 FIX: Rate limiting constants (similar to REST API)
+    WS_MAX_REQUESTS = 30  # Max WebSocket messages per window
+    WS_WINDOW_SECONDS = 10  # Time window for rate limiting
 
     def __init__(
         self,
@@ -278,6 +286,7 @@ class SignalRConnection:
         self._url = url
         self._access_token = access_token
         self._session = session
+        self._owns_session = False  # 10C.8 FIX: Track if we created the session
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self._state = WebSocketState.DISCONNECTED
         self._invocation_id = 0
@@ -285,6 +294,13 @@ class SignalRConnection:
         self._message_handlers: dict[str, list[Callable]] = {}
         self._receive_task: Optional[asyncio.Task] = None
         self._ping_task: Optional[asyncio.Task] = None
+
+        # 10C.6 FIX: Lock to prevent concurrent connect() calls
+        self._connect_lock = asyncio.Lock()
+
+        # 10C.3 FIX: Rate limiting for WebSocket operations
+        self._request_times: list[float] = []
+        self._rate_limit_lock = asyncio.Lock()
 
     @property
     def state(self) -> WebSocketState:
@@ -323,64 +339,89 @@ class SignalRConnection:
                 ]
 
     async def connect(self) -> None:
-        """Establish WebSocket connection and perform handshake."""
-        if self._state in (WebSocketState.CONNECTED, WebSocketState.CONNECTING):
-            return
+        """Establish WebSocket connection and perform handshake.
 
-        self._state = WebSocketState.CONNECTING
+        10C.6 FIX: Uses _connect_lock to prevent concurrent connect() calls.
+        10C.8 FIX: Properly manages session lifecycle to prevent leaks.
+        """
+        # 10C.6 FIX: Acquire lock to prevent concurrent connect() race condition
+        async with self._connect_lock:
+            # Check state INSIDE the lock to prevent TOCTOU race
+            if self._state in (WebSocketState.CONNECTED, WebSocketState.CONNECTING):
+                return
 
-        try:
-            # Create session if not provided
-            if self._session is None:
-                self._session = aiohttp.ClientSession()
+            self._state = WebSocketState.CONNECTING
 
-            # Negotiate connection (SignalR requirement)
-            negotiate_url = self._url.replace("wss://", "https://").replace("ws://", "http://")
-            negotiate_url = f"{negotiate_url}/negotiate?negotiateVersion=1"
+            try:
+                # 10C.8 FIX: Close old WebSocket if exists (preventing resource leak)
+                if self._ws and not self._ws.closed:
+                    logger.debug("Closing existing WebSocket before reconnect")
+                    try:
+                        await self._ws.close()
+                    except Exception as ws_close_err:
+                        logger.debug(f"Error closing old WebSocket: {ws_close_err}")
+                    self._ws = None
 
-            headers = {"Authorization": f"Bearer {self._access_token}"}
+                # 10C.8 FIX: Create session only if we don't have one, and track ownership
+                if self._session is None:
+                    self._session = aiohttp.ClientSession()
+                    self._owns_session = True  # We created it, we're responsible for closing it
+                elif self._session.closed:
+                    # Session was closed externally, create new one
+                    logger.debug("Session was closed, creating new one")
+                    self._session = aiohttp.ClientSession()
+                    self._owns_session = True
 
-            async with self._session.post(negotiate_url, headers=headers) as resp:
-                if resp.status != 200:
-                    raise TopstepXConnectionError(f"Negotiate failed: {resp.status}")
-                negotiate_data = await resp.json()
-                connection_token = negotiate_data.get("connectionToken", "")
+                # Negotiate connection (SignalR requirement)
+                negotiate_url = self._url.replace("wss://", "https://").replace("ws://", "http://")
+                negotiate_url = f"{negotiate_url}/negotiate?negotiateVersion=1"
 
-            # Connect to WebSocket with connection token
-            ws_url = f"{self._url}?id={connection_token}"
+                headers = {"Authorization": f"Bearer {self._access_token}"}
 
-            self._ws = await self._session.ws_connect(
-                ws_url,
-                headers=headers,
-                heartbeat=30,
-            )
+                async with self._session.post(negotiate_url, headers=headers) as resp:
+                    if resp.status != 200:
+                        raise TopstepXConnectionError(f"Negotiate failed: {resp.status}")
+                    negotiate_data = await resp.json()
+                    connection_token = negotiate_data.get("connectionToken", "")
 
-            # Send SignalR handshake
-            handshake = {"protocol": "json", "version": 1}
-            await self._send_message(handshake)
+                # Connect to WebSocket with connection token
+                ws_url = f"{self._url}?id={connection_token}"
 
-            # Wait for handshake response
-            response = await self._receive_raw()
-            if response is None or response.get("error"):
-                error = response.get("error", "Unknown error") if response else "No response"
-                raise TopstepXConnectionError(f"Handshake failed: {error}")
+                self._ws = await self._session.ws_connect(
+                    ws_url,
+                    headers=headers,
+                    heartbeat=30,
+                )
 
-            self._state = WebSocketState.CONNECTED
-            logger.info(f"Connected to {self._url}")
+                # Send SignalR handshake
+                handshake = {"protocol": "json", "version": 1}
+                await self._send_message(handshake)
 
-            # Start receive loop
-            self._receive_task = asyncio.create_task(self._receive_loop())
+                # Wait for handshake response
+                response = await self._receive_raw()
+                if response is None or response.get("error"):
+                    error = response.get("error", "Unknown error") if response else "No response"
+                    raise TopstepXConnectionError(f"Handshake failed: {error}")
 
-            # Start ping task
-            self._ping_task = asyncio.create_task(self._ping_loop())
+                self._state = WebSocketState.CONNECTED
+                logger.info(f"Connected to {self._url}")
 
-        except Exception as e:
-            self._state = WebSocketState.DISCONNECTED
-            logger.error(f"Connection failed: {e}")
-            raise TopstepXConnectionError(f"Connection failed: {e}")
+                # Start receive loop
+                self._receive_task = asyncio.create_task(self._receive_loop())
+
+                # Start ping task
+                self._ping_task = asyncio.create_task(self._ping_loop())
+
+            except Exception as e:
+                self._state = WebSocketState.DISCONNECTED
+                logger.error(f"Connection failed: {e}")
+                raise TopstepXConnectionError(f"Connection failed: {e}")
 
     async def disconnect(self) -> None:
-        """Close WebSocket connection."""
+        """Close WebSocket connection.
+
+        10C.8 FIX: Properly closes session if we own it, preventing resource leaks.
+        """
         self._state = WebSocketState.CLOSED
 
         if self._ping_task:
@@ -403,6 +444,12 @@ class SignalRConnection:
             await self._ws.close()
             self._ws = None
 
+        # 10C.8 FIX: Close session if we own it (we created it)
+        if self._owns_session and self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
+            self._owns_session = False
+
         # Cancel pending invocations
         for future in self._pending_invocations.values():
             if not future.done():
@@ -411,8 +458,41 @@ class SignalRConnection:
 
         logger.info(f"Disconnected from {self._url}")
 
+    async def _wait_for_rate_limit(self) -> None:
+        """Wait if necessary to stay within rate limits.
+
+        10C.3 FIX: Implements rate limiting for WebSocket operations.
+        """
+        async with self._rate_limit_lock:
+            now = time.time()
+
+            # Remove timestamps outside the window
+            self._request_times = [
+                t for t in self._request_times
+                if now - t < self.WS_WINDOW_SECONDS
+            ]
+
+            # If at limit, wait until oldest request falls outside window
+            if len(self._request_times) >= self.WS_MAX_REQUESTS:
+                oldest = self._request_times[0]
+                wait_time = self.WS_WINDOW_SECONDS - (now - oldest) + 0.1
+                if wait_time > 0:
+                    logger.debug(f"WebSocket rate limit reached, waiting {wait_time:.2f}s")
+                    await asyncio.sleep(wait_time)
+                    # Clean up again after waiting
+                    now = time.time()
+                    self._request_times = [
+                        t for t in self._request_times
+                        if now - t < self.WS_WINDOW_SECONDS
+                    ]
+
+            # Record this request
+            self._request_times.append(time.time())
+
     async def invoke(self, method: str, *args: Any, timeout: float = 30.0) -> Any:
         """Invoke a server method and wait for response.
+
+        10C.3 FIX: Added rate limiting to prevent overwhelming the broker.
 
         Args:
             method: Method name
@@ -428,6 +508,9 @@ class SignalRConnection:
         """
         if not self.is_connected:
             raise TopstepXConnectionError("Not connected")
+
+        # 10C.3 FIX: Apply rate limiting before sending
+        await self._wait_for_rate_limit()
 
         self._invocation_id += 1
         invocation_id = str(self._invocation_id)
@@ -456,12 +539,17 @@ class SignalRConnection:
     async def send(self, method: str, *args: Any) -> None:
         """Send a message without waiting for response.
 
+        10C.3 FIX: Added rate limiting to prevent overwhelming the broker.
+
         Args:
             method: Method name
             *args: Arguments to pass
         """
         if not self.is_connected:
             raise TopstepXConnectionError("Not connected")
+
+        # 10C.3 FIX: Apply rate limiting before sending
+        await self._wait_for_rate_limit()
 
         message = {
             "type": 1,  # Invocation (no response expected)
@@ -633,6 +721,9 @@ class TopstepXWebSocket:
         self._position_callbacks: list[PositionCallback] = []
         self._account_callbacks: list[AccountCallback] = []
 
+        # 10C.2 FIX: Reconnection callbacks for position sync
+        self._reconnect_callbacks: list[Callable[[], Any]] = []
+
         # Reconnection state
         self._reconnect_attempts = 0
         self._reconnect_task: Optional[asyncio.Task] = None
@@ -691,6 +782,18 @@ class TopstepXWebSocket:
             callback: Function called with AccountUpdate on changes
         """
         self._account_callbacks.append(callback)
+
+    def on_reconnect(self, callback: Callable[[], Any]) -> None:
+        """Register reconnection callback.
+
+        10C.2 FIX: Called after successful reconnection to allow position sync.
+
+        Args:
+            callback: Function (sync or async) called after reconnection.
+                      Use this to sync positions with API after disconnect.
+        """
+        self._reconnect_callbacks.append(callback)
+        logger.debug(f"Registered reconnection callback: {callback.__name__ if hasattr(callback, '__name__') else callback}")
 
     async def connect(self) -> None:
         """Connect to WebSocket hubs.
@@ -895,7 +998,11 @@ class TopstepXWebSocket:
             logger.error(f"Account parse error: {e}")
 
     async def _auto_reconnect_loop(self) -> None:
-        """Background task for auto-reconnection."""
+        """Background task for auto-reconnection.
+
+        10C.2 FIX: Calls registered reconnect callbacks after successful reconnection
+        to allow position synchronization with API.
+        """
         while self._should_run and self._auto_reconnect:
             if not self.is_connected:
                 if self._max_reconnect_attempts == 0 or self._reconnect_attempts < self._max_reconnect_attempts:
@@ -908,6 +1015,20 @@ class TopstepXWebSocket:
 
                     try:
                         await self.connect()
+
+                        # 10C.2 FIX: Call reconnect callbacks after successful reconnection
+                        # This allows position sync and other recovery operations
+                        if self.is_connected and self._reconnect_callbacks:
+                            logger.info("Calling reconnection callbacks for state sync...")
+                            for callback in self._reconnect_callbacks:
+                                try:
+                                    if asyncio.iscoroutinefunction(callback):
+                                        await callback()
+                                    else:
+                                        callback()
+                                except Exception as callback_err:
+                                    logger.error(f"Reconnection callback error: {callback_err}")
+
                     except Exception as e:
                         logger.error(f"Reconnection failed: {e}")
                 else:
