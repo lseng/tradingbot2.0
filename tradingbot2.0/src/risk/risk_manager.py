@@ -23,8 +23,10 @@ import json
 from pathlib import Path
 
 # 10C.4 FIX: Import CircuitBreakers for delegation
+# 10.19 FIX: Import EODManager for EOD phase checking in approve_trade()
 if TYPE_CHECKING:
     from src.risk.circuit_breakers import CircuitBreakers
+    from src.risk.eod_manager import EODManager, EODPhase
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +147,7 @@ class RiskManager:
         state_file: Optional[Path] = None,
         auto_persist: bool = True,
         circuit_breakers: Optional["CircuitBreakers"] = None,
+        eod_manager: Optional["EODManager"] = None,
     ):
         """
         Initialize risk manager.
@@ -154,6 +157,7 @@ class RiskManager:
             state_file: Path to persist state (optional)
             auto_persist: Whether to auto-save state after updates
             circuit_breakers: CircuitBreakers instance for consecutive loss tracking (10C.4 FIX)
+            eod_manager: EODManager instance for EOD phase checking in approve_trade (10.19 FIX)
         """
         self.limits = limits or RiskLimits()
         self.state = RiskState(
@@ -166,6 +170,9 @@ class RiskManager:
 
         # 10C.4 FIX: Use circuit breakers for consecutive loss tracking (single source of truth)
         self._circuit_breakers = circuit_breakers
+
+        # 10.19 FIX: Use EODManager for EOD phase checking (defense-in-depth)
+        self._eod_manager = eod_manager
 
         # Load persisted state if available
         if state_file and state_file.exists():
@@ -188,6 +195,19 @@ class RiskManager:
         """
         self._circuit_breakers = circuit_breakers
         logger.debug("CircuitBreakers instance linked to RiskManager")
+
+    def set_eod_manager(self, eod_manager: "EODManager") -> None:
+        """
+        Set EOD manager instance for EOD phase checking.
+
+        10.19 FIX: Allows setting EODManager after initialization for
+        defense-in-depth EOD checking in approve_trade().
+
+        Args:
+            eod_manager: EODManager instance to use
+        """
+        self._eod_manager = eod_manager
+        logger.debug("EODManager instance linked to RiskManager")
 
     def can_trade(self) -> bool:
         """
@@ -270,6 +290,41 @@ class RiskManager:
             # First check if trading is allowed at all
             if not self.can_trade():
                 return False
+
+            # 10.19 FIX: Check EOD phase - defense-in-depth check
+            # Even if trading loop checks EOD, this provides additional safety
+            if self._eod_manager:
+                # Import at runtime to avoid circular imports
+                from src.risk.eod_manager import EODPhase
+
+                eod_status = self._eod_manager.get_status()
+                phase = eod_status.phase
+
+                # Reject new positions during restricted EOD phases
+                if phase == EODPhase.CLOSE_ONLY:
+                    logger.info(
+                        f"Trade rejected: EOD CLOSE_ONLY phase (4:15 PM+), "
+                        f"no new positions allowed, {eod_status.minutes_to_close}m to close"
+                    )
+                    return False
+                elif phase == EODPhase.AGGRESSIVE_EXIT:
+                    logger.warning(
+                        f"Trade rejected: EOD AGGRESSIVE_EXIT phase (4:25 PM+), "
+                        f"must flatten positions, {eod_status.minutes_to_close}m to close"
+                    )
+                    return False
+                elif phase == EODPhase.MUST_BE_FLAT:
+                    logger.error(
+                        "Trade rejected: EOD MUST_BE_FLAT phase (4:30 PM+), "
+                        "all positions must be closed immediately"
+                    )
+                    return False
+                elif phase == EODPhase.AFTER_HOURS:
+                    logger.info(
+                        f"Trade rejected: AFTER_HOURS phase, "
+                        f"trading not allowed outside session hours"
+                    )
+                    return False
 
             # Check confidence threshold
             if confidence < self.limits.min_confidence:

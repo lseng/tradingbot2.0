@@ -43,6 +43,7 @@ class PositionSizeResult:
     risk_per_contract: float  # Risk per contract based on stop
     stop_distance_ticks: float  # Stop distance in ticks
     confidence_multiplier: float  # Applied confidence multiplier
+    eod_multiplier: float  # Applied EOD time-based multiplier (1.0=normal, 0.5=reduced, 0.0=no trade)
     reason: str  # Explanation of sizing decision
     max_contracts_for_tier: int  # Max allowed for current balance tier
     risk_pct_used: float  # Actual risk percentage of account
@@ -121,6 +122,7 @@ class PositionSizer:
         stop_ticks: float,
         confidence: float,
         max_risk_override: Optional[float] = None,
+        eod_multiplier: float = 1.0,
     ) -> PositionSizeResult:
         """
         Calculate position size for a trade.
@@ -130,10 +132,27 @@ class PositionSizer:
             stop_ticks: Stop loss distance in ticks (e.g., 8 ticks = 2 points)
             confidence: Model confidence level (0-1)
             max_risk_override: Override max dollar risk (optional)
+            eod_multiplier: EOD time-based multiplier from EODManager (1.0=normal,
+                           0.5=reduced after 4PM, 0.0=no trading after 4:15PM)
 
         Returns:
             PositionSizeResult with calculated position size and details
         """
+        # Check EOD multiplier - 0.0 means no trading allowed
+        if eod_multiplier <= 0:
+            return PositionSizeResult(
+                contracts=0,
+                base_contracts=0,
+                dollar_risk=0.0,
+                risk_per_contract=0.0,
+                stop_distance_ticks=stop_ticks,
+                confidence_multiplier=0.0,
+                eod_multiplier=eod_multiplier,
+                reason="No new positions allowed (EOD CLOSE_ONLY or AFTER_HOURS phase)",
+                max_contracts_for_tier=0,
+                risk_pct_used=0.0,
+            )
+
         # Check minimum balance
         if account_balance < self.config.min_balance:
             return PositionSizeResult(
@@ -143,6 +162,7 @@ class PositionSizer:
                 risk_per_contract=0.0,
                 stop_distance_ticks=stop_ticks,
                 confidence_multiplier=0.0,
+                eod_multiplier=eod_multiplier,
                 reason=f"Account balance ${account_balance:.2f} below minimum ${self.config.min_balance:.2f}",
                 max_contracts_for_tier=0,
                 risk_pct_used=0.0,
@@ -159,6 +179,7 @@ class PositionSizer:
                 risk_per_contract=0.0,
                 stop_distance_ticks=stop_ticks,
                 confidence_multiplier=0.0,
+                eod_multiplier=eod_multiplier,
                 reason=f"Confidence {confidence:.1%} below minimum threshold (60%)",
                 max_contracts_for_tier=0,
                 risk_pct_used=0.0,
@@ -178,6 +199,7 @@ class PositionSizer:
                 risk_per_contract=0.0,
                 stop_distance_ticks=stop_ticks,
                 confidence_multiplier=confidence_mult,
+                eod_multiplier=eod_multiplier,
                 reason="Invalid stop distance (must be positive)",
                 max_contracts_for_tier=max_contracts,
                 risk_pct_used=0.0,
@@ -195,13 +217,25 @@ class PositionSizer:
         # Apply confidence multiplier
         scaled_contracts = int(base_contracts * confidence_mult)
 
+        # Apply EOD multiplier (reduces position size near end of day)
+        # e.g., 0.5 after 4:00 PM NY per spec
+        eod_scaled_contracts = int(scaled_contracts * eod_multiplier)
+
         # Ensure at least 1 contract if confidence is above threshold
         # and cap at max for tier
-        final_contracts = max(1, min(scaled_contracts, max_contracts))
+        final_contracts = max(1, min(eod_scaled_contracts, max_contracts))
 
         # Calculate actual dollar risk
         actual_dollar_risk = final_contracts * risk_per_contract
         actual_risk_pct = actual_dollar_risk / account_balance
+
+        # Build reason string, noting EOD reduction if applicable
+        reason = (
+            f"Calculated {final_contracts} contracts for ${account_balance:.0f} balance, "
+            f"{stop_ticks} tick stop, {confidence:.1%} confidence"
+        )
+        if eod_multiplier < 1.0:
+            reason += f" (EOD reduced by {eod_multiplier:.0%})"
 
         return PositionSizeResult(
             contracts=final_contracts,
@@ -210,8 +244,8 @@ class PositionSizer:
             risk_per_contract=risk_per_contract,
             stop_distance_ticks=stop_ticks,
             confidence_multiplier=confidence_mult,
-            reason=f"Calculated {final_contracts} contracts for ${account_balance:.0f} balance, "
-                   f"{stop_ticks} tick stop, {confidence:.1%} confidence",
+            eod_multiplier=eod_multiplier,
+            reason=reason,
             max_contracts_for_tier=max_contracts,
             risk_pct_used=actual_risk_pct,
         )

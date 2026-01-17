@@ -1,7 +1,7 @@
 # Implementation Plan - MES Futures Scalping Bot
 
 > **Last Updated**: 2026-01-17 UTC
-> **Status**: **ALL P0 BUGS FIXED** | **ALL P1 BUGS FIXED**
+> **Status**: **ALL P0 BUGS FIXED** | **ALL P1 BUGS FIXED** | **2 P2 BUGS FIXED**
 > **Verified**: All bugs confirmed via direct code inspection at specific file:line references
 > **BUGS_FOUND.md**: 9 historical deployment bugs - ALL FIXED (verified)
 > **Test Coverage**: 2,520 test functions across 61 test files, 91% coverage
@@ -10,6 +10,8 @@
 > **10.21 FIXED**: Feature ordering validation - fixed 2026-01-17
 > **10.22 FIXED**: Scaler mismatch validation - fixed 2026-01-17
 > **10.23 FIXED**: OCO double-fill race condition - fixed 2026-01-17
+> **10.19 FIXED**: EOD check in approve_trade() - fixed 2026-01-17
+> **10.20 FIXED**: EOD size multiplier in position sizing - fixed 2026-01-17
 
 ---
 
@@ -25,7 +27,7 @@ The codebase is substantially complete (Phases 1-9 done). **All P0 bugs have bee
 | ~~4~~ | ~~**10.22**~~ | ~~Scaler mismatch in inference (silent failure)~~ | ~~1h~~ | **FIXED 2026-01-17** |
 | ~~5~~ | ~~**10.23**~~ | ~~OCO double-fill race condition~~ | ~~3h~~ | **FIXED 2026-01-17** |
 
-Additionally, **all 9 P1 bugs have been FIXED** (2026-01-17), and **4 P2 items** need attention during paper trading.
+Additionally, **all 9 P1 bugs have been FIXED** (2026-01-17), **2 P2 bugs FIXED** (10.19, 10.20), and only **1 P2 item** (10.18 Transformer architecture) remains for paper trading.
 
 ---
 
@@ -191,17 +193,33 @@ Both proceed to create connections
 |------|----------|-------|--------|--------|--------|
 | **10.16** | `trade_logger.py:253` | Slippage calculation | **NOT A BUG** | `net_pnl = gross - comm - slip` is CORRECT | N/A |
 | **10.18** | `neural_networks.py` | Missing Transformer architecture | **CONFIRMED** | Only FeedForward + LSTM + HybridNet (spec requires Transformer) | 4-6h |
-| **10.19** | `risk_manager.py:231-282` | EOD manager NOT queried in `approve_trade()` | **PARTIAL** | EOD check exists in trading loop but not in approve_trade() as defense-in-depth | 2h |
-| **10.20** | `position_sizing.py:118-217` | EOD size multiplier NOT applied | **CONFIRMED** | `calculate()` doesn't use `EODManager.get_position_size_multiplier()` | 1h |
+| ~~**10.19**~~ | ~~`risk_manager.py:272-327`~~ | ~~EOD manager NOT queried in `approve_trade()`~~ | **FIXED 2026-01-17** | N/A | N/A |
+| ~~**10.20**~~ | ~~`position_sizing.py:118-251`~~ | ~~EOD size multiplier NOT applied~~ | **FIXED 2026-01-17** | N/A | N/A |
 
-### 10.20 Details: EOD Size Multiplier
+### ~~10.19 Details: EOD Check in approve_trade()~~ ✅ FIXED (2026-01-17)
 
-**Problem**:
-- `PositionSizer.calculate()` has no time awareness (lines 118-217)
-- `EODManager.get_position_size_multiplier()` exists (lines 281-292) but is not called
-- Positions should be reduced 50% after 4:00 PM NY per spec
+| Attribute | Value |
+|-----------|-------|
+| **Location** | `src/risk/risk_manager.py:272-327` |
+| **Status** | **FIXED** |
+| **Changes** | 1. Added `eod_manager` parameter to `RiskManager.__init__()` |
+| | 2. Added `set_eod_manager()` method for late binding |
+| | 3. Added EOD phase check in `approve_trade()` that rejects trades during CLOSE_ONLY, AGGRESSIVE_EXIT, MUST_BE_FLAT, AFTER_HOURS phases |
+| | 4. Updated `live_trader.py` to link EODManager to RiskManager |
+| **Tests** | All 2520 tests pass |
 
-**Fix**: Add `eod_multiplier` parameter to `calculate()` and apply it to final position size.
+### ~~10.20 Details: EOD Size Multiplier~~ ✅ FIXED (2026-01-17)
+
+| Attribute | Value |
+|-----------|-------|
+| **Location** | `src/risk/position_sizing.py:118-251` |
+| **Status** | **FIXED** |
+| **Changes** | 1. Added `eod_multiplier` field to `PositionSizeResult` dataclass |
+| | 2. Added `eod_multiplier` parameter to `calculate()` method (default 1.0) |
+| | 3. Apply EOD multiplier after confidence scaling, before tier capping |
+| | 4. Returns 0 contracts when `eod_multiplier <= 0` (no trading allowed) |
+| | 5. Updated `live_trader.py` to get EOD multiplier from `_eod_manager.get_position_size_multiplier()` |
+| **Tests** | All 2520 tests pass |
 
 ---
 

@@ -276,6 +276,9 @@ class LiveTrader:
         # 10C.4 FIX: Link risk manager to circuit breakers (single source of truth for consecutive losses)
         self._risk_manager.set_circuit_breakers(self._circuit_breaker)
 
+        # 10.19 FIX: Link risk manager to EOD manager (defense-in-depth EOD checking)
+        self._risk_manager.set_eod_manager(self._eod_manager)
+
         logger.info(f"   Balance: ${self._risk_manager.state.account_balance:.2f}")
 
         # 3. Initialize position manager
@@ -768,16 +771,22 @@ class LiveTrader:
         )
 
         try:
+            # Get EOD position size multiplier (1.0 normal, 0.5 after 4PM, 0.0 no trading)
+            eod_multiplier = 1.0
+            if self._eod_manager:
+                eod_multiplier = self._eod_manager.get_position_size_multiplier()
+
             # Calculate position size
             size = self._position_sizer.calculate(
                 account_balance=self._risk_manager.state.account_balance,
                 stop_ticks=signal.stop_ticks,
                 confidence=signal.confidence,
                 max_risk_override=self.config.max_per_trade_risk,
+                eod_multiplier=eod_multiplier,
             )
 
             if size.contracts <= 0:
-                logger.warning("Position size is 0, skipping trade")
+                logger.warning(f"Position size is 0, skipping trade: {size.reason}")
                 return
 
             # Validate trade with risk manager (per-trade risk + confidence check)
