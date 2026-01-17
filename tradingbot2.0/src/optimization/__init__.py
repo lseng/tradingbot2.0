@@ -93,6 +93,15 @@ from src.optimization.random_search import (
     run_random_search,
 )
 
+from src.optimization.walk_forward import (
+    WalkForwardOptimizer,
+    WalkForwardConfig,
+    WalkForwardResult,
+    WalkForwardFold,
+    FoldResult,
+    run_walk_forward_optimization,
+)
+
 # Bayesian optimizer requires optuna - import conditionally
 try:
     from src.optimization.bayesian_optimizer import (
@@ -139,6 +148,13 @@ __all__ = [
     "RandomSearchConfig",
     "AdaptiveRandomSearch",
     "run_random_search",
+    # Walk-Forward Optimization
+    "WalkForwardOptimizer",
+    "WalkForwardConfig",
+    "WalkForwardResult",
+    "WalkForwardFold",
+    "FoldResult",
+    "run_walk_forward_optimization",
     # Bayesian Optimization (optional)
     "BayesianOptimizer",
     "BayesianConfig",

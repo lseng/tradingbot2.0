@@ -450,6 +450,11 @@ class ParquetDataLoader:
         # Remove last rows where we don't have future data
         df = df.iloc[:-lookahead_seconds]
 
+        # CRITICAL: Drop future columns to prevent data leakage
+        # These columns contain future information that would give the model perfect foresight
+        # if accidentally used in feature engineering
+        df = df.drop(columns=['future_close', 'future_tick_move'])
+
         # Calculate class distribution
         class_counts = df['target'].value_counts().sort_index()
         total = len(df)

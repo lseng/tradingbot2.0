@@ -347,7 +347,10 @@ class AdaptiveRandomSearch(RandomSearchOptimizer):
             with self._lock:
                 self._results.append(result)
 
-            # Update best_params if we found better
+            # Update best_params AND self._best_result if we found better
+            # Note: evaluate_params() calls _update_best() but we need to update
+            # best_params for Phase 2 sampling. The explicit _best_result update
+            # ensures Phase 2 improvements are reflected in the final result.
             if result.status == "completed":
                 if result.is_better_than(
                     self._best_result,
@@ -355,6 +358,7 @@ class AdaptiveRandomSearch(RandomSearchOptimizer):
                     self.config.higher_is_better
                 ):
                     best_params = result.params.copy()
+                    self._best_result = result  # Fix: Update global best result
 
             if self.config.verbose >= 1 and (i + 1) % 10 == 0:
                 current = n_exploration + i + 1

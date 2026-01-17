@@ -319,6 +319,35 @@ class TestTargetVariable:
         assert df_with_target.iloc[1]['target'] == 0  # DOWN
         assert df_with_target.iloc[2]['target'] == 1  # FLAT
 
+    def test_future_columns_not_in_output(self, sample_ohlcv_data):
+        """Test that future_close and future_tick_move columns are dropped.
+
+        This is CRITICAL for preventing data leakage:
+        - future_close contains the price N seconds in the future
+        - future_tick_move contains the tick movement N seconds in the future
+        - If accidentally used in feature engineering, model would have perfect foresight
+        - This would cause catastrophic overfitting that collapses in live trading
+
+        Fix for bug 10B.4 in IMPLEMENTATION_PLAN.md.
+        """
+        loader = ParquetDataLoader.__new__(ParquetDataLoader)
+        loader.raw_data = sample_ohlcv_data
+
+        df_with_target = loader.create_target_variable(
+            sample_ohlcv_data,
+            lookahead_seconds=30,
+            threshold_ticks=3.0
+        )
+
+        # CRITICAL: Verify future columns are NOT in output
+        assert 'future_close' not in df_with_target.columns, \
+            "future_close column would leak future price data!"
+        assert 'future_tick_move' not in df_with_target.columns, \
+            "future_tick_move column would leak future movement data!"
+
+        # Verify target column IS present
+        assert 'target' in df_with_target.columns
+
 
 class TestClassWeights:
     """Tests for class weight calculation."""

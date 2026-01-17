@@ -1325,6 +1325,63 @@ class TestRandomSearchOptimizer:
         # Best param should be near 0.8
         assert abs(result.best_params["p1"] - 0.8) < 0.3
 
+    def test_adaptive_phase2_updates_best_result(self):
+        """Test that Phase 2 exploitation updates self._best_result.
+
+        This is a regression test for bug 10.13 in IMPLEMENTATION_PLAN.md.
+
+        The bug was that Phase 2 updated local `best_params` but not
+        `self._best_result`. This meant Phase 2 improvements were lost
+        from the final result.
+
+        This test verifies that when Phase 2 finds a better result than
+        Phase 1, that improvement is reflected in the final optimization result.
+        """
+        # Design an objective where Phase 2 exploitation is likely to find
+        # a better result than random exploration
+        call_count = [0]
+
+        def staged_objective(params):
+            """Objective that gradually reveals better solutions."""
+            call_count[0] += 1
+            x = params["x"]
+            # Peak at x=0.75, but early calls get noise
+            base_score = 1.0 - abs(x - 0.75)
+            # Add noise to early calls to simulate exploration
+            if call_count[0] <= 5:
+                return {"sharpe_ratio": base_score * 0.5}  # Worse during exploration
+            return {"sharpe_ratio": base_score}  # Better during exploitation
+
+        space = ParameterSpace(parameters=[
+            ParameterConfig("x", 0.0, 1.0, param_type="float"),
+        ])
+
+        config = RandomSearchConfig(
+            n_iterations=20,
+            verbose=0,
+            random_seed=123,
+            metric_name="sharpe_ratio",
+            higher_is_better=True
+        )
+        optimizer = AdaptiveRandomSearch(
+            space,
+            staged_objective,
+            config,
+            exploration_ratio=0.25,  # Only 25% exploration, 75% exploitation
+        )
+
+        result = optimizer.optimize()
+
+        # The final result should reflect improvements found in Phase 2
+        # (exploitation phase), not just the best from Phase 1 (exploration)
+        assert result.best_metric is not None
+        assert result.best_params is not None
+
+        # Verify that the best result was updated during optimization
+        # by checking that we got a score better than exploration phase typically yields
+        assert result.best_metric > 0.5, \
+            "Phase 2 should have found a better result than Phase 1 exploration"
+
     def test_random_search_reset(self, simple_space, mock_objective):
         """Test resetting random search state."""
         config = RandomSearchConfig(n_iterations=5, deduplicate=False, verbose=0)
