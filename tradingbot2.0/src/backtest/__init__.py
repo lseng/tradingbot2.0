@@ -37,6 +37,8 @@ from .engine import (
     OrderFillMode,
     Signal,
     SignalType,
+    Position,
+    WalkForwardValidator,
 )
 from .go_live_validator import (
     GoLiveValidator,
@@ -93,6 +95,8 @@ __all__ = [
     "OrderFillMode",
     "Signal",
     "SignalType",
+    "Position",
+    "WalkForwardValidator",
     # Go-Live Validation
     "GoLiveValidator",
     "GoLiveValidationResult",

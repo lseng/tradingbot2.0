@@ -196,8 +196,21 @@ class TestOverfittingMetrics:
     def test_overfitting_metrics_computed_with_holdout_data(
         self, simple_space, simple_objective
     ):
-        """Test overfitting metrics are computed when holdout_data provided."""
-        optimizer = ConcreteOptimizer(simple_space, simple_objective)
+        """Test overfitting metrics are computed when holdout_objective_fn provided."""
+        # Create a separate holdout objective function (required for proper OOS evaluation)
+        def holdout_objective(params):
+            # Simulate slightly different metrics on holdout data (typical of some overfitting)
+            lr = params.get("learning_rate", 0.01)
+            bs = params.get("batch_size", 32)
+            # Return slightly worse metrics than in-sample (simulating overfitting)
+            sharpe = lr * 10 + bs * 0.01 - 0.1
+            return {"sharpe_ratio": sharpe, "total_return": sharpe * 0.05}
+
+        optimizer = ConcreteOptimizer(
+            simple_space,
+            simple_objective,
+            holdout_objective_fn=holdout_objective
+        )
 
         # Provide holdout data
         holdout_data = pd.DataFrame({"price": [100, 101, 102]})
@@ -250,6 +263,81 @@ class TestOverfittingMetrics:
         # in_sample_metrics should be populated from best trial
         if result.in_sample_metrics:
             assert "sharpe_ratio" in result.in_sample_metrics
+
+    def test_overfitting_metrics_uses_holdout_objective_fn(self, simple_space):
+        """
+        Test that when holdout_objective_fn is provided, it is used for OOS evaluation.
+
+        This is the critical test that verifies proper IS/OOS separation:
+        - Validation objective returns sharpe_ratio = 1.5 (used for optimization)
+        - Holdout objective returns sharpe_ratio = 0.8 (used for OOS evaluation)
+        - If OOS metrics show 0.8, the holdout_objective_fn was correctly used
+        - If OOS metrics show 1.5, the bug exists (same objective reused)
+        """
+        # Validation objective returns higher sharpe (in-sample)
+        def validation_objective(params):
+            return {"sharpe_ratio": 1.5, "total_return": 0.10}
+
+        # Holdout objective returns lower sharpe (out-of-sample)
+        def holdout_objective(params):
+            return {"sharpe_ratio": 0.8, "total_return": 0.03}
+
+        # Create optimizer WITH holdout_objective_fn
+        optimizer = ConcreteOptimizer(
+            simple_space,
+            validation_objective,
+            holdout_objective_fn=holdout_objective,
+        )
+
+        # Provide holdout_data (required to trigger overfitting computation)
+        holdout_data = pd.DataFrame({"price": [100, 101, 102]})
+        result = optimizer.optimize(holdout_data=holdout_data)
+
+        # Verify OOS metrics come from holdout_objective (0.8), not validation (1.5)
+        assert result.out_of_sample_metrics is not None, "OOS metrics should be computed"
+        assert result.out_of_sample_metrics["sharpe_ratio"] == 0.8, (
+            f"OOS sharpe should be 0.8 from holdout_objective, "
+            f"got {result.out_of_sample_metrics['sharpe_ratio']}"
+        )
+
+        # Verify IS metrics come from validation_objective (1.5)
+        assert result.in_sample_metrics is not None, "IS metrics should be computed"
+        assert result.in_sample_metrics["sharpe_ratio"] == 1.5, (
+            f"IS sharpe should be 1.5 from validation_objective, "
+            f"got {result.in_sample_metrics['sharpe_ratio']}"
+        )
+
+        # Overfitting score should be 1.5 / 0.8 = 1.875 (indicating overfitting)
+        expected_overfitting = 1.5 / 0.8
+        assert abs(result.overfitting_score - expected_overfitting) < 0.01, (
+            f"Overfitting score should be ~{expected_overfitting:.2f}, "
+            f"got {result.overfitting_score}"
+        )
+
+    def test_overfitting_warning_without_holdout_objective_fn(self, simple_space, caplog):
+        """
+        Test that a warning is logged when holdout_data is provided without holdout_objective_fn.
+
+        This ensures users are alerted when they're using the incorrect pattern
+        that defeats the purpose of overfitting detection.
+        """
+        def simple_objective(params):
+            return {"sharpe_ratio": 1.0, "total_return": 0.05}
+
+        # Create optimizer WITHOUT holdout_objective_fn
+        optimizer = ConcreteOptimizer(simple_space, simple_objective)
+
+        holdout_data = pd.DataFrame({"price": [100, 101, 102]})
+
+        import logging
+        with caplog.at_level(logging.WARNING):
+            result = optimizer.optimize(holdout_data=holdout_data)
+
+        # Check that warning was logged
+        assert any(
+            "holdout_data was provided but no holdout_objective_fn was set" in record.message
+            for record in caplog.records
+        ), "Should warn when holdout_data provided without holdout_objective_fn"
 
 
 # ============================================================================

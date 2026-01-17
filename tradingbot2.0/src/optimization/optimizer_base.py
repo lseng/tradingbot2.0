@@ -338,20 +338,18 @@ class BaseOptimizer(ABC):
             return result
 
         # Check if we have a proper holdout objective function
-        # If not, and holdout_data is provided, warn about incorrect usage
+        # OOS evaluation REQUIRES a separate holdout_objective_fn to be meaningful
         if self.holdout_objective_fn is None:
             if self._holdout_data is not None:
                 logger.warning(
                     "holdout_data was provided but no holdout_objective_fn was set. "
-                    "OOS evaluation will use the same objective function as optimization, "
-                    "which defeats the purpose of overfitting detection. "
-                    "Use create_split_objective() to create separate objectives."
+                    "Skipping OOS evaluation - using the same objective function for both "
+                    "in-sample and out-of-sample would defeat the purpose of overfitting detection. "
+                    "Use create_split_objective() to create separate validation and holdout objectives."
                 )
-                # Fall back to using the same objective (incorrect but maintains backwards compatibility)
-                oos_objective = self.objective_fn
-            else:
-                # No holdout data at all - skip OOS evaluation
-                return result
+            # Cannot do proper OOS evaluation without separate holdout objective
+            # Returning without OOS metrics is better than returning incorrect metrics
+            return result
         else:
             # Proper setup - use the holdout objective function
             oos_objective = self.holdout_objective_fn

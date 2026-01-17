@@ -775,12 +775,17 @@ class BacktestEngine:
 
         # Calculate costs
         commission = self._cost_model.record_trade(pos.contracts)
+        # NOTE: Slippage is already reflected in entry/exit prices via apply_slippage()
+        # so gross_pnl already accounts for slippage. The slippage_cost here is
+        # calculated for LOGGING purposes only (passed to add_trade for record-keeping)
+        # and NOT deducted from net_pnl to avoid double-counting.
         slippage_cost = self._slippage_model.get_slippage_cost(
             self.config.slippage_ticks * 2,  # Entry and exit
             pos.contracts,
         )
 
-        net_pnl = gross_pnl - commission - slippage_cost
+        # Net P&L = gross - commission only (slippage already in prices)
+        net_pnl = gross_pnl - commission
 
         # Record trade
         self._trade_log.add_trade(

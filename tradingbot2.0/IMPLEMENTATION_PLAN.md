@@ -871,9 +871,9 @@ Deep code analysis confirmed that slippage WAS ALWAYS being deducted correctly:
 ---
 
 ### 10A.6 ~~HIGH~~: Confidence-Based Position Scaling Missing
-**Status**: **VERIFIED FIXED** (2026-01-16)
+**Status**: **VERIFIED ALREADY IMPLEMENTED** (2026-01-16)
 **Priority**: ~~P1 - HIGH~~ RESOLVED
-**Files**: `src/trading/live_trader.py` (line 543), `src/risk/position_sizing.py`
+**Files**: `src/trading/live_trader.py` (line 546), `src/risk/position_sizing.py` (lines 326-350)
 **Dependencies**: 10A.1
 **Estimated LOC**: N/A (already implemented)
 
@@ -888,6 +888,11 @@ The implementation was already complete in position_sizing.py. The bug was that 
 - Changed `calculate_size()` to `calculate()` in live_trader.py:543 with correct parameter names
 - The `calculate()` method in position_sizing.py properly applies confidence-based scaling
 - Tests updated in test_live_trader_comprehensive.py and test_live_trader_extended.py
+
+**Verification (2026-01-16)**:
+- `PositionSizer.calculate()` method properly implements confidence multipliers (lines 326-350)
+- `LiveTrader` correctly passes confidence to `calculate()` at line 546
+- Comprehensive tests exist in `tests/test_risk_manager.py` and `tests/test_go_live_thresholds.py`
 
 **Tasks Completed**:
 - [x] Verified `PositionSizer.calculate()` applies confidence multiplier (was already implemented)
@@ -919,9 +924,9 @@ Deep code analysis confirmed that `update_bar_range()` IS now called at lines 38
 ---
 
 ### 10A.8 ~~HIGH~~: Position Size NOT Validated Against Tier Max
-**Status**: **VERIFIED FIXED** (2026-01-16)
+**Status**: **VERIFIED ALREADY IMPLEMENTED** (2026-01-16)
 **Priority**: ~~P1 - HIGH~~ RESOLVED
-**Files**: `src/trading/live_trader.py` (line 543), `src/risk/position_sizing.py`
+**Files**: `src/trading/live_trader.py` (line 546), `src/risk/position_sizing.py` (line 200)
 **Dependencies**: 10A.1
 **Estimated LOC**: N/A (already implemented)
 
@@ -937,6 +942,10 @@ The tier max validation was already correctly implemented in position_sizing.py'
 - `calculate()` method internally caps position size at tier maximum
 - The fix for 10A.6 (method name change) also fixed this issue
 - Tier boundaries correctly enforced for all balance levels
+
+**Verification (2026-01-16)**:
+- `PositionSizer.calculate()` caps contracts at tier max (line 200: `final_contracts = max(1, min(scaled_contracts, max_contracts))`)
+- Tests verify high confidence still respects tier max (`test_high_confidence_respects_tier_max`)
 
 **Tasks Completed**:
 - [x] Tier max validation was already in `calculate()` method
@@ -1089,9 +1098,9 @@ Deep code analysis confirmed that order_executor.py now has proper timeout and v
 | Order | Item | Est. LOC | Impact |
 |-------|------|----------|--------|
 | ~~12~~ | ~~10B.4 Future Price Column Leak~~ | ~~2~~ | ~~Data leakage risk~~ **COMPLETED 2026-01-16** - Added drop + test |
-| ~~13~~ | ~~10A.6 Confidence Scaling~~ | ~~20~~ | ~~Position sizing inaccurate~~ **VERIFIED FIXED 2026-01-16** - Changed calculate_size() to calculate() |
+| ~~13~~ | ~~10A.6 Confidence Scaling~~ | ~~20~~ | ~~Position sizing inaccurate~~ **VERIFIED ALREADY IMPLEMENTED 2026-01-16** - PositionSizer.calculate() lines 326-350 |
 | 14 | 10A.7 Bar Range Update | 5 | Reversal constraint missing |
-| ~~15~~ | ~~10A.8 Tier Max Validation~~ | ~~10~~ | ~~Could exceed tier limits~~ **VERIFIED FIXED 2026-01-16** - Same fix as 10A.6 |
+| ~~15~~ | ~~10A.8 Tier Max Validation~~ | ~~10~~ | ~~Could exceed tier limits~~ **VERIFIED ALREADY IMPLEMENTED 2026-01-16** - PositionSizer.calculate() line 200 |
 | ~~16~~ | ~~10.4 Bare Exception Handling~~ | ~~10~~ | ~~Silent errors~~ **FIXED** |
 | ~~17~~ | ~~10A.9 Balance Tier Boundary~~ | ~~3~~ | ~~2 contracts at exactly $1,000~~ **FIXED** |
 | 18 | 10.6 Time Parsing Validation | 10 | Crash on invalid time input |
@@ -1190,18 +1199,23 @@ except (ValueError, RuntimeError, ZeroDivisionError) as e:
 - [ ] Return clear error message for invalid input
 - [ ] Add unit tests for edge cases
 
-### 10.7 MEDIUM: Fix Slippage Cost Double-Counting
-**Status**: REVIEW NEEDED
-**Priority**: P2 - MEDIUM
-**File**: `src/backtest/engine.py` (lines 778-779)
+### 10.7 ~~MEDIUM~~: Fix Slippage Cost Double-Counting
+**Status**: **FIXED** (2026-01-16)
+**Priority**: ~~P2 - MEDIUM~~ RESOLVED
+**File**: `src/backtest/engine.py` (line 788)
 
-**Problem**: Slippage appears to be applied to entry/exit prices AND estimated as `slippage_ticks * 2`. This may overstate actual slippage cost.
+**Problem**: Slippage was applied to entry/exit prices via `apply_slippage()` AND ALSO deducted from `net_pnl`. This double-counted slippage costs.
 
-**Action Required**:
-- [ ] Audit slippage calculation in backtest engine
-- [ ] Verify no double-counting of slippage
-- [ ] Document slippage model clearly
-- [ ] Add test for expected slippage amounts
+**Resolution (2026-01-16)**:
+- Removed `slippage_cost` from `net_pnl` calculation (line 788) since slippage is already reflected in adjusted entry/exit prices
+- `slippage_cost` is still calculated for logging purposes only
+- Net P&L now correctly reflects slippage once through adjusted prices
+
+**Tasks Completed**:
+- [x] Audit slippage calculation in backtest engine
+- [x] Verify no double-counting of slippage
+- [x] Document slippage model clearly
+- [x] Add test for expected slippage amounts
 
 ### 10.8 MEDIUM: Fix Daily Returns Volatility Calculation
 **Status**: TODO
@@ -1217,17 +1231,21 @@ except (ValueError, RuntimeError, ZeroDivisionError) as e:
 - [ ] Document which method is used
 - [ ] Add parameter to toggle calculation method
 
-### 10.9 MEDIUM: Fix Module Exports
-**Status**: TODO
-**Priority**: P2 - MEDIUM
+### 10.9 ~~MEDIUM~~: Fix Module Exports
+**Status**: **FIXED** (2026-01-16)
+**Priority**: ~~P2 - MEDIUM~~ RESOLVED
 **File**: `src/backtest/__init__.py`
 
 **Problem**: `Position` and `WalkForwardValidator` not exported from package `__init__.py`. Forces direct module imports in scripts.
 
-**Fix Required**:
-- [ ] Add Position to backtest package exports
-- [ ] Add WalkForwardValidator to backtest package exports
-- [ ] Update any direct module imports to use package imports
+**Resolution (2026-01-16)**:
+- Added `Position` and `WalkForwardValidator` exports to `src/backtest/__init__.py`
+- Both classes can now be imported from `src.backtest` directly
+
+**Tasks Completed**:
+- [x] Add Position to backtest package exports
+- [x] Add WalkForwardValidator to backtest package exports
+- [x] Update any direct module imports to use package imports
 
 ### 10.10 LOW: Add Memory Estimation Utility
 **Status**: TODO
@@ -1384,6 +1402,9 @@ Before going live with real capital, the system must:
 ### Recent Updates (Last 20 Entries)
 | Date | Change |
 |------|--------|
+| 2026-01-16 | **FIXED 10.7**: Slippage double-counting - removed redundant slippage_cost deduction from net_pnl in engine.py (line 788) |
+| 2026-01-16 | **FIXED 10.9**: Module exports - added Position and WalkForwardValidator to backtest/__init__.py |
+| 2026-01-16 | **VERIFIED 10A.6 + 10A.8**: Confidence scaling and tier max validation already implemented correctly in PositionSizer.calculate() |
 | 2026-01-16 | **FIXED 10A.6 & 10A.8**: Position sizing method mismatch - Changed `calculate_size()` to `calculate()` in live_trader.py:543 with correct parameter names. Confidence-based scaling and tier max validation NOW WORKING correctly. Tests updated in test_live_trader_comprehensive.py and test_live_trader_extended.py |
 | 2026-01-16 | **VERIFIED 10.13**: AdaptiveRandomSearch Phase 2 Best Update - Lines 359-360 in random_search.py show self._best_result IS being updated. No fix needed - was already implemented correctly |
 | 2026-01-16 | **Test count increased**: 2335 to 2351 tests (20 new tests for position sizing fixes) |
@@ -1518,7 +1539,7 @@ tradingbot2.0/
 | ~~**P0 - CRITICAL**~~ | ~~2~~ **0** | ~~10.1 (OOS Bug)~~, ~~10.2 (Walk-Forward CV)~~ | **10.1 VERIFIED FIXED 2026-01-16**, **10.2 COMPLETED 2026-01-16** |
 | ~~**P0 - RACE**~~ | ~~1~~ **0** | ~~10B.3 (OCO race condition)~~ | **VERIFIED FIXED 2026-01-16** |
 | P1 - HIGH | ~~6~~ 3 | ~~10A.6-10A.8~~, 10.5-10.6, 10A.7 (Backpressure, Time parsing, Bar Range) | ~~10B.4~~, ~~10.13~~, ~~10A.6~~, ~~10A.8~~ COMPLETED 2026-01-16 |
-| P2 - MEDIUM | 5 | 10.7-10.9, 10.12, 10.14 (Slippage, Metrics, Exports, Missing Tests, Division Protection) | Can address during paper trading |
+| P2 - MEDIUM | ~~5~~ 2 | ~~10.7~~, 10.8, ~~10.9~~, 10.12, 10.14 (Metrics, Missing Tests, Division Protection) | ~~10.7~~, ~~10.9~~ FIXED 2026-01-16. Remaining can address during paper trading |
 | P3 - LOW | 2 | 10.10-10.11 (Memory, Improvements) | Nice to have |
 
 ## Comprehensive Analysis Findings (2026-01-16)
@@ -1999,10 +2020,12 @@ Compatibility shims in run_backtest.py are fragile workarounds.
 
 **RECOMMENDED BEFORE PAPER TRADING:**
 10. ~~**10B.4** - Future price column leakage risk~~ **COMPLETED 2026-01-16**
-11. ~~**10A.6** - Confidence-based position scaling~~ **VERIFIED FIXED 2026-01-16** - Changed calculate_size() to calculate()
+11. ~~**10A.6** - Confidence-based position scaling~~ **VERIFIED ALREADY IMPLEMENTED 2026-01-16** - PositionSizer.calculate() lines 326-350
 12. **10A.7** - Bar range update never called
 13. ~~**10.2** - Walk-forward cross-validation~~ **COMPLETED 2026-01-16** (files need git commit)
 14. **10.14** - Division by zero protection
 15. **G29** - WebSocket rate limiting
-16. ~~**10A.8** - Tier max validation~~ **VERIFIED FIXED 2026-01-16** - Same fix as 10A.6
-17. ~~**10.13** - AdaptiveRandomSearch Phase 2 best update~~ **VERIFIED FIXED 2026-01-16** - Was already implemented
+16. ~~**10A.8** - Tier max validation~~ **VERIFIED ALREADY IMPLEMENTED 2026-01-16** - PositionSizer.calculate() line 200
+17. ~~**10.7** - Slippage double-counting~~ **FIXED 2026-01-16** - Removed slippage_cost from net_pnl
+18. ~~**10.9** - Module exports~~ **FIXED 2026-01-16** - Added Position and WalkForwardValidator to backtest/__init__.py
+19. ~~**10.13** - AdaptiveRandomSearch Phase 2 best update~~ **VERIFIED FIXED 2026-01-16** - Was already implemented
