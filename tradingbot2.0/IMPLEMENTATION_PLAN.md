@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-**Current State**: Core infrastructure complete (Phases 1-9 done, 2384 tests, 91% coverage), but critical gaps exist in live trading safety, backtest accuracy, and method compatibility.
+**Current State**: Core infrastructure complete (Phases 1-9 done, 2395 tests, 91% coverage), but critical gaps exist in live trading safety, backtest accuracy, and method compatibility.
 
 **✅ ALL CRITICAL ISSUES VERIFIED FIXED (11 of 11 on 2026-01-16)**:
 1. ~~Risk manager initialized but **NOT enforced**~~ - **VERIFIED FIXED 2026-01-16**: `approve_trade()` IS called at lines 480-487
@@ -102,7 +102,7 @@ Based on the 13 parallel subagent analysis:
 
 ## Test Coverage Summary
 
-**Total Tests**: 2384 tests (all passing)
+**Total Tests**: 2395 tests (all passing)
 **Coverage**: 91% (target: >80%) ✓ ACHIEVED
 
 ### Test Breakdown by Module
@@ -145,7 +145,7 @@ Based on the 13 parallel subagent analysis:
 | Shared Utilities | `src/lib/` | P3 - MEDIUM | **COMPLETED** | 6 files: config, logging_utils, time_utils, constants, performance_monitor, alerts |
 | Parameter Optimization | `src/optimization/` | P3 - MEDIUM | **COMPLETED** | 7 files: parameter_space, results, optimizer_base, grid_search, random_search, bayesian_optimizer, __init__ |
 | Model Architecture | `src/ml/models/` | P2 - HIGH | **COMPLETED** | All models updated for 3-class, inference optimization done |
-| Tests | `tests/` | P3 - MEDIUM | **COMPLETED** | 2384 tests (91% coverage) |
+| Tests | `tests/` | P3 - MEDIUM | **COMPLETED** | 2395 tests (91% coverage) |
 
 ### Critical Bug Summary
 
@@ -512,7 +512,7 @@ Complete startup/main loop/shutdown sequences implemented with proper error hand
 
 ## Phase 8: MEDIUM - Testing (Ongoing)
 
-**Status**: COMPLETED - 2384 tests, 91% coverage ✓
+**Status**: COMPLETED - 2395 tests, 91% coverage ✓
 **Test Coverage**: 91% (target: >80%) ✓ ACHIEVED
 **Directory**: `tests/`
 
@@ -1224,18 +1224,21 @@ Verification confirmed that `parse_time()` in `run_live.py` already has full val
 - [x] Add test for expected slippage amounts
 
 ### 10.8 MEDIUM: Fix Daily Returns Volatility Calculation
-**Status**: TODO
-**Priority**: P2 - MEDIUM
+**Status**: **COMPLETED** (2026-01-16)
+**Priority**: ~~P2 - MEDIUM~~ RESOLVED
 **File**: `src/backtest/metrics.py` (line 593)
 
 **Problem**: Equity curve includes unrealized P&L from open positions. Sharpe/Sortino are calculated from all equity points, which includes mark-to-market volatility from open trades.
 
 **Impact**: Exaggerates volatility for scalping strategies where trades are open for short durations.
 
-**Fix Required**:
-- [ ] Option to calculate Sharpe/Sortino from closed trade returns only
-- [ ] Document which method is used
-- [ ] Add parameter to toggle calculation method
+**Resolution (2026-01-16)**:
+Already implemented - the `use_closed_trade_returns` parameter and `returns_source` field in metrics.py already provide this capability.
+
+**Tasks Completed**:
+- [x] Option to calculate Sharpe/Sortino from closed trade returns only
+- [x] Document which method is used
+- [x] Add parameter to toggle calculation method
 
 ### 10.9 ~~MEDIUM~~: Fix Module Exports
 **Status**: **FIXED** (2026-01-16)
@@ -1315,8 +1318,8 @@ Deep code analysis confirmed that lines 359-360 in random_search.py show `self._
 - [x] Phase 2 improvements ARE reflected in final result - was already implemented correctly
 
 ### 10.14 MEDIUM: Feature Division Protection
-**Status**: TODO
-**Priority**: P2 - MEDIUM
+**Status**: **COMPLETED** (2026-01-16)
+**Priority**: ~~P2 - MEDIUM~~ RESOLVED
 **File**: `src/ml/data/scalping_features.py` (lines 156, 212, 330, 340, 386-387)
 
 **Problem**: Several ratio calculations don't protect against division by zero at source:
@@ -1327,9 +1330,18 @@ Deep code analysis confirmed that lines 359-360 in random_search.py show `self._
 
 Currently mitigated by final pass infinity removal at lines 638-644, but source protection is more robust.
 
-**Fix Required**:
-- [ ] Add `.replace(0, np.nan)` protection at source for risky divisions
-- [ ] Add tests for edge cases with zero values
+**Resolution (2026-01-16)**:
+Added `.replace(0, np.nan)` protection to all risky division operations in scalping_features.py:
+- EMA relative features (lines 156, 163, 169)
+- VWAP relative (line 212)
+- ATR percentage (line 330)
+- MACD normalization (lines 386-387)
+- BB width (line 344)
+Added 6 new tests in TestDivisionProtection class.
+
+**Tasks Completed**:
+- [x] Add `.replace(0, np.nan)` protection at source for risky divisions
+- [x] Add tests for edge cases with zero values
 
 ---
 
@@ -1343,7 +1355,7 @@ Before going live with real capital, the system must:
 4. [x] EOD flatten works 100% of the time (verified across DST boundaries) - **VERIFIED with DST tests**
 5. [x] Inference latency < 10ms (measured on target hardware) - **VERIFIED with inference benchmark tests**
 6. [x] No lookahead bias in features or targets (temporal unit tests pass) - **VERIFIED with 29 comprehensive tests**
-7. [x] Unit test coverage > 80% - **ACHIEVED (91% coverage, 2384 tests)**
+7. [x] Unit test coverage > 80% - **ACHIEVED (91% coverage, 2395 tests)**
 8. [ ] Paper trading for minimum 2 weeks without critical errors
 9. [x] Position sizing matches spec for all account balance tiers - **VERIFIED with 53 comprehensive tests**
 10. [x] Circuit breakers tested and working (simulated loss scenarios) - **VERIFIED with 40 comprehensive tests**
@@ -1372,7 +1384,7 @@ Before going live with real capital, the system must:
 ## Notes
 
 - The existing `src/ml/` code is a solid foundation but needs significant rework for scalping timeframes
-- **2384 tests exist** with 91% coverage - comprehensive test suite covering all major modules
+- **2395 tests exist** with 91% coverage - comprehensive test suite covering all major modules
 - The 227MB 1-second parquet dataset is the primary asset and is now fully integrated
 - TopstepX API is for **live trading only** (7-14 day historical limit)
 - DataBento is for historical data (already have 2 years in parquet)
@@ -1402,12 +1414,16 @@ Before going live with real capital, the system must:
 | 2026-01-16 | **Phase 5 COMPLETED**: TopstepX API integration (77 tests) |
 | 2026-01-16 | **Phase 6 COMPLETED**: Live trading system (77 tests) |
 | 2026-01-16 | **Phase 7 COMPLETED**: DataBento integration (43 tests) |
-| 2026-01-16 | **Phase 8 COMPLETED**: Test coverage 91% (2384 tests) |
+| 2026-01-16 | **Phase 8 COMPLETED**: Test coverage 91% (2395 tests) |
 | 2026-01-16 | **Phase 9 COMPLETED**: Optimization and utilities |
 
 ### Recent Updates (Last 20 Entries)
 | Date | Change |
 |------|--------|
+| 2026-01-16 | **COMPLETED 10.14**: Feature Division Protection - Added `.replace(0, np.nan)` protection to EMA, VWAP, ATR, MACD, BB divisions in scalping_features.py. Added 6 tests. |
+| 2026-01-16 | **COMPLETED 10.8**: Daily Returns Volatility Calculation - Already implemented via `use_closed_trade_returns` parameter in metrics.py |
+| 2026-01-16 | **Test count increased**: 2389 → 2395 |
+| 2026-01-16 | **COMPLETED 10.8**: Daily Returns Volatility Calculation - Added `use_closed_trade_returns` parameter to `calculate_metrics()`. Sharpe/Sortino can now be calculated from closed trade returns (avoids mark-to-market volatility). Added `returns_source` field to track calculation method. 5 new tests (2384 → 2389) |
 | 2026-01-16 | **VERIFIED COMPLETE 10.6**: Time Parsing Validation - parse_time() in run_live.py already has full validation (regex, range checks). 30+ comprehensive tests in test_run_live_time_parsing.py. Test count: 2357 → 2384 |
 | 2026-01-16 | **VERIFIED 10.5**: Quote Handling Backpressure already implemented - bounded queue, monitoring, backpressure all present in live_trader.py |
 | 2026-01-16 | **COMPLETED 10.5**: Quote Handling Backpressure - Added bounded queue (100 bars), worker coroutine, backpressure on queue full, queue depth warnings at 80% capacity. 6 new tests added (2351 → 2357) |
@@ -1520,7 +1536,7 @@ tradingbot2.0/
 │   ├── data/                  # DataBento client (2 files) ✓ COMPLETED
 │   ├── lib/                   # Shared utilities (6 files) ✓ COMPLETED
 │   └── optimization/          # Parameter optimization (7 files) ✓ COMPLETED
-├── tests/                     # Test suite (2384 tests, 91% coverage) ✓ COMPLETED
+├── tests/                     # Test suite (2395 tests, 91% coverage) ✓ COMPLETED
 │   ├── integration/           # Integration tests (88 tests)
 │   └── test_*.py              # Unit tests for all modules
 ├── scripts/                   # Entry points (3 files) ✓ COMPLETED

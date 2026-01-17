@@ -107,6 +107,11 @@ class PerformanceMetrics:
     gross_loss: float = 0.0
     net_profit: float = 0.0
 
+    # Returns source indicator for Sharpe/Sortino
+    # "equity": Calculated from equity curve (includes mark-to-market)
+    # "closed_trades": Calculated from closed trade returns only
+    returns_source: str = "equity"
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert metrics to dictionary for JSON serialization."""
         # Helper to convert numpy types to native Python types
@@ -149,6 +154,7 @@ class PerformanceMetrics:
                 "calmar_ratio": float(round(_to_native(self.calmar_ratio), 3)),
                 "daily_var_95": float(round(_to_native(self.daily_var_95), 4)),
                 "daily_var_99": float(round(_to_native(self.daily_var_99), 4)),
+                "returns_source": self.returns_source,  # "equity" or "closed_trades"
             },
             "drawdown": {
                 "max_drawdown_pct": float(round(_to_native(self.max_drawdown_pct), 4)),
@@ -531,6 +537,7 @@ def calculate_metrics(
     daily_pnls: Optional[List[float]] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    use_closed_trade_returns: bool = False,
 ) -> PerformanceMetrics:
     """
     Calculate comprehensive performance metrics from trade results.
@@ -548,9 +555,17 @@ def calculate_metrics(
         daily_pnls: Optional list of daily P&L (for consistency metrics)
         start_date: Start date of backtest
         end_date: End date of backtest
+        use_closed_trade_returns: If True and daily_pnls is provided, calculate
+            Sharpe/Sortino from closed trade daily returns instead of equity curve.
+            This avoids exaggerated volatility from mark-to-market swings during
+            short-duration scalping trades. Requires daily_pnls to be provided.
 
     Returns:
         PerformanceMetrics with all calculated values
+
+    Note:
+        The returns_source field in the returned metrics indicates which method
+        was used: "equity" for equity curve or "closed_trades" for daily P&L.
     """
     metrics = PerformanceMetrics()
 
@@ -588,24 +603,47 @@ def calculate_metrics(
     else:
         metrics.cagr_pct = -1.0
 
-    # Daily returns from equity curve
-    if len(equity) > 1:
+    # Daily returns calculation - two options:
+    # 1. From equity curve (includes mark-to-market unrealized P&L)
+    # 2. From closed trade daily P&L (no intraday volatility)
+    #
+    # For scalping strategies with short-duration trades, option 2 may be preferred
+    # as it avoids exaggerated volatility from mark-to-market swings.
+    daily_returns: Optional[np.ndarray] = None
+
+    # Option 1: Calculate from closed trade daily returns (recommended for scalping)
+    if use_closed_trade_returns and daily_pnls is not None and len(daily_pnls) > 0:
+        # Build daily equity curve from daily P&L
+        daily_equity = [initial_capital]
+        for pnl in daily_pnls:
+            daily_equity.append(daily_equity[-1] + pnl)
+        daily_equity = np.array(daily_equity)
+
+        # Calculate returns from daily equity (excludes intraday volatility)
+        daily_returns = np.diff(daily_equity) / daily_equity[:-1]
+        daily_returns = daily_returns[~np.isnan(daily_returns)]
+        daily_returns = daily_returns[~np.isinf(daily_returns)]
+        metrics.returns_source = "closed_trades"
+
+    # Option 2: Calculate from full equity curve (default - includes mark-to-market)
+    elif len(equity) > 1:
         daily_returns = np.diff(equity) / equity[:-1]
         daily_returns = daily_returns[~np.isnan(daily_returns)]
         daily_returns = daily_returns[~np.isinf(daily_returns)]
+        metrics.returns_source = "equity"
 
-        if len(daily_returns) > 0:
-            metrics.daily_return_mean = float(np.mean(daily_returns))
-            metrics.daily_return_std = float(np.std(daily_returns, ddof=1))
-            metrics.monthly_return_mean = metrics.daily_return_mean * 21  # ~21 trading days/month
+    if daily_returns is not None and len(daily_returns) > 0:
+        metrics.daily_return_mean = float(np.mean(daily_returns))
+        metrics.daily_return_std = float(np.std(daily_returns, ddof=1))
+        metrics.monthly_return_mean = metrics.daily_return_mean * 21  # ~21 trading days/month
 
-            # Risk metrics
-            metrics.sharpe_ratio = calculate_sharpe_ratio(daily_returns)
-            metrics.sortino_ratio = calculate_sortino_ratio(daily_returns)
+        # Risk metrics (Sharpe/Sortino calculated from chosen returns source)
+        metrics.sharpe_ratio = calculate_sharpe_ratio(daily_returns)
+        metrics.sortino_ratio = calculate_sortino_ratio(daily_returns)
 
-            # VaR
-            metrics.daily_var_95 = calculate_var(daily_returns, 0.95)
-            metrics.daily_var_99 = calculate_var(daily_returns, 0.99)
+        # VaR
+        metrics.daily_var_95 = calculate_var(daily_returns, 0.95)
+        metrics.daily_var_99 = calculate_var(daily_returns, 0.99)
 
     # Drawdown metrics
     max_dd_pct, max_dd_dollars, peak_idx, trough_idx, duration = calculate_max_drawdown(equity)

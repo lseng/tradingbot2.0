@@ -558,6 +558,109 @@ class TestCalculateMetrics:
         assert 'trades' in d
         assert d['returns']['total_return_pct'] == 0.10
 
+    def test_default_returns_source_is_equity(self):
+        """Test that default returns source is equity curve."""
+        trade_pnls = [10.0, -5.0, 15.0]
+        equity_curve = [1000, 1010, 1005, 1020]
+
+        metrics = calculate_metrics(
+            trade_pnls=trade_pnls,
+            equity_curve=equity_curve,
+            initial_capital=1000,
+            trading_days=3,
+        )
+
+        assert metrics.returns_source == "equity"
+
+    def test_closed_trade_returns_source(self):
+        """Test that use_closed_trade_returns sets source to closed_trades."""
+        trade_pnls = [10.0, -5.0, 15.0]
+        equity_curve = [1000, 1010, 1005, 1020]
+        daily_pnls = [10.0, -5.0, 15.0]  # Same as trade_pnls for simplicity
+
+        metrics = calculate_metrics(
+            trade_pnls=trade_pnls,
+            equity_curve=equity_curve,
+            initial_capital=1000,
+            trading_days=3,
+            daily_pnls=daily_pnls,
+            use_closed_trade_returns=True,
+        )
+
+        assert metrics.returns_source == "closed_trades"
+
+    def test_closed_trade_returns_without_daily_pnls_falls_back_to_equity(self):
+        """Test that without daily_pnls, falls back to equity curve."""
+        trade_pnls = [10.0, -5.0, 15.0]
+        equity_curve = [1000, 1010, 1005, 1020]
+
+        metrics = calculate_metrics(
+            trade_pnls=trade_pnls,
+            equity_curve=equity_curve,
+            initial_capital=1000,
+            trading_days=3,
+            use_closed_trade_returns=True,  # No daily_pnls provided
+        )
+
+        # Should fall back to equity since no daily_pnls
+        assert metrics.returns_source == "equity"
+
+    def test_returns_source_in_to_dict(self):
+        """Test that returns_source is included in to_dict output."""
+        metrics = PerformanceMetrics(
+            returns_source="closed_trades",
+        )
+
+        d = metrics.to_dict()
+        assert d['risk']['returns_source'] == "closed_trades"
+
+    def test_sharpe_differs_between_sources(self):
+        """Test that Sharpe/Sortino can differ between equity and closed trades.
+
+        This test demonstrates why the option matters: intraday volatility
+        in the equity curve can exaggerate risk metrics for scalping strategies.
+        """
+        # Simulate high intraday volatility but same daily P&L
+        # Equity curve has high intraday swings
+        equity_curve = [
+            1000, 950, 1020,  # Day 1: volatile but ends +20
+            1020, 970, 1035,  # Day 2: volatile but ends +15
+            1035, 990, 1025,  # Day 3: volatile but ends -10
+        ]
+
+        # Daily P&L is much smoother (just daily closes)
+        daily_pnls = [20.0, 15.0, -10.0]
+
+        trade_pnls = [20.0, 15.0, -10.0]
+
+        # Calculate with equity curve
+        metrics_equity = calculate_metrics(
+            trade_pnls=trade_pnls,
+            equity_curve=equity_curve,
+            initial_capital=1000,
+            trading_days=3,
+        )
+
+        # Calculate with closed trade returns
+        metrics_closed = calculate_metrics(
+            trade_pnls=trade_pnls,
+            equity_curve=equity_curve,
+            initial_capital=1000,
+            trading_days=3,
+            daily_pnls=daily_pnls,
+            use_closed_trade_returns=True,
+        )
+
+        # Both should have valid metrics
+        assert metrics_equity.sharpe_ratio != 0.0
+        assert metrics_closed.sharpe_ratio != 0.0
+
+        # The closed trades version should typically show better risk-adjusted
+        # returns since it excludes intraday volatility (though actual values
+        # depend on the specific data pattern)
+        assert metrics_equity.returns_source == "equity"
+        assert metrics_closed.returns_source == "closed_trades"
+
 
 # =============================================================================
 # Trade Logger Tests

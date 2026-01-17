@@ -152,21 +152,23 @@ class ScalpingFeatureEngineer:
             self.df[ema_col] = self.df['close'].ewm(span=period, adjust=False).mean()
 
             # Price relative to EMA (normalized)
+            # Protect against division by zero if EMA is 0 at session start
             rel_col = f'close_to_ema_{period}'
-            self.df[rel_col] = (self.df['close'] - self.df[ema_col]) / self.df[ema_col]
+            self.df[rel_col] = (self.df['close'] - self.df[ema_col]) / self.df[ema_col].replace(0, np.nan)
             self.feature_names.append(rel_col)
 
         # EMA crossover features
+        # Protect against division by zero if EMA is 0 at session start
         if 9 in self.config.ema_periods and 21 in self.config.ema_periods:
             self.df['ema_9_21_cross'] = (
                 self.df['ema_9'] - self.df['ema_21']
-            ) / self.df['ema_21']
+            ) / self.df['ema_21'].replace(0, np.nan)
             self.feature_names.append('ema_9_21_cross')
 
         if 21 in self.config.ema_periods and 50 in self.config.ema_periods:
             self.df['ema_21_50_cross'] = (
                 self.df['ema_21'] - self.df['ema_50']
-            ) / self.df['ema_50']
+            ) / self.df['ema_50'].replace(0, np.nan)
             self.feature_names.append('ema_21_50_cross')
 
         return self
@@ -209,7 +211,8 @@ class ScalpingFeatureEngineer:
         self.df['vwap'] = pd.concat(vwap_values)
 
         # Price relative to VWAP (normalized feature)
-        self.df['close_to_vwap'] = (self.df['close'] - self.df['vwap']) / self.df['vwap']
+        # Protect against division by zero if VWAP is 0 at session start
+        self.df['close_to_vwap'] = (self.df['close'] - self.df['vwap']) / self.df['vwap'].replace(0, np.nan)
         self.feature_names.append('close_to_vwap')
 
         # VWAP slope (rate of change)
@@ -327,7 +330,8 @@ class ScalpingFeatureEngineer:
         # Normalized ATR (in ticks for MES)
         self.df['atr_ticks'] = self.df['atr'] / MES_TICK_SIZE
         # ATR as percentage of price
-        self.df['atr_pct'] = self.df['atr'] / self.df['close']
+        # Protect against division by zero in edge cases
+        self.df['atr_pct'] = self.df['atr'] / self.df['close'].replace(0, np.nan)
         self.feature_names.extend(['atr_ticks', 'atr_pct'])
 
         # Bollinger Bands
@@ -337,7 +341,8 @@ class ScalpingFeatureEngineer:
         self.df['bb_lower'] = bb_sma - (self.config.bb_std * bb_std)
 
         # BB width (normalized)
-        self.df['bb_width'] = (self.df['bb_upper'] - self.df['bb_lower']) / bb_sma
+        # Protect against division by zero in edge cases
+        self.df['bb_width'] = (self.df['bb_upper'] - self.df['bb_lower']) / bb_sma.replace(0, np.nan)
         self.feature_names.append('bb_width')
 
         # BB position (where price is within bands, 0=lower, 1=upper)
@@ -383,8 +388,10 @@ class ScalpingFeatureEngineer:
         self.df['macd_histogram'] = self.df['macd'] - self.df['macd_signal']
 
         # Normalize MACD by price
-        self.df['macd_norm'] = self.df['macd'] / self.df['close']
-        self.df['macd_hist_norm'] = self.df['macd_histogram'] / self.df['close']
+        # Protect against division by zero in edge cases
+        close_safe = self.df['close'].replace(0, np.nan)
+        self.df['macd_norm'] = self.df['macd'] / close_safe
+        self.df['macd_hist_norm'] = self.df['macd_histogram'] / close_safe
         self.feature_names.extend(['macd_norm', 'macd_hist_norm'])
 
         # Stochastic Oscillator

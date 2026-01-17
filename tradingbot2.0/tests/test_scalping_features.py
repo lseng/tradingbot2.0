@@ -796,6 +796,141 @@ class TestEdgeCases:
 
 
 # ============================================================================
+# TEST: DIVISION PROTECTION (10.14)
+# ============================================================================
+
+class TestDivisionProtection:
+    """
+    Test that division by zero is properly protected in all feature calculations.
+
+    This addresses IMPLEMENTATION_PLAN.md item 10.14: Feature Division Protection.
+    Divisions that could produce infinity should use .replace(0, np.nan) protection.
+    """
+
+    def test_ema_division_protection_with_zero_price(self, ny_tz):
+        """Test EMA division is protected when EMA might be zero."""
+        # Create data where early EMA could theoretically be very small
+        n_bars = 100
+        start = datetime(2025, 6, 15, 9, 30, 0, tzinfo=ny_tz)
+        timestamps = [start + timedelta(seconds=i) for i in range(n_bars)]
+
+        # Start with very small prices that increase
+        prices = [0.01 + i * 0.1 for i in range(n_bars)]
+
+        df = pd.DataFrame({
+            'open': prices,
+            'high': [p + 0.25 for p in prices],
+            'low': [p - 0.25 for p in prices],
+            'close': prices,
+            'volume': [100] * n_bars,
+        }, index=pd.DatetimeIndex(timestamps))
+
+        engineer = ScalpingFeatureEngineer(df)
+        engineer.add_emas()
+
+        # Should not have infinity values
+        for col in ['close_to_ema_9', 'close_to_ema_21', 'close_to_ema_50', 'close_to_ema_200']:
+            if col in engineer.df.columns:
+                assert not np.isinf(engineer.df[col]).any(), f"Infinity found in {col}"
+
+    def test_vwap_division_protection_zero_volume(self, ny_tz):
+        """Test VWAP division is protected when cumulative volume is zero."""
+        n_bars = 100
+        start = datetime(2025, 6, 15, 9, 30, 0, tzinfo=ny_tz)
+        timestamps = [start + timedelta(seconds=i) for i in range(n_bars)]
+
+        df = pd.DataFrame({
+            'open': [5000.0] * n_bars,
+            'high': [5001.0] * n_bars,
+            'low': [4999.0] * n_bars,
+            'close': [5000.5] * n_bars,
+            'volume': [0] * 10 + [100] * 90,  # First 10 bars have zero volume
+        }, index=pd.DatetimeIndex(timestamps))
+
+        engineer = ScalpingFeatureEngineer(df)
+        engineer.add_vwap()
+
+        # close_to_vwap should not have infinity (NaN is acceptable for edge cases)
+        assert not np.isinf(engineer.df['close_to_vwap']).any()
+
+    def test_atr_pct_division_protection(self, ny_tz):
+        """Test ATR percentage division is protected."""
+        n_bars = 100
+        start = datetime(2025, 6, 15, 9, 30, 0, tzinfo=ny_tz)
+        timestamps = [start + timedelta(seconds=i) for i in range(n_bars)]
+
+        # Normal price data
+        prices = [5000.0 + i * 0.25 for i in range(n_bars)]
+
+        df = pd.DataFrame({
+            'open': prices,
+            'high': [p + 0.5 for p in prices],
+            'low': [p - 0.5 for p in prices],
+            'close': prices,
+            'volume': [100] * n_bars,
+        }, index=pd.DatetimeIndex(timestamps))
+
+        engineer = ScalpingFeatureEngineer(df)
+        engineer.add_volatility_features()
+
+        # atr_pct should not have infinity
+        assert not np.isinf(engineer.df['atr_pct']).any()
+
+    def test_macd_norm_division_protection(self, ny_tz):
+        """Test MACD normalization division is protected."""
+        n_bars = 100
+        start = datetime(2025, 6, 15, 9, 30, 0, tzinfo=ny_tz)
+        timestamps = [start + timedelta(seconds=i) for i in range(n_bars)]
+
+        prices = [5000.0 + i * 0.25 for i in range(n_bars)]
+
+        df = pd.DataFrame({
+            'open': prices,
+            'high': [p + 0.5 for p in prices],
+            'low': [p - 0.5 for p in prices],
+            'close': prices,
+            'volume': [100] * n_bars,
+        }, index=pd.DatetimeIndex(timestamps))
+
+        engineer = ScalpingFeatureEngineer(df)
+        engineer.add_momentum_indicators()
+
+        # MACD normalized features should not have infinity
+        assert not np.isinf(engineer.df['macd_norm']).any()
+        assert not np.isinf(engineer.df['macd_hist_norm']).any()
+
+    def test_bb_width_division_protection(self, ny_tz):
+        """Test Bollinger Band width division is protected."""
+        n_bars = 100
+        start = datetime(2025, 6, 15, 9, 30, 0, tzinfo=ny_tz)
+        timestamps = [start + timedelta(seconds=i) for i in range(n_bars)]
+
+        prices = [5000.0 + i * 0.25 for i in range(n_bars)]
+
+        df = pd.DataFrame({
+            'open': prices,
+            'high': [p + 0.5 for p in prices],
+            'low': [p - 0.5 for p in prices],
+            'close': prices,
+            'volume': [100] * n_bars,
+        }, index=pd.DatetimeIndex(timestamps))
+
+        engineer = ScalpingFeatureEngineer(df)
+        engineer.add_volatility_features()
+
+        # bb_width should not have infinity
+        assert not np.isinf(engineer.df['bb_width']).any()
+
+    def test_no_infinity_in_full_feature_generation(self, sample_1s_data):
+        """Test that full feature generation produces no infinity values."""
+        engineer = ScalpingFeatureEngineer(sample_1s_data)
+        df = engineer.generate_all_features(include_multiframe=True)
+
+        for feature in engineer.feature_names:
+            assert not np.isinf(df[feature]).any(), f"Infinity found in {feature}"
+
+
+# ============================================================================
 # TEST: FEATURE CONFIG
 # ============================================================================
 
