@@ -643,7 +643,9 @@ def calculate_multiclass_auc(y_true: np.ndarray, y_probs: np.ndarray, num_classe
             try:
                 auc = calculate_auc(binary_true, binary_probs)
                 aucs.append(auc)
-            except:
+            except (ValueError, RuntimeError, ZeroDivisionError) as e:
+                # Skip this class if AUC calculation fails (e.g., all same class)
+                logger.debug(f"AUC calculation failed for class {c}: {e}")
                 pass
         return np.mean(aucs) if aucs else 0.5
 

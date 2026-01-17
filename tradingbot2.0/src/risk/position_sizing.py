@@ -314,9 +314,10 @@ class PositionSizer:
             Tuple of (max_contracts, risk_percentage)
         """
         for threshold, max_contracts, risk_pct in self.config.balance_tiers:
-            # Use < so boundary belongs to next tier (at exactly $1,000, use 2 contract tier)
+            # Use <= so boundary belongs to current tier (conservative risk management)
             # Per spec: $700-$1,000 = 1 contract, $1,000-$1,500 = 2 contracts
-            if account_balance < threshold:
+            # At exactly $1,000, use 1 contract (lower risk)
+            if account_balance <= threshold:
                 return max_contracts, risk_pct
 
         # Return last tier if above all thresholds
