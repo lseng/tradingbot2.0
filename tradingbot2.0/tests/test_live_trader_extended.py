@@ -452,7 +452,7 @@ class TestLiveTraderExecuteSignal:
         trader._session_metrics = SessionMetrics()
 
         trader._position_sizer = MagicMock()
-        trader._position_sizer.calculate_size = MagicMock(return_value=MagicMock(contracts=0))
+        trader._position_sizer.calculate = MagicMock(return_value=MagicMock(contracts=0))
 
         trader._risk_manager = MagicMock()
         trader._risk_manager.state = MagicMock(account_balance=1000.0)
@@ -477,7 +477,7 @@ class TestLiveTraderExecuteSignal:
         trader._session_metrics = SessionMetrics()
 
         trader._position_sizer = MagicMock()
-        trader._position_sizer.calculate_size = MagicMock(return_value=MagicMock(contracts=1))
+        trader._position_sizer.calculate = MagicMock(return_value=MagicMock(contracts=1))
 
         trader._risk_manager = MagicMock()
         trader._risk_manager.state = MagicMock(account_balance=1000.0)

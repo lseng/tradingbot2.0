@@ -540,11 +540,11 @@ class LiveTrader:
 
         try:
             # Calculate position size
-            size = self._position_sizer.calculate_size(
+            size = self._position_sizer.calculate(
                 account_balance=self._risk_manager.state.account_balance,
-                risk_per_trade=self.config.max_per_trade_risk,
-                stop_distance_ticks=signal.stop_ticks,
+                stop_ticks=signal.stop_ticks,
                 confidence=signal.confidence,
+                max_risk_override=self.config.max_per_trade_risk,
             )
 
             if size.contracts <= 0:

@@ -665,7 +665,7 @@ class TestLiveTraderSignalExecution:
         mock_size = Mock()
         mock_size.contracts = 1
         trader._position_sizer = Mock()
-        trader._position_sizer.calculate_size.return_value = mock_size
+        trader._position_sizer.calculate.return_value = mock_size
 
         # Mock risk manager
         trader._risk_manager = Mock()
@@ -695,7 +695,7 @@ class TestLiveTraderSignalExecution:
         mock_size = Mock()
         mock_size.contracts = 0
         trader._position_sizer = Mock()
-        trader._position_sizer.calculate_size.return_value = mock_size
+        trader._position_sizer.calculate.return_value = mock_size
 
         trader._risk_manager = Mock()
         trader._risk_manager.state = Mock(account_balance=1000.0)
@@ -718,7 +718,7 @@ class TestLiveTraderSignalExecution:
         mock_size = Mock()
         mock_size.contracts = 1
         trader._position_sizer = Mock()
-        trader._position_sizer.calculate_size.return_value = mock_size
+        trader._position_sizer.calculate.return_value = mock_size
 
         trader._risk_manager = Mock()
         trader._risk_manager.state = Mock(account_balance=1000.0)
