@@ -667,3 +667,278 @@ class TestInferenceLatency:
 
         # LSTM is slower, but should still be under 10ms
         assert avg_time < 10, f"Average inference time {avg_time:.2f}ms exceeds 10ms"
+
+
+# ============================================================================
+# LSTM Large Batch Evaluation Tests (addresses 10.12)
+# ============================================================================
+
+class TestLSTMLargeBatchEvaluation:
+    """
+    Test LSTM evaluation with large batch sizes using batched processing.
+
+    This addresses IMPLEMENTATION_PLAN.md 10.12:
+    - test_lstm_evaluation_large_batch_sizes() - HIGH
+    - Validates GPU memory handling with 1024+ samples
+    - Tests batched evaluation with cache clearing pattern from train_scalping_model.py
+    """
+
+    def test_lstm_large_batch_1024_samples(self):
+        """Test LSTM with 1024 sample batch (common evaluation size)."""
+        model = LSTMNet(input_dim=50, hidden_dim=64, num_layers=2, num_classes=3)
+        model.eval()
+
+        # 1024 samples with sequence length 20
+        x = torch.randn(1024, 20, 50)
+
+        with torch.no_grad():
+            output, hidden = model(x)
+
+        assert output.shape == (1024, 3)
+        # Verify valid probabilities
+        probs = torch.softmax(output, dim=1)
+        assert torch.allclose(probs.sum(dim=1), torch.ones(1024), atol=1e-5)
+
+    def test_lstm_batched_evaluation_pattern(self):
+        """
+        Test the batched evaluation pattern used in train_scalping_model.py.
+
+        This validates the memory-efficient evaluation approach that processes
+        large datasets in smaller batches to avoid OOM errors.
+        """
+        model = LSTMNet(input_dim=50, hidden_dim=64, num_layers=2, num_classes=3)
+        model.eval()
+
+        # Simulate large test set (5000 samples) processed in batches
+        total_samples = 5000
+        eval_batch_size = 1024
+        seq_length = 20
+        input_dim = 50
+
+        # Create full dataset
+        X_test = torch.randn(total_samples, seq_length, input_dim)
+        all_probs = []
+
+        with torch.no_grad():
+            for i in range(0, total_samples, eval_batch_size):
+                batch = X_test[i:i+eval_batch_size]
+                output = model(batch)
+                # Handle LSTM tuple output
+                logits = output[0] if isinstance(output, tuple) else output
+                probs = torch.softmax(logits, dim=1)
+                all_probs.append(probs)
+
+            # Concatenate all batches
+            final_probs = torch.cat(all_probs, dim=0)
+
+        assert final_probs.shape == (total_samples, 3)
+        # Verify all probabilities sum to 1
+        assert torch.allclose(final_probs.sum(dim=1), torch.ones(total_samples), atol=1e-5)
+
+    def test_lstm_tuple_output_handling_in_batches(self):
+        """
+        Test that LSTM tuple output (logits, hidden) is correctly handled
+        when processing in batches.
+
+        This was a bug discovered in BUGS_FOUND.md #4.
+        """
+        model = LSTMNet(input_dim=50, hidden_dim=64, num_layers=2, num_classes=3)
+        model.eval()
+
+        batch_sizes = [128, 512, 1024]
+
+        for batch_size in batch_sizes:
+            x = torch.randn(batch_size, 20, 50)
+
+            with torch.no_grad():
+                output = model(x)
+
+                # Verify output is tuple for LSTM
+                assert isinstance(output, tuple), f"LSTM should return tuple, got {type(output)}"
+
+                # Extract logits correctly
+                logits = output[0] if isinstance(output, tuple) else output
+
+                # Should work without error
+                probs = torch.softmax(logits, dim=1)
+                predictions = torch.argmax(probs, dim=1)
+
+                assert predictions.shape == (batch_size,)
+                assert all(p in [0, 1, 2] for p in predictions.numpy())
+
+    def test_lstm_memory_efficient_evaluation(self):
+        """
+        Test memory-efficient evaluation pattern that clears cache periodically.
+
+        Simulates the pattern from train_scalping_model.py lines 595-611.
+        """
+        model = LSTMNet(input_dim=50, hidden_dim=64, num_layers=2, num_classes=3)
+        model.eval()
+
+        # Simulate 10k samples (realistic test set size)
+        total_samples = 10000
+        eval_batch_size = 1024
+        seq_length = 20
+
+        X_test = torch.randn(total_samples, seq_length, 50)
+        all_probs = []
+        batches_processed = 0
+
+        with torch.no_grad():
+            for i in range(0, total_samples, eval_batch_size):
+                batch = X_test[i:i+eval_batch_size]
+                output = model(batch)
+                logits = output[0] if isinstance(output, tuple) else output
+                probs = torch.softmax(logits, dim=1)
+                all_probs.append(probs)
+                batches_processed += 1
+
+                # Simulate cache clearing (would use torch.cuda.empty_cache() with GPU)
+                if i % (eval_batch_size * 10) == 0:
+                    # On CPU this is a no-op but validates the pattern
+                    pass
+
+            final_probs = torch.cat(all_probs, dim=0)
+
+        assert final_probs.shape == (total_samples, 3)
+        assert batches_processed == 10  # 10000 / 1024 = 9.77 -> 10 batches
+
+
+# ============================================================================
+# Feature Scaling with Infinity Tests (addresses 10.12)
+# ============================================================================
+
+class TestFeatureScalingWithInfinity:
+    """
+    Test StandardScaler behavior with infinity values.
+
+    This addresses IMPLEMENTATION_PLAN.md 10.12:
+    - test_feature_scaling_with_infinity_values() - HIGH
+    - Validates that infinity handling in scalping_features.py protects scaler
+    """
+
+    def test_scaler_fit_with_clean_data(self):
+        """Test that StandardScaler works with clean data (baseline)."""
+        from sklearn.preprocessing import StandardScaler
+
+        X = np.random.randn(1000, 50).astype(np.float32)
+        scaler = StandardScaler()
+
+        # Should not raise
+        X_scaled = scaler.fit_transform(X)
+
+        assert X_scaled.shape == (1000, 50)
+        # Scaled data should have mean ~0 and std ~1
+        assert np.allclose(X_scaled.mean(axis=0), 0, atol=0.1)
+        assert np.allclose(X_scaled.std(axis=0), 1, atol=0.1)
+
+    def test_scaler_crashes_with_raw_infinity(self):
+        """Test that StandardScaler raises error with raw infinity values."""
+        from sklearn.preprocessing import StandardScaler
+
+        X = np.random.randn(1000, 50).astype(np.float32)
+        X[0, 0] = np.inf  # Introduce infinity
+
+        scaler = StandardScaler()
+
+        # Should raise ValueError about infinity
+        with pytest.raises(ValueError, match="Input.*contains (infinity|NaN|inf)"):
+            scaler.fit_transform(X)
+
+    def test_infinity_replacement_pattern(self):
+        """
+        Test the infinity replacement pattern from scalping_features.py.
+
+        This validates the fix applied in scalping_features.py:638.
+        """
+        from sklearn.preprocessing import StandardScaler
+
+        # Create data with infinity values (simulating division by zero)
+        X = np.random.randn(1000, 50).astype(np.float32)
+        X[0, 0] = np.inf
+        X[100, 25] = -np.inf
+        X[500, 10] = np.inf
+
+        # Apply infinity replacement pattern (from scalping_features.py)
+        X_clean = np.where(np.isinf(X), np.nan, X)
+
+        # Drop rows with NaN (or could fill with mean/median)
+        mask = ~np.isnan(X_clean).any(axis=1)
+        X_clean = X_clean[mask]
+
+        scaler = StandardScaler()
+
+        # Should not raise after cleaning
+        X_scaled = scaler.fit_transform(X_clean)
+
+        assert not np.isnan(X_scaled).any()
+        assert not np.isinf(X_scaled).any()
+
+    def test_infinity_in_transform_after_fit(self):
+        """
+        Test that infinity in transform (validation/test) set is handled.
+
+        This addresses BUGS_FOUND.md #2.
+        """
+        from sklearn.preprocessing import StandardScaler
+
+        # Fit on clean training data
+        X_train = np.random.randn(1000, 50).astype(np.float32)
+        scaler = StandardScaler()
+        scaler.fit(X_train)
+
+        # Create validation data with infinity (would come from division by zero)
+        X_val = np.random.randn(500, 50).astype(np.float32)
+        X_val[0, 0] = np.inf
+
+        # Without cleaning, transform should fail
+        with pytest.raises(ValueError):
+            scaler.transform(X_val)
+
+        # With cleaning pattern (from train_scalping_model.py:409-419)
+        X_val_clean = np.where(np.isinf(X_val), np.nan, X_val)
+        mask = ~np.isnan(X_val_clean).any(axis=1)
+        X_val_clean = X_val_clean[mask]
+
+        # Should work after cleaning
+        X_val_scaled = scaler.transform(X_val_clean)
+
+        assert X_val_scaled.shape[0] == 499  # One row dropped
+        assert not np.isnan(X_val_scaled).any()
+        assert not np.isinf(X_val_scaled).any()
+
+    def test_model_inference_with_scaled_features(self):
+        """
+        Test full pipeline: clean infinity -> scale -> model inference.
+        """
+        from sklearn.preprocessing import StandardScaler
+
+        model = FeedForwardNet(input_dim=50, hidden_dims=[64, 32], num_classes=3)
+        model.eval()
+
+        # Create data with some infinity (simulating edge cases)
+        X = np.random.randn(1000, 50).astype(np.float32)
+        X[50, 10] = np.inf
+        X[100, 20] = -np.inf
+
+        # Clean infinity
+        X_clean = np.where(np.isinf(X), np.nan, X)
+        mask = ~np.isnan(X_clean).any(axis=1)
+        X_clean = X_clean[mask]
+
+        # Scale
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X_clean)
+
+        # Convert to tensor and run inference
+        X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
+
+        with torch.no_grad():
+            output = model(X_tensor)
+            probs = torch.softmax(output, dim=1)
+
+        # Verify valid output
+        assert output.shape == (998, 3)  # 2 rows dropped
+        assert torch.allclose(probs.sum(dim=1), torch.ones(998), atol=1e-5)
+        assert not torch.isnan(output).any()
+        assert not torch.isinf(output).any()

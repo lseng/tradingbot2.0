@@ -279,14 +279,19 @@ def load_model(model_path: str, device: str = 'cpu') -> Tuple[torch.nn.Module, D
         )
     elif model_type == 'lstm':
         model = LSTMNet(
-            input_size=input_size,
-            hidden_size=hidden_dims[0] if hidden_dims else 128,
+            input_dim=input_size,  # LSTMNet uses input_dim
+            hidden_dim=hidden_dims[0] if hidden_dims else 128,  # LSTMNet uses hidden_dim
             num_layers=params.get('num_layers', 2),
             num_classes=num_classes,
         )
     elif model_type == 'hybrid':
+        # HybridNet requires both seq_input_dim and static_input_dim
+        # For compatibility, use input_size for seq_input_dim and default static_input_dim
+        seq_input_dim = config.get('seq_input_dim', input_size)
+        static_input_dim = config.get('static_input_dim', 20)  # Default static features
         model = HybridNet(
-            input_size=input_size,
+            seq_input_dim=seq_input_dim,
+            static_input_dim=static_input_dim,
             lstm_hidden=config.get('lstm_hidden', 64),
             num_classes=num_classes,
         )

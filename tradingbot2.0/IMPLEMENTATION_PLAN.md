@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-**Current State**: Core infrastructure complete (Phases 1-9 done, 2395 tests, 91% coverage), but critical gaps exist in live trading safety, backtest accuracy, and method compatibility.
+**Current State**: Core infrastructure complete (Phases 1-9 done, 2418 tests, 91% coverage), but critical gaps exist in live trading safety, backtest accuracy, and method compatibility.
 
 **✅ ALL CRITICAL ISSUES VERIFIED FIXED (11 of 11 on 2026-01-16)**:
 1. ~~Risk manager initialized but **NOT enforced**~~ - **VERIFIED FIXED 2026-01-16**: `approve_trade()` IS called at lines 480-487
@@ -102,7 +102,7 @@ Based on the 13 parallel subagent analysis:
 
 ## Test Coverage Summary
 
-**Total Tests**: 2395 tests (all passing)
+**Total Tests**: 2418 tests (all passing)
 **Coverage**: 91% (target: >80%) ✓ ACHIEVED
 
 ### Test Breakdown by Module
@@ -145,7 +145,7 @@ Based on the 13 parallel subagent analysis:
 | Shared Utilities | `src/lib/` | P3 - MEDIUM | **COMPLETED** | 6 files: config, logging_utils, time_utils, constants, performance_monitor, alerts |
 | Parameter Optimization | `src/optimization/` | P3 - MEDIUM | **COMPLETED** | 7 files: parameter_space, results, optimizer_base, grid_search, random_search, bayesian_optimizer, __init__ |
 | Model Architecture | `src/ml/models/` | P2 - HIGH | **COMPLETED** | All models updated for 3-class, inference optimization done |
-| Tests | `tests/` | P3 - MEDIUM | **COMPLETED** | 2395 tests (91% coverage) |
+| Tests | `tests/` | P3 - MEDIUM | **COMPLETED** | 2418 tests (91% coverage) |
 
 ### Critical Bug Summary
 
@@ -512,7 +512,7 @@ Complete startup/main loop/shutdown sequences implemented with proper error hand
 
 ## Phase 8: MEDIUM - Testing (Ongoing)
 
-**Status**: COMPLETED - 2395 tests, 91% coverage ✓
+**Status**: COMPLETED - 2418 tests, 91% coverage ✓
 **Test Coverage**: 91% (target: >80%) ✓ ACHIEVED
 **Directory**: `tests/`
 
@@ -1281,7 +1281,7 @@ Already implemented - the `use_closed_trade_returns` parameter and `returns_sour
 - [ ] Add config versioning for reproducibility
 
 ### 10.12 Missing Tests (from BUGS_FOUND.md)
-**Status**: TODO
+**Status**: PARTIALLY COMPLETED (2 of 6 tests implemented)
 **Priority**: P2 - MEDIUM
 
 These tests are recommended in BUGS_FOUND.md but have not been implemented:
@@ -1291,16 +1291,23 @@ These tests are recommended in BUGS_FOUND.md but have not been implemented:
 | Feature scaling with infinity values | NOT TESTED | HIGH | Verify scaler doesn't crash with inf values |
 | LSTM evaluation large batch sizes | PARTIAL | HIGH | GPU memory handling with 1024+ samples |
 | Memory usage estimation before training | NOT TESTED | MEDIUM | Prevent OOM surprises |
-| Checkpoint loading old/new formats | NOT TESTED | HIGH | Backward compatibility for model loading |
-| Backtest script E2E with trained model | MISSING | CRITICAL | Integration test for scripts/run_backtest.py |
+| Checkpoint loading old/new formats | **COMPLETED** | HIGH | Backward compatibility for model loading |
+| Backtest script E2E with trained model | **COMPLETED** | CRITICAL | Integration test for scripts/run_backtest.py |
 | ScalpingFeatureEngineer API errors | PARTIAL | MEDIUM | Test constructor requires df, old method doesn't exist |
 
-**Fix Required**:
+**Completed Tests** (in `tests/test_run_backtest_script.py` - 23 tests total):
+- [x] `test_checkpoint_loading_old_and_new_formats()` - Load both old and new checkpoint formats
+- [x] `test_backtest_script_e2e_with_trained_model()` - Run backtest script end-to-end
+
+**Bug Fixed During Implementation** (2026-01-16):
+Fixed model instantiation bugs in `scripts/run_backtest.py`:
+- LSTMNet was using `input_size`/`hidden_size` but class requires `input_dim`/`hidden_dim`
+- HybridNet was missing required `seq_input_dim` and `static_input_dim` parameters
+
+**Remaining Fix Required**:
 - [ ] `test_feature_scaling_with_infinity_values()` - Create features with division by zero, verify no crash
 - [ ] `test_lstm_evaluation_large_batch_sizes()` - Evaluate LSTM on 10,000+ samples in batches
 - [ ] `test_memory_estimation_before_training()` - Estimate memory before training starts
-- [ ] `test_checkpoint_loading_old_and_new_formats()` - Load both old and new checkpoint formats
-- [ ] `test_backtest_script_e2e_with_trained_model()` - Run backtest script end-to-end
 - [ ] `test_scalping_engineer_api_validation()` - Verify constructor requires df, verify old method raises
 
 ### 10.13 ~~HIGH~~: Fix AdaptiveRandomSearch Phase 2 Best Update
@@ -1355,7 +1362,7 @@ Before going live with real capital, the system must:
 4. [x] EOD flatten works 100% of the time (verified across DST boundaries) - **VERIFIED with DST tests**
 5. [x] Inference latency < 10ms (measured on target hardware) - **VERIFIED with inference benchmark tests**
 6. [x] No lookahead bias in features or targets (temporal unit tests pass) - **VERIFIED with 29 comprehensive tests**
-7. [x] Unit test coverage > 80% - **ACHIEVED (91% coverage, 2395 tests)**
+7. [x] Unit test coverage > 80% - **ACHIEVED (91% coverage, 2418 tests)**
 8. [ ] Paper trading for minimum 2 weeks without critical errors
 9. [x] Position sizing matches spec for all account balance tiers - **VERIFIED with 53 comprehensive tests**
 10. [x] Circuit breakers tested and working (simulated loss scenarios) - **VERIFIED with 40 comprehensive tests**
@@ -1384,7 +1391,7 @@ Before going live with real capital, the system must:
 ## Notes
 
 - The existing `src/ml/` code is a solid foundation but needs significant rework for scalping timeframes
-- **2395 tests exist** with 91% coverage - comprehensive test suite covering all major modules
+- **2418 tests exist** with 91% coverage - comprehensive test suite covering all major modules
 - The 227MB 1-second parquet dataset is the primary asset and is now fully integrated
 - TopstepX API is for **live trading only** (7-14 day historical limit)
 - DataBento is for historical data (already have 2 years in parquet)
@@ -1414,12 +1421,13 @@ Before going live with real capital, the system must:
 | 2026-01-16 | **Phase 5 COMPLETED**: TopstepX API integration (77 tests) |
 | 2026-01-16 | **Phase 6 COMPLETED**: Live trading system (77 tests) |
 | 2026-01-16 | **Phase 7 COMPLETED**: DataBento integration (43 tests) |
-| 2026-01-16 | **Phase 8 COMPLETED**: Test coverage 91% (2395 tests) |
+| 2026-01-16 | **Phase 8 COMPLETED**: Test coverage 91% (2418 tests) |
 | 2026-01-16 | **Phase 9 COMPLETED**: Optimization and utilities |
 
 ### Recent Updates (Last 20 Entries)
 | Date | Change |
 |------|--------|
+| 2026-01-16 | **PARTIAL 10.12**: Missing Tests - Added 23 tests in `tests/test_run_backtest_script.py`. Completed `test_backtest_script_e2e_with_trained_model()` and `test_checkpoint_loading_old_and_new_formats()`. Fixed LSTMNet/HybridNet instantiation bugs in `scripts/run_backtest.py`. Test count: 2395 → 2418 |
 | 2026-01-16 | **COMPLETED 10.14**: Feature Division Protection - Added `.replace(0, np.nan)` protection to EMA, VWAP, ATR, MACD, BB divisions in scalping_features.py. Added 6 tests. |
 | 2026-01-16 | **COMPLETED 10.8**: Daily Returns Volatility Calculation - Already implemented via `use_closed_trade_returns` parameter in metrics.py |
 | 2026-01-16 | **Test count increased**: 2389 → 2395 |
@@ -1536,7 +1544,7 @@ tradingbot2.0/
 │   ├── data/                  # DataBento client (2 files) ✓ COMPLETED
 │   ├── lib/                   # Shared utilities (6 files) ✓ COMPLETED
 │   └── optimization/          # Parameter optimization (7 files) ✓ COMPLETED
-├── tests/                     # Test suite (2395 tests, 91% coverage) ✓ COMPLETED
+├── tests/                     # Test suite (2418 tests, 91% coverage) ✓ COMPLETED
 │   ├── integration/           # Integration tests (88 tests)
 │   └── test_*.py              # Unit tests for all modules
 ├── scripts/                   # Entry points (3 files) ✓ COMPLETED
