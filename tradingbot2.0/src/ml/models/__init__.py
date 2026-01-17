@@ -4,6 +4,7 @@ from .neural_networks import (
     FeedForwardNet,
     LSTMNet,
     HybridNet,
+    TransformerNet,
     create_model,
     EarlyStopping
 )
@@ -18,6 +19,7 @@ __all__ = [
     'FeedForwardNet',
     'LSTMNet',
     'HybridNet',
+    'TransformerNet',
     'create_model',
     'EarlyStopping',
     'ModelTrainer',
