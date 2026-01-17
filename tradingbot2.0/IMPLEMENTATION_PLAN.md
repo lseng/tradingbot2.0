@@ -1,9 +1,9 @@
 # Implementation Plan - MES Futures Scalping Bot
 
 > **Last Updated**: 2026-01-17 UTC
-> **Status**: **READY FOR PAPER TRADING** - All P0, P1, P2 bugs fixed
-> **Test Coverage**: 2,547 tests passing, 91% coverage
-> **Git Tag**: v0.0.64
+> **Status**: **READY FOR PAPER TRADING** - All P0, P1, P2, P3 bugs fixed
+> **Test Coverage**: 2,590 tests passing, 91% coverage
+> **Git Tag**: v0.0.65
 
 ---
 
@@ -14,28 +14,33 @@
 | **P0** | ✅ ALL FIXED | 5 critical bugs blocking trading |
 | **P1** | ✅ ALL FIXED | 9 extended session bugs (>90 min) |
 | **P2** | ✅ ALL FIXED | 3 paper trading enhancements |
-| **P3** | ⏳ PENDING | 2 nice-to-have items |
+| **P3** | ✅ ALL FIXED | 2 nice-to-have items |
 
 ---
 
-## TIER 3: P3 - NICE TO HAVE (Remaining Work)
+## TIER 3: P3 - NICE TO HAVE (All Complete)
 
 | Task | Location | Issue | Effort | Status |
 |------|----------|-------|--------|--------|
-| **10.10** | `src/ml/data/` | No memory estimation for large datasets | 2-3h | PENDING |
+| ~~**10.10**~~ | ~~`src/ml/data/`~~ | ~~No memory estimation for large datasets~~ | ~~2-3h~~ | **FIXED 2026-01-17** |
 | ~~**10.11**~~ | ~~Various~~ | ~~Config versioning, HybridNet documentation~~ | ~~1-2h~~ | **FIXED 2026-01-17** |
 
-### 10.10 Details: Memory Estimation for Large Datasets
+### 10.10 Details: Memory Estimation for Large Datasets (FIXED)
 
 **Problem**: Data loaders load files directly without estimating memory requirements first. Can cause OOM on large datasets.
 
-**Required Implementation**:
-- Pre-load size estimation for parquet/CSV files
-- System memory availability check
-- Warning/blocking if dataset > available memory
-- Chunked/streaming loading option
+**Implementation** (src/ml/data/memory_utils.py):
+- `MemoryEstimator`: High-level interface for memory checking
+- `estimate_parquet_memory()`: Pre-load size estimation using parquet metadata
+- `estimate_csv_memory()`: Pre-load size estimation using file sampling
+- `check_memory_available()`: System memory availability check with configurable thresholds
+- `ChunkedParquetLoader`: Chunked/streaming loading for oversized datasets
+- `load_with_memory_check()`: Drop-in replacement for pd.read_parquet/csv with safety
 
-**Recommended Location**: `src/ml/data/memory_utils.py` (NEW FILE)
+**Integration**:
+- `ParquetDataLoader`: Memory check enabled by default (check_memory=True parameter)
+- Integrated into `load_and_prepare_scalping_data()` convenience function
+- 43 new tests in tests/test_memory_utils.py
 
 ---
 
@@ -114,11 +119,12 @@
 
 ## Test Coverage
 
-**Total**: 2,547 tests passing (1 skipped)
+**Total**: 2,590 tests passing (1 skipped)
 
 | Category | Tests |
 |----------|-------|
 | Data Pipeline | 76 |
+| Memory Utils | 43 |
 | Risk Management | 77 |
 | Backtesting | 84 |
 | ML Models | 55 |

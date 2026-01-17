@@ -496,11 +496,18 @@ class TestIntegration:
         reason="Real parquet file not available"
     )
     def test_load_real_parquet(self, real_parquet_path):
-        """Test loading the real MES parquet file."""
+        """Test loading the real MES parquet file.
+
+        Note: This test may be skipped on systems with insufficient memory.
+        The memory check (Task 10.10) is disabled to allow testing on systems
+        with limited RAM.
+        """
         if real_parquet_path is None:
             pytest.skip("Real parquet file not available")
 
-        loader = ParquetDataLoader(real_parquet_path)
+        # Disable memory check to allow loading on memory-constrained systems
+        # The memory check is tested separately in test_memory_utils.py
+        loader = ParquetDataLoader(real_parquet_path, check_memory=False)
         df = loader.load_data()
 
         # Should have millions of rows
@@ -514,15 +521,20 @@ class TestIntegration:
         reason="Real parquet file not available"
     )
     def test_full_pipeline(self, real_parquet_path):
-        """Test full data preparation pipeline."""
+        """Test full data preparation pipeline.
+
+        Note: This test may be skipped on systems with insufficient memory.
+        """
         if real_parquet_path is None:
             pytest.skip("Real parquet file not available")
 
+        # Disable memory check for testing - we test chunked loading separately
         full_df, train_df, val_df, test_df = load_and_prepare_scalping_data(
             real_parquet_path,
             filter_rth=True,
             lookahead_seconds=30,
-            threshold_ticks=3.0
+            threshold_ticks=3.0,
+            check_memory=False,
         )
 
         # Should have data

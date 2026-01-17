@@ -8,6 +8,7 @@ This module handles:
 - Multi-timeframe aggregation (1s -> 5s, 15s, 1m, 5m, 15m)
 - Session boundary detection
 - 3-class target variable creation (UP/FLAT/DOWN)
+- Memory estimation and checking before loading (Task 10.10)
 
 The primary data asset is MES_1s_2years.parquet (~33M rows, 227MB).
 
@@ -22,11 +23,18 @@ import pandas as pd
 import numpy as np
 import pyarrow.parquet as pq
 from pathlib import Path
-from typing import Optional, Tuple, Dict, List, Union
+from typing import Optional, Tuple, Dict, List, Union, Generator
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 import logging
 from dataclasses import dataclass
+
+from .memory_utils import (
+    MemoryEstimator,
+    InsufficientMemoryError,
+    ChunkedParquetLoader,
+    estimate_parquet_memory,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -72,18 +80,33 @@ class ParquetDataLoader:
     # Columns to keep from parquet (drop metadata columns)
     OHLCV_COLUMNS = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
 
-    def __init__(self, data_path: str, timezone: str = 'America/New_York'):
+    def __init__(
+        self,
+        data_path: str,
+        timezone: str = 'America/New_York',
+        check_memory: bool = True,
+        memory_block_threshold: float = 0.9,
+    ):
         """
         Initialize the parquet loader.
 
         Args:
             data_path: Path to the parquet file
             timezone: Target timezone for session filtering (default: NY)
+            check_memory: If True, check memory before loading (default: True)
+            memory_block_threshold: Block loading if estimated usage exceeds this
+                fraction of available memory (default: 0.9)
         """
         self.data_path = Path(data_path)
         self.timezone = ZoneInfo(timezone)
         self.raw_data: Optional[pd.DataFrame] = None
         self.session_data: Optional[pd.DataFrame] = None
+        self._check_memory = check_memory
+        self._memory_block_threshold = memory_block_threshold
+        self._memory_estimator = MemoryEstimator(
+            block_threshold=memory_block_threshold,
+            raise_on_block=True,
+        ) if check_memory else None
 
         if not self.data_path.exists():
             raise FileNotFoundError(f"Parquet file not found: {self.data_path}")
@@ -91,7 +114,8 @@ class ParquetDataLoader:
     def load_data(
         self,
         columns: Optional[List[str]] = None,
-        filters: Optional[List[Tuple]] = None
+        filters: Optional[List[Tuple]] = None,
+        skip_memory_check: bool = False,
     ) -> pd.DataFrame:
         """
         Load parquet data into memory.
@@ -99,9 +123,13 @@ class ParquetDataLoader:
         Args:
             columns: Specific columns to load (default: OHLCV only)
             filters: PyArrow predicate pushdown filters for row filtering
+            skip_memory_check: If True, skip memory check even if enabled in __init__
 
         Returns:
             DataFrame with OHLCV data, timestamp as index
+
+        Raises:
+            InsufficientMemoryError: If not enough memory available (when check_memory=True)
         """
         import time as time_module
         start_time = time_module.perf_counter()
@@ -109,6 +137,15 @@ class ParquetDataLoader:
         if columns is None:
             # Only load OHLCV columns, skip metadata
             columns = self.OHLCV_COLUMNS
+
+        # Memory check (Task 10.10)
+        if self._check_memory and not skip_memory_check and self._memory_estimator:
+            result = self._memory_estimator.check_can_load(self.data_path)
+            logger.info(
+                f"Memory check: estimated {result.estimated_mb:.1f}MB, "
+                f"available {result.available_mb:.1f}MB ({result.usage_ratio:.1%} usage)"
+            )
+            # Warning is logged by the estimator, InsufficientMemoryError raised if blocked
 
         logger.info(f"Loading parquet from {self.data_path}")
 
@@ -135,6 +172,64 @@ class ParquetDataLoader:
         logger.info(f"Date range: {self.raw_data.index.min()} to {self.raw_data.index.max()}")
 
         return self.raw_data
+
+    def load_chunked(
+        self,
+        chunk_rows: Optional[int] = None,
+        columns: Optional[List[str]] = None,
+    ) -> Generator[pd.DataFrame, None, None]:
+        """
+        Load parquet data in memory-efficient chunks.
+
+        Use this method for datasets that may not fit in memory.
+        Each chunk is validated and has timestamp set as index.
+
+        Args:
+            chunk_rows: Rows per chunk (auto-calculated if None based on available memory)
+            columns: Specific columns to load (default: OHLCV only)
+
+        Yields:
+            DataFrame chunks with validated OHLCV data
+
+        Example:
+            loader = ParquetDataLoader("large_file.parquet")
+            for chunk in loader.load_chunked(chunk_rows=1_000_000):
+                process(chunk)
+        """
+        if columns is None:
+            columns = self.OHLCV_COLUMNS
+
+        chunked_loader = ChunkedParquetLoader(
+            self.data_path,
+            chunk_rows=chunk_rows,
+            columns=columns,
+        )
+
+        logger.info(
+            f"Loading in chunks: {chunked_loader.total_rows:,} total rows, "
+            f"~{chunked_loader.num_chunks} chunks of {chunked_loader.chunk_rows:,} rows"
+        )
+
+        for i, chunk in enumerate(chunked_loader):
+            # Set timestamp as index if present
+            if 'timestamp' in chunk.columns:
+                chunk = chunk.set_index('timestamp')
+
+            # Sort by index
+            chunk = chunk.sort_index()
+
+            logger.debug(f"Yielding chunk {i+1}: {len(chunk):,} rows")
+            yield chunk
+
+    def get_memory_estimate(self) -> dict:
+        """
+        Get memory estimate for loading this parquet file.
+
+        Returns:
+            Dictionary with memory estimation details
+        """
+        estimate = estimate_parquet_memory(self.data_path)
+        return estimate.to_dict()
 
     def _validate_data(self) -> None:
         """Validate data integrity."""
@@ -593,13 +688,14 @@ def load_and_prepare_scalping_data(
     lookahead_seconds: int = 30,
     threshold_ticks: float = 3.0,
     train_ratio: float = 0.6,
-    val_ratio: float = 0.2
+    val_ratio: float = 0.2,
+    check_memory: bool = True,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Convenience function to load and prepare data for scalping model.
 
     This function:
-    1. Loads parquet data
+    1. Loads parquet data (with optional memory check)
     2. Converts to NY timezone
     3. Filters to RTH (optional)
     4. Creates 3-class target variable
@@ -613,11 +709,15 @@ def load_and_prepare_scalping_data(
         threshold_ticks: Ticks for UP/DOWN classification (default: 3.0)
         train_ratio: Training set ratio (default: 0.6)
         val_ratio: Validation set ratio (default: 0.2)
+        check_memory: If True, check memory before loading (default: True)
 
     Returns:
         Tuple of (full_df, train_df, val_df, test_df)
+
+    Raises:
+        InsufficientMemoryError: If check_memory=True and not enough memory
     """
-    loader = ParquetDataLoader(data_path)
+    loader = ParquetDataLoader(data_path, check_memory=check_memory)
 
     # Load and convert timezone
     df = loader.load_data()

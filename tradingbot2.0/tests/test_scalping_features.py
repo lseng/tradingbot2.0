@@ -986,10 +986,17 @@ class TestIntegration:
         reason="Real parquet file not available"
     )
     def test_with_real_data(self):
-        """Integration test with real MES data (if available)."""
+        """Integration test with real MES data (if available).
+
+        Note: Memory check is disabled since we only need a small sample.
+        """
         from data.parquet_loader import ParquetDataLoader
 
-        loader = ParquetDataLoader("data/historical/MES/MES_1s_2years.parquet")
+        # Disable memory check since we're only taking a small sample for testing
+        loader = ParquetDataLoader(
+            "data/historical/MES/MES_1s_2years.parquet",
+            check_memory=False,
+        )
         df = loader.load_data()
         df = loader.convert_to_ny_timezone()
         df = loader.filter_rth()
