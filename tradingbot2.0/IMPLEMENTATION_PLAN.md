@@ -4,7 +4,8 @@
 > **Status**: **ALL P0 BUGS FIXED** | **ALL P1 BUGS FIXED** | **ALL P2 BUGS FIXED**
 > **Verified**: All bugs confirmed via direct code inspection at specific file:line references
 > **BUGS_FOUND.md**: 9 historical deployment bugs - ALL FIXED (verified)
-> **Test Coverage**: 2,520 test functions across 61 test files, 91% coverage
+> **Test Coverage**: 2,547 test functions across 61 test files, 91% coverage
+> **Git Tag**: v0.0.64 - All bugs fixed, ready for paper trading
 > **10.15 FIXED**: walk_forward.py attribute mismatch - fixed 2026-01-17
 > **10.17 FIXED**: Feature parity mismatch (8 features + HTF lagging) - fixed 2026-01-17
 > **10.21 FIXED**: Feature ordering validation - fixed 2026-01-17
@@ -207,7 +208,7 @@ Both proceed to create connections
 | | 2. Added `set_eod_manager()` method for late binding |
 | | 3. Added EOD phase check in `approve_trade()` that rejects trades during CLOSE_ONLY, AGGRESSIVE_EXIT, MUST_BE_FLAT, AFTER_HOURS phases |
 | | 4. Updated `live_trader.py` to link EODManager to RiskManager |
-| **Tests** | All 2520 tests pass |
+| **Tests** | All 2547 tests pass |
 
 ### ~~10.20 Details: EOD Size Multiplier~~ ✅ FIXED (2026-01-17)
 
@@ -220,7 +221,7 @@ Both proceed to create connections
 | | 3. Apply EOD multiplier after confidence scaling, before tier capping |
 | | 4. Returns 0 contracts when `eod_multiplier <= 0` (no trading allowed) |
 | | 5. Updated `live_trader.py` to get EOD multiplier from `_eod_manager.get_position_size_multiplier()` |
-| **Tests** | All 2520 tests pass |
+| **Tests** | All 2547 tests pass |
 
 ---
 
@@ -387,7 +388,7 @@ During Paper Trading:
 
 ## Test Coverage Summary
 
-**Total Tests**: 2520 tests (all passing)
+**Total Tests**: 2547 tests (all passing)
 **Coverage**: 91% (target: >80%)
 
 ### Test Breakdown by Module
@@ -481,7 +482,7 @@ All bugs discovered during RunPod training have been **VERIFIED FIXED**:
 
 ### Test Infrastructure Analysis
 - **Total test files**: 61 (58 unit/extended + 4 integration)
-- **Total test functions**: 2,520
+- **Total test functions**: 2,547
 - **Total test lines**: 45,389
 - **Skipped tests**: 4 (intentional - require real data or complex mocking)
 - **Tests without assertions**: 14 (plotting tests verify execution, not output)
