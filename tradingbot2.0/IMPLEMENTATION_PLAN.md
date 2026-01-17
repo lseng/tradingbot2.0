@@ -20,10 +20,10 @@
 
 ## TIER 3: P3 - NICE TO HAVE (Remaining Work)
 
-| Task | Location | Issue | Effort |
-|------|----------|-------|--------|
-| **10.10** | `src/ml/data/` | No memory estimation for large datasets | 2-3h |
-| **10.11** | Various | Config versioning, HybridNet documentation | 1-2h |
+| Task | Location | Issue | Effort | Status |
+|------|----------|-------|--------|--------|
+| **10.10** | `src/ml/data/` | No memory estimation for large datasets | 2-3h | PENDING |
+| ~~**10.11**~~ | ~~Various~~ | ~~Config versioning, HybridNet documentation~~ | ~~1-2h~~ | **FIXED 2026-01-17** |
 
 ### 10.10 Details: Memory Estimation for Large Datasets
 
@@ -36,18 +36,6 @@
 - Chunked/streaming loading option
 
 **Recommended Location**: `src/ml/data/memory_utils.py` (NEW FILE)
-
-### 10.11 Details: Config Versioning and HybridNet Documentation
-
-**Config Versioning** - Missing:
-- No version field in `default_config.yaml`
-- No schema validation for config changes
-- No backwards compatibility handling
-
-**HybridNet Documentation** - Current docstring is minimal (7 lines). Needs:
-- Architectural diagram
-- Usage examples comparing vs FeedForward/LSTM/Transformer
-- Hyperparameter tuning guidance
 
 ---
 

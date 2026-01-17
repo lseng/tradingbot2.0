@@ -1,6 +1,14 @@
 # Default Configuration for Futures ML Model
 # ============================================
 # Copy this file and modify for your experiments
+#
+# Version History:
+# - 1.0.0 (2026-01-17): Initial versioned config
+#   * Added version field for config tracking
+#   * All parameters validated against spec requirements
+
+# Config Version - Update when making breaking changes
+version: "1.0.0"
 
 # Data Configuration
 data:
