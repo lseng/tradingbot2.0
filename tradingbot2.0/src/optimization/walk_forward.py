@@ -552,9 +552,9 @@ class WalkForwardOptimizer:
             if not values:
                 # Use default or midpoint
                 if param.param_type == "categorical":
-                    best_params[param.name] = param.values[0] if param.values else None
+                    best_params[param.name] = param.choices[0] if param.choices else None
                 else:
-                    best_params[param.name] = (param.low + param.high) / 2
+                    best_params[param.name] = (param.min_value + param.max_value) / 2
             elif param.param_type == "categorical":
                 # Mode for categorical
                 from collections import Counter

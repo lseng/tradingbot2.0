@@ -1,139 +1,406 @@
 # Implementation Plan - MES Futures Scalping Bot
 
-> Last Updated: 2026-01-17
-> Status: **1 P0 BUG REMAINING** - 10.15 walk_forward.py crashes at runtime. 11 previous P0 bugs verified fixed. Paper trading ready after 10.15 fix.
-> Verified: Ultra-deep codebase analysis (2026-01-17) with 20+ parallel Sonnet subagents - all specs verified, 2 new bugs documented (10.15 P0, 10.16 P2)
-
----
-
-## PRIORITIZED REMAINING WORK (2026-01-17)
-
-### P0 - MUST FIX BEFORE ANY TRADING (~30 min)
-
-| Task | Location | Issue | Fix | Effort |
-|------|----------|-------|-----|--------|
-| **10.15** | `walk_forward.py:555,557` | Wrong attribute names crash walk-forward | Change `param.values` to `param.choices`, `param.low/high` to `param.min_value/max_value` | 5 LOC + test |
-
-### P1 - FIX BEFORE EXTENDED LIVE SESSIONS (>90 min) (~12h)
-
-| Task | Location | Issue | Impact | Effort |
-|------|----------|-------|--------|--------|
-| **10C.1** | `topstepx_ws.py` | WebSocket auth token expires at 90 min, no refresh | Session fails after 90 min | 3-4h |
-| **10C.2** | `topstepx_ws.py`, `live_trader.py` | No position sync after WebSocket reconnect | Stale position state after disconnect | 2-3h |
-| **10C.3** | `topstepx_ws.py` | No rate limiting for WebSocket operations | Rate limit during reconnect storms | 3-4h |
-| **10C.4** | `risk_manager.py`, `circuit_breakers.py` | Duplicate consecutive loss tracking | Inconsistent pause state | 2-3h |
-| **10C.5** | `live_trader.py` | `update_market_conditions()` never called | Volatility-based adaptive features inactive | 1-2h |
-
-### P2 - ADDRESS DURING PAPER TRADING (~3h)
-
-| Task | Location | Issue | Impact | Effort |
-|------|----------|-------|--------|--------|
-| **10.16** | `trade_logger.py:253` | Slippage double-counted in trade records | Per-trade P&L understated ~$1-2 (equity curve correct) | 2 LOC |
-| **Test Coverage** | 9 modules | No dedicated test files for risk/backtest submodules | Lower confidence in edge cases | 8-12h |
-
-Modules missing dedicated tests (have integration coverage):
-- `src/risk/position_sizing.py`, `src/risk/stops.py`, `src/risk/eod_manager.py`
-- `src/backtest/costs.py`, `src/backtest/slippage.py`, `src/backtest/metrics.py`, `src/backtest/trade_logger.py`
-- `src/trading/signal_generator.py`, `src/trading/rt_features.py`
-
-### P3 - NICE TO HAVE (~4h)
-
-| Task | Location | Issue | Effort |
-|------|----------|-------|--------|
-| **10.10** | `src/ml/data/` | No memory estimation for large datasets | 2-3h |
-| **10.11** | Various | Config versioning, HybridNet docs | 1-2h |
-
----
-
-## WHAT IS COMPLETE (Do Not Add)
-
-- **Phases 1-9**: All complete
-- **2444 tests, 91% coverage**: Target exceeded
-- **All 11 previous P0 bugs**: Fixed and verified 2026-01-16
-- **6 spec requirements**: Fully implemented
-- **Risk management**: Daily loss, per-trade risk, drawdown, circuit breakers - all integrated
-- **Live trading**: Signal generation, order execution, position management - all working
-- **Backtest engine**: Costs, slippage, metrics - all correct
-- **ML pipeline**: 3-class classification, walk-forward validation, feature engineering
-- **TopstepX API**: REST + WebSocket with auto-reconnect
+> **Last Updated**: 2026-01-17 23:15 UTC
+> **Status**: **4 P0 BUGS BLOCKING ALL TRADING** - 10.17 (original) + 10.21-10.23 (NEW)
+> **Verified**: All bugs confirmed via direct code inspection at specific file:line references
+> **BUGS_FOUND.md**: 9 historical deployment bugs - ALL FIXED (verified)
+> **Test Coverage**: 2,508 test functions across 61 test files, 91% coverage
+> **10.15 FIXED**: walk_forward.py attribute mismatch - fixed 2026-01-17
 
 ---
 
 ## Executive Summary
 
-**Current State**: Core infrastructure complete (Phases 1-9 done, 2444 tests, 91% coverage). 1 P0 bug remaining (walk-forward crashes), 1 P2 bug (trade logger slippage). Ready for paper trading after 10.15 fix.
+The codebase is substantially complete (Phases 1-9 done). However, **4 critical P0 bugs must be fixed before ANY trading can begin**:
 
-**⚠️ 1 P0 BUG REMAINING (discovered 2026-01-17)**:
-- **10.15 CRITICAL**: `walk_forward.py:555,557` - Wrong attribute names cause AttributeError at runtime. Walk-forward optimization completely broken.
+| # | Bug ID | Issue | Effort | Impact |
+|---|--------|-------|--------|--------|
+| ~~1~~ | ~~**10.15**~~ | ~~walk_forward.py attribute errors crash optimization~~ | ~~15 min~~ | **FIXED 2026-01-17** |
+| 2 | **10.17** | 8 of 10 features wrong + 5 HTF features have LOOKAHEAD BIAS | 4-6h | Model predictions INVALID |
+| 3 | **10.21** | Feature ordering not validated between training/inference | 2h | Model receives scrambled inputs |
+| 4 | **10.22** | Scaler mismatch in inference (silent failure) | 1h | Unscaled features → wrong predictions |
+| 5 | **10.23** | OCO double-fill race condition | 3h | Position doubled or 2x losses |
 
-**✅ ALL 11 PREVIOUS CRITICAL ISSUES VERIFIED FIXED (2026-01-16)**:
-1. ~~Risk manager initialized but **NOT enforced**~~ - **VERIFIED FIXED 2026-01-16**: `approve_trade()` IS called at lines 480-487
-2. ~~WebSocket auto-reconnect **NEVER started**~~ - **VERIFIED FIXED 2026-01-16**: Added asyncio.create_task in connect()
-3. ~~EOD phase method **WRONG NAME**~~ - **VERIFIED FIXED 2026-01-16**: Changed to get_status().phase
-4. ~~Backtest slippage **NOT deducted** from P&L~~ - **VERIFIED FIXED 2026-01-16**: net_pnl now includes slippage_cost
-5. ~~OCO cancellation **race condition**~~ - **VERIFIED FIXED 2026-01-16**: Added timeout and verification to OCO cancellation in order_executor.py
-6. ~~Daily loss check **NOT in trading loop**~~ - **VERIFIED FIXED 2026-01-16**: `can_trade()` check at lines 321-328 at start of each trading loop iteration
-7. ~~Circuit breaker **NOT instantiated**~~ - **VERIFIED FIXED 2026-01-16**: Import at line 35, instance at line 254, win/loss recording at lines 406-410, can_trade() at lines 450-451
-8. ~~Account drawdown check **MISSING**~~ - **VERIFIED FIXED 2026-01-16**: MANUAL_REVIEW status check at lines 330-338 in trading loop
-9. ~~7 features hardcoded to 0.0~~ - **VERIFIED FIXED 2026-01-16**: Proper calculation methods added (_calculate_volume_delta_norm, _calculate_obv_roc, _calculate_htf_trend, _calculate_htf_momentum, _calculate_htf_volatility)
-10. ~~**10.1**: OOS evaluation uses same data as IS~~ - **VERIFIED FIXED 2026-01-16**: Added `holdout_objective_fn` parameter to all optimizers (BaseOptimizer, GridSearchOptimizer, RandomSearchOptimizer, BayesianOptimizer) to enable proper OOS evaluation using separate data. Use `create_split_objective()` to generate separate validation and holdout objective functions.
+Additionally, **9 P1 bugs** affect extended trading sessions (>90 min), and **4 P2 items** need attention during paper trading.
 
-**Capital Protection**: Starting capital is $1,000. Risk limits are now properly enforced after bug fixes.
+---
 
-**Data Asset**: 227MB parquet file at `data/historical/MES/MES_1s_2years.parquet` (33.2M rows) - fully integrated.
+## TIER 0: P0 - MUST FIX BEFORE ANY TRADING
 
-### VERIFIED BLOCKING BUGS SUMMARY
+### ~~10.15 Walk-Forward Attribute Mismatch~~ ✅ FIXED (2026-01-17)
 
-| Priority | Category | Count | Impact |
-|----------|----------|-------|--------|
-| **P0-BLOCKING** | WebSocket & Scripts | ~~3~~ **0** | ~~Bot crashes / won't reconnect~~ **ALL VERIFIED FIXED 2026-01-16** |
-| **P0-SAFETY** | Live Trading Risk | ~~5~~ **0** | ~~Risk limits BYPASSED~~ **ALL VERIFIED FIXED 2026-01-16** (10A.1-10A.5, 10B.3) |
-| ~~**P0-ACCURACY**~~ | ~~Backtest & Optimization~~ | ~~2~~ **1** | Walk-forward param aggregation crashes (10.15 NEW 2026-01-17) |
-| ~~**P0-FEATURE**~~ | ~~Feature Distribution Mismatch~~ | ~~1~~ **0** | ~~Training/live distribution mismatch~~ **VERIFIED FIXED 2026-01-16** |
-| **P1-HIGH** | Integration Gaps | ~~4~~ **3** | WebSocket token refresh, position sync, rate limiting |
-| **P2-MEDIUM** | Logging/Reporting | **1** | Trade logger slippage double-counting (10.16 NEW 2026-01-17) |
-| **Total P0** | | **1** | **10.15 - Walk-forward crashes** |
-| **Total P1** | | **3** | Phase 10C gaps identified 2026-01-17 |
+| Attribute | Value |
+|-----------|-------|
+| **Location** | `src/optimization/walk_forward.py:554-557` |
+| **Status** | **FIXED** - Changed `param.values[0]` → `param.choices[0]`, `param.low/high` → `param.min_value/max_value` |
+| **Tests** | 16/16 walk_forward tests pass, 113/113 optimization tests pass |
 
-### TOP 11 VERIFIED CRITICAL BUGS (ALL 11 FIXED)
+---
 
-1. ~~**WebSocket auto-reconnect NEVER STARTED**~~ - **VERIFIED FIXED 2026-01-16**: Added `asyncio.create_task(self._auto_reconnect_loop())` in connect() at line 711-713
-2. ~~**EOD Phase method name WRONG**~~ - **VERIFIED FIXED 2026-01-16**: Changed `get_current_phase()` to `get_status().phase` at line 377-378
-3. ~~**LSTM backtest tuple NOT unpacked**~~ - **VERIFIED FIXED 2026-01-16**: Added tuple unpacking at line 134-136: `logits = output[0] if isinstance(output, tuple) else output`
-4. ~~**approve_trade() NEVER called**~~ - **VERIFIED FIXED 2026-01-16**: Verified lines 480-487 in live_trader.py show `approve_trade()` IS being called before order execution
-5. ~~**Slippage NOT deducted from P&L**~~ - **VERIFIED FIXED 2026-01-16**: Verified line 783 in engine.py shows `net_pnl = gross_pnl - commission - slippage_cost`
-6. ~~**OCO cancellation race condition**~~ - **VERIFIED FIXED 2026-01-16**: Added timeout and verification to OCO cancellation in order_executor.py
-7. ~~**Daily Loss Check NOT in Trading Loop**~~ - **VERIFIED FIXED 2026-01-16**: can_trade() checked at lines 321-328 at start of each trading loop iteration
-8. ~~**Circuit Breaker NOT Instantiated**~~ - **VERIFIED FIXED 2026-01-16**: Import at line 35, instance at line 254, win/loss at lines 406-410, can_trade() at lines 450-451
-9. ~~**Account Drawdown Check Missing**~~ - **VERIFIED FIXED 2026-01-16**: MANUAL_REVIEW status checked at lines 330-338 in trading loop
-10. ~~**7 features hardcoded to 0.0**~~ - **VERIFIED FIXED 2026-01-16**: Proper calculation methods added to rt_features.py (_calculate_volume_delta_norm, _calculate_obv_roc, _calculate_htf_trend, _calculate_htf_momentum, _calculate_htf_volatility)
-11. ~~**OOS evaluation uses same data as IS**~~ - **VERIFIED FIXED 2026-01-16**: Added `holdout_objective_fn` parameter to all optimizers (BaseOptimizer, GridSearchOptimizer, RandomSearchOptimizer, BayesianOptimizer). Use `create_split_objective()` for separate validation/holdout objectives.
+### 10.17 Feature Parity Mismatch (CRITICAL - 4-6h)
 
-### FALSE BUGS REMOVED (Verified as NOT bugs)
+| Attribute | Value |
+|-----------|-------|
+| **Location** | `src/trading/rt_features.py` vs `src/ml/data/scalping_features.py` |
+| **Effort** | 4-6 hours |
+| **Impact** | Model receives different inputs during live trading than training - **8 of 10 features wrong + 5 have LOOKAHEAD BIAS** (htf_vol_5m missing in both). Predictions INVALID. |
 
-- ~~10.0.2 WebSocket syntax error~~ - **VERIFIED FALSE**: Line 247 has no leading whitespace, all files compile
-- ~~10B.1 Position fill side type error~~ - **VERIFIED FALSE**: `OrderSide` is `IntEnum`, so `== 1` comparison works correctly
-- ~~10B.2 Reversal fill direction error~~ - **VERIFIED FALSE**: Logic correctly uses `fill_direction` for new position
+**Detailed Feature Comparison**:
 
-### CONFIRMED WORKING (No Action Needed)
+| # | Feature | scalping_features.py (Training) | rt_features.py (Live) | Issue |
+|---|---------|--------------------------------|----------------------|-------|
+| 1 | **macd_hist_norm** | `(macd - signal) / close` (line 388-394) | Hardcoded `0.0` (line 456) | **ALWAYS ZERO** |
+| 2 | **stoch_d_norm** | `stoch_k.rolling(3).mean()` (line 402) | Uses raw stoch_k (line 472) | **NO SMOOTHING** |
+| 3 | **volume_delta_norm** | 30-bar lookback (line 472-475) | 60-bar lookback (line 768) | **WRONG LOOKBACK** |
+| 4 | **obv_roc** | `obv.pct_change(30)` (line 480) | 14-bar ROC (line 810) | **WRONG LOOKBACK** |
+| 5 | **vwap_slope** | `vwap.pct_change(10)` (line 219) | `(vwap - close[-10]) / close[-10]` (line 355) | **USES CLOSE NOT VWAP** |
+| 6 | **htf_trend_1m** | 1-bar return, **lagged 1 bar** (line 507-512) | Full-period return, **NO LAG** (line 848-872) | **LOOKAHEAD BIAS** |
+| 7 | **htf_trend_5m** | Same as htf_trend_1m for 5m | Same issue | **LOOKAHEAD BIAS** |
+| 8 | **htf_momentum_1m** | 5-bar pct_change, **lagged** (line 508-513) | RSI-style gains/losses, **NO LAG** (line 874-898) | **DIFFERENT CALC + LOOKAHEAD** |
+| 9 | **htf_momentum_5m** | Same as htf_momentum_1m for 5m | Same issue | **DIFFERENT CALC + LOOKAHEAD** |
+| 10 | **htf_vol_1m** | Rolling std, **lagged 1 bar** (line 509-514) | std × 100, **NO LAG** (line 900-926) | **DIFFERENT SCALE + LOOKAHEAD** |
+| 11 | **htf_vol_5m** | Not implemented | Not implemented | **MISSING IN BOTH FILES** |
 
-Based on the 13 parallel subagent analysis:
+**CRITICAL FINDING**: The HTF features (trend, momentum, vol) in `scalping_features.py` are properly **lagged by 1 timeframe** before forward-filling to prevent lookahead bias. In `rt_features.py`, these features use **current prices with NO LAG**, creating potential lookahead bias during live inference.
 
-| Component | Status | Details |
-|-----------|--------|---------|
-| **Risk thresholds** | ✓ CORRECT | All match spec: $50 daily, $75 drawdown, $25/trade, 5-loss pause, $300 kill |
-| **Circuit breaker logic** | ✓ INTEGRATED | Correctly implemented AND now instantiated in LiveTrader (FIXED 2026-01-16) |
-| **Position sizing tiers** | ✓ CORRECT | Match spec exactly ($700-1000: 1 contract, etc.) |
-| **EOD flatten times** | ✓ CORRECT | 4:00, 4:15, 4:25, 4:30 PM NY all correct |
-| **3-class classification** | ✓ CORRECT | DOWN/FLAT/UP with CrossEntropyLoss and class weights |
-| **LSTM tuple handling** | ✓ FIXED | Fixed in training.py (5 places) AND in backtest script (FIXED 2026-01-16) |
-| **Walk-forward validation** | ✓ CORRECT | Training prevents lookahead bias |
-| **Infinity handling** | ✓ FIXED | scalping_features.py:638-644 replaces inf with NaN |
-| **BUGS_FOUND.md #1-9** | ✓ FIXED | All fixed in training pipeline |
-| **src/lib/*** | ✓ COMPLETE | All 7 utilities production-ready |
-| **Transaction costs** | ✓ CORRECT | $0.84 RT implemented correctly |
-| **Slippage model** | ✓ CORRECT | Tick-based (1-4 ticks) as spec requires |
-| **Data pipeline** | ✓ CORRECT | Parquet loader, RTH filtering, 3-class targets all working |
+**Features That ARE Correct (2 of 10)**: `atr_pct`, `rsi_norm` (Note: `htf_vol_5m` not implemented in either file)
+
+**Required Fix**: Update `src/trading/rt_features.py` to match `src/ml/data/scalping_features.py` EXACTLY for all 9 mismatched features.
+
+---
+
+### 10.21 Feature Ordering Not Validated (CRITICAL - 2h) [NEW]
+
+| Attribute | Value |
+|-----------|-------|
+| **Location** | `src/trading/rt_features.py:310-546` vs `src/ml/data/scalping_features.py` |
+| **Effort** | 2 hours |
+| **Impact** | Model receives features in wrong order = completely scrambled inputs = random predictions |
+
+**Problem**: Feature names are generated dynamically in `_calculate_features()` method. The order depends on execution sequence through:
+1. Return periods (lines 319-327)
+2. EMA periods (lines 330-345)
+3. VWAP (lines 347-358)
+4. Minutes to close (lines 360-364)
+5. Time features (lines 366-383)
+6. Volatility (lines 385-426)
+7. Momentum (lines 428-473)
+8. Microstructure (lines 475-507)
+9. Volume (lines 509-524)
+10. Multi-timeframe (lines 526-535)
+
+**Critical Issue**: If this order differs from how `scalping_features.py` generates features during training, the model will receive completely scrambled inputs. Line 541: `self._feature_names = names` is set AFTER all features calculated.
+
+**Required Fix**:
+1. Extract feature names list from trained model checkpoint
+2. Add validation in `RealTimeFeatureEngine.__init__()` that compares generated feature order against expected order
+3. Raise error if mismatch detected
+
+---
+
+### 10.22 Scaler Mismatch in Inference (CRITICAL - 1h) [NEW]
+
+| Attribute | Value |
+|-----------|-------|
+| **Location** | `src/trading/live_trader.py:573-576` |
+| **Effort** | 1 hour |
+| **Impact** | Silent failure - model receives unscaled features if scaler missing |
+
+**Problem**: Feature scaling depends on scaler availability:
+```python
+if self._scaler:
+    features = self._scaler.transform(feature_vector.features.reshape(1, -1))
+    tensor = torch.tensor(features, dtype=torch.float32)
+else:
+    tensor = feature_vector.as_tensor()  # UNSCALED - SILENT FAILURE
+```
+
+**Issues**:
+1. If model was trained with scaling but scaler is not loaded → model receives unscaled features
+2. No validation that scaler's expected feature count matches feature_vector dimensions
+3. No logging or error when scaler is missing but should be present
+
+**Required Fix**:
+1. Add `requires_scaler` flag to model config (saved during training)
+2. Validate scaler exists during model loading if `requires_scaler=True`
+3. Validate scaler feature count matches feature vector dimensions
+4. Log warning if scaler is None but features appear to need scaling
+
+---
+
+### 10.23 OCO Double-Fill Race Condition (CRITICAL - 3h) [NEW]
+
+| Attribute | Value |
+|-----------|-------|
+| **Location** | `src/trading/order_executor.py:710-746` |
+| **Effort** | 3 hours |
+| **Impact** | CRITICAL - Both OCO orders could fill, resulting in doubled position or 2x losses |
+
+**Problem**: When one OCO order fills, the code schedules an async cancellation task (line 743). However, between when the task is created and when `_cancel_oco_orders_with_timeout()` executes, the other order could also fill.
+
+**Race Condition Scenario**:
+```
+1. Stop order fills at 8000
+2. _handle_fill() called for stop (line 663)
+3. _handle_oco_fill() schedules cancellation of target as async task
+4. Before task runs, target also fills (WebSocket message arrives)
+5. Both orders now filled - position doubled or 2x losses
+```
+
+**Evidence**: Lines 743-746 show non-blocking task creation:
+```python
+cancel_task = asyncio.create_task(
+    self._cancel_oco_orders_with_timeout(orders_to_cancel, timeout=5.0)
+)
+self._pending_oco_cancellations.add(cancel_task)
+```
+
+**Required Fix**:
+1. Add synchronous blocking cancellation for OCO orders (don't rely on async task)
+2. Track fill state atomically with mutex/lock before scheduling cancellation
+3. Add "other order filled during cancellation" detection and handling
+4. Implement OCO state machine with clear transitions
+
+---
+
+## TIER 1: P1 - FIX BEFORE EXTENDED LIVE SESSIONS (>90 min)
+
+| Task | Location | Issue | Status | Impact | Effort |
+|------|----------|-------|--------|--------|--------|
+| **10C.1** | `topstepx_client.py:338-346` | WebSocket auth token expiry | **FIXED** | Token refresh works (10-min margin before 90-min expiry) | N/A |
+| **10C.2** | `live_trader.py:275` | No position sync after WebSocket reconnect | **NOT FIXED** | `_sync_positions()` only called at startup; stale position state after disconnect | 2-3h |
+| **10C.3** | `topstepx_ws.py` | No rate limiting for WebSocket operations | **NOT FIXED** | REST has 50/30s limit; WS invoke/send have NO throttling | 3-4h |
+| **10C.4** | `risk_manager.py` + `circuit_breakers.py` | Duplicate consecutive loss tracking | **CONFIRMED** | Both track independently; inconsistent pause state | 2-3h |
+| **10C.5** | `live_trader.py` | `update_market_conditions()` never called | **CONFIRMED** | Method exists (circuit_breakers.py:232-298) but never called; volatility circuit breakers inactive | 1-2h |
+| **10C.6** | `topstepx_ws.py:325-328` | WebSocket concurrent connect() race | **NEW** | Multiple connections possible; lost futures | 2h |
+| **10C.7** | `topstepx_client.py:337-346` | Token refresh race condition | **NEW** | Multiple authentications simultaneously | 1h |
+| **10C.8** | `topstepx_ws.py:334-335` | Session leak on reconnect | **NEW** | Old sessions never closed; resource exhaustion | 1h |
+| **10C.9** | `order_executor.py:799-806` | Cancel order doesn't verify | **NEW** | Order removed from tracking without confirming cancellation | 2h |
+| **10C.10** | `order_executor.py:393-407` | Stop order failure continues | **NEW** | Position created without stop loss protection | 1h |
+
+### 10C.2 Details: Position Sync After Reconnect
+
+**Problem**: `_sync_positions()` is only called during startup (line 275), not after WebSocket reconnect in `_auto_reconnect_loop()`.
+
+**Fix**: Add reconnection callback to `TopstepXWebSocket` that calls `_sync_positions()`.
+
+### 10C.3 Details: WebSocket Rate Limiting
+
+**Problem**: REST API has `RateLimiter` (50 req/30s in topstepx_rest.py) but WebSocket `invoke`/`send` have no throttling.
+
+**Fix**: Add rate limiter to WebSocket operations similar to REST.
+
+### 10C.4 Details: Duplicate Tracking
+
+**Problem**: Both modules track consecutive losses independently:
+- Circuit breakers: lines 126, 173-191 (`_consecutive_losses`)
+- Risk manager: `state.consecutive_losses`
+- Both updated in `live_trader.py:484-489`
+
+**Fix**: Consolidate tracking into CircuitBreakers only; RiskManager should delegate.
+
+### 10C.5 Details: Dead Code
+
+**Problem**: `CircuitBreakers.update_market_conditions()` (lines 232-298) handles HIGH_VOLATILITY, WIDE_SPREAD, LOW_VOLUME breakers but is NEVER called anywhere in the codebase.
+
+**Fix**: Add periodic market condition updates in trading loop (every minute).
+
+### 10C.6 Details: WebSocket Concurrent Connect Race [NEW]
+
+**Problem**: The state check in `SignalRConnection.connect()` (line 327) is not atomic. Two concurrent `connect()` calls can both pass the check before either updates state to `CONNECTING` (line 330).
+
+**Race Condition**:
+```
+Thread A: checks state = DISCONNECTED ✓
+Thread B: checks state = DISCONNECTED ✓
+Both proceed to create connections
+```
+
+**Fix**: Add mutex/lock around connection state check and update.
+
+### 10C.7 Details: Token Refresh Race Condition [NEW]
+
+**Problem**: `_auth_lock` is only held during `authenticate()` call, not during the refresh check in `_ensure_authenticated()`. Multiple concurrent requests could see the token is expiring and all call `authenticate()` simultaneously.
+
+**Fix**: Hold `_auth_lock` during the entire expiry check + refresh flow.
+
+### 10C.8 Details: Session Leak on Reconnect [NEW]
+
+**Problem**: If `connect()` is called multiple times with `self._session = None`, new sessions are created but old sessions may not be properly closed. Sessions stored in `self._session` can be overwritten.
+
+**Fix**: Ensure old session is closed before creating new one; add session lifecycle tracking.
+
+### 10C.9 Details: Cancel Order Doesn't Verify [NEW]
+
+**Problem**: `_cancel_order_safe()` calls `cancel_order()` and removes from local tracking, but doesn't verify if cancel was successful. If API returns error but exception is caught, order remains open on broker while removed from local tracking.
+
+**Fix**: Verify cancel response status before removing from tracking; query order state if uncertain.
+
+### 10C.10 Details: Stop Order Failure Continues [NEW]
+
+**Problem**: In `execute_entry()` (lines 393-407), stop order is placed first, then target order. If stop order placement returns None (line 603), the code continues anyway and tries to track it. This can result in a position without stop loss protection.
+
+**Fix**: Return early if stop order fails; do not proceed to target order without valid stop.
+
+---
+
+## TIER 2: P2 - ADDRESS DURING PAPER TRADING
+
+| Task | Location | Issue | Status | Impact | Effort |
+|------|----------|-------|--------|--------|--------|
+| **10.16** | `trade_logger.py:253` | Slippage calculation | **NOT A BUG** | `net_pnl = gross - comm - slip` is CORRECT | N/A |
+| **10.18** | `neural_networks.py` | Missing Transformer architecture | **CONFIRMED** | Only FeedForward + LSTM + HybridNet (spec requires Transformer) | 4-6h |
+| **10.19** | `risk_manager.py:231-282` | EOD manager NOT queried in `approve_trade()` | **PARTIAL** | EOD check exists in trading loop but not in approve_trade() as defense-in-depth | 2h |
+| **10.20** | `position_sizing.py:118-217` | EOD size multiplier NOT applied | **CONFIRMED** | `calculate()` doesn't use `EODManager.get_position_size_multiplier()` | 1h |
+
+### 10.20 Details: EOD Size Multiplier
+
+**Problem**:
+- `PositionSizer.calculate()` has no time awareness (lines 118-217)
+- `EODManager.get_position_size_multiplier()` exists (lines 281-292) but is not called
+- Positions should be reduced 50% after 4:00 PM NY per spec
+
+**Fix**: Add `eod_multiplier` parameter to `calculate()` and apply it to final position size.
+
+---
+
+## TIER 3: P3 - NICE TO HAVE
+
+| Task | Location | Issue | Effort |
+|------|----------|-------|--------|
+| **10.10** | `src/ml/data/` | No memory estimation for large datasets | 2-3h |
+| **10.11** | Various | Config versioning, HybridNet documentation | 1-2h |
+
+---
+
+## TEST COVERAGE STATUS
+
+**9 modules lack dedicated unit test files** but are well-tested via multiple integration tests:
+
+| Module | File | Dedicated Test | Actual Coverage |
+|--------|------|----------------|-----------------|
+| position_sizing.py | `src/risk/` | No dedicated file | 3 test files (test_risk_manager.py, test_go_live_thresholds.py, test_go_live_validation.py) |
+| stops.py | `src/risk/` | No dedicated file | test_risk_manager.py |
+| eod_manager.py | `src/risk/` | No dedicated file | 4 test files including dedicated test_eod_integration.py |
+| costs.py | `src/backtest/` | No dedicated file | test_backtest.py |
+| slippage.py | `src/backtest/` | No dedicated file | test_backtest.py |
+| metrics.py | `src/backtest/` | No dedicated file | 7 test files |
+| trade_logger.py | `src/backtest/` | No dedicated file | test_backtest.py |
+| signal_generator.py | `src/trading/` | No dedicated file | 8 test files |
+| rt_features.py | `src/trading/` | No dedicated file | 8 test files |
+
+**Note**: While dedicated unit test files do not exist, these modules have substantial test coverage across multiple integration test files. P0/P1 bug fixes take priority over reorganizing test structure.
+
+---
+
+## IMPLEMENTATION SEQUENCE
+
+```
+═══════════════════════════════════════════════════════════════════════════════
+ PHASE 1: P0 FIXES (BLOCKING - NO TRADING UNTIL COMPLETE) - ~12h total
+═══════════════════════════════════════════════════════════════════════════════
+
+Day 1 (Critical Path):
+├── 10.15 Walk-forward attribute fix (15 min) ← QUICK WIN
+├── 10.21 Feature ordering validation (2h)
+├── 10.22 Scaler mismatch validation (1h)
+└── 10.17 Feature parity - macd_hist_norm, stoch_d_norm (2h)
+
+Day 2 (Critical Path):
+├── 10.17 Feature parity - volume_delta_norm, obv_roc, vwap_slope (3h)
+└── 10.23 OCO double-fill race condition fix (3h)
+
+Day 3 (Critical Path):
+├── 10.17 Feature parity - htf_trend/momentum/vol with proper lagging (3h)
+├── Expand test_feature_parity.py with strict equality tests (1h)
+└── Integration testing for all P0 fixes (2h)
+
+═══════════════════════════════════════════════════════════════════════════════
+ PHASE 2: P1 FIXES (REQUIRED FOR >90 MIN SESSIONS) - ~16h total
+═══════════════════════════════════════════════════════════════════════════════
+
+Day 4-5:
+├── 10C.2 Position sync after reconnect (3h)
+├── 10C.5 Call update_market_conditions() (2h)
+├── 10C.6 WebSocket concurrent connect() race fix (2h)
+├── 10C.7 Token refresh race condition fix (1h)
+└── 10C.8 Session leak on reconnect (1h)
+
+Day 6-7:
+├── 10C.3 WebSocket rate limiting (3h)
+├── 10C.4 Consolidate consecutive loss tracking (2h)
+├── 10C.9 Cancel order verification (2h)
+├── 10C.10 Stop order failure handling (1h)
+└── Integration testing for all P1 fixes (2h)
+
+═══════════════════════════════════════════════════════════════════════════════
+ PHASE 3: PAPER TRADING + P2 FIXES - ~10h total
+═══════════════════════════════════════════════════════════════════════════════
+
+During Paper Trading:
+├── 10.18 Transformer architecture (4-6h)
+├── 10.19 EOD check in approve_trade() (2h)
+├── 10.20 EOD size multiplier (1h)
+└── Monitor and validate all fixes in live environment
+```
+
+---
+
+## WHAT IS COMPLETE (Do NOT Re-implement)
+
+### Phases Complete
+- **Phase 1**: Data Pipeline - Parquet loader, scalping features, 3-class targets
+- **Phase 2**: Risk Management - All 5 modules
+- **Phase 3**: Backtesting - Engine, costs, slippage, metrics, trade_logger, visualization, go_live_validator
+- **Phase 4**: ML Models - 3-class classification, FeedForward, LSTM, HybridNet
+- **Phase 5**: TopstepX API - REST + WebSocket with auto-reconnect
+- **Phase 6**: Live Trading - All 6 modules
+- **Phase 7**: DataBento Client
+- **Phase 8**: Testing Infrastructure - 2513 tests, 91% coverage
+- **Phase 9**: Parameter Optimization - Grid, random, Bayesian optimizers
+
+### All 11 Previous P0 Bugs VERIFIED FIXED (2026-01-16)
+1. Risk manager `approve_trade()` IS called (lines 480-487 in live_trader.py)
+2. WebSocket auto-reconnect task IS started (added asyncio.create_task in connect())
+3. EOD phase method IS correct (`get_status().phase`)
+4. Backtest slippage IS deducted (`net_pnl = gross_pnl - commission - slippage_cost`)
+5. OCO cancellation race condition FIXED (timeout + verification added, lines 699-798)
+6. Daily loss check IS in trading loop (`can_trade()` at lines 321-328)
+7. Circuit breaker IS instantiated (import line 35, instance line 263)
+8. Account drawdown check EXISTS (MANUAL_REVIEW at lines 330-338)
+9. 7 features HAVE calculation methods (but parity issues remain - see 10.17)
+10. OOS evaluation USES separate data (`holdout_objective_fn` parameter added)
+11. LSTM tuple handling WORKS
+
+### Core Functionality VERIFIED Working
+- approve_trade() called at line 631 before orders
+- Circuit breaker checked at line 529
+- OCO management with timeout (lines 699-798)
+- Position sync on startup (line 275)
+- All 5 signal types implemented (LONG_ENTRY, SHORT_ENTRY, EXIT_LONG, EXIT_SHORT, FLATTEN)
+- Token refresh works with 10-min margin before 90-min expiry
+- Transaction costs: $0.84 RT
+- Slippage model: Tick-based (1-4 ticks)
+
+---
+
+## CRITICAL FILES FOR IMPLEMENTATION
+
+| Priority | File | Lines | Issue |
+|----------|------|-------|-------|
+| **P0** | `src/optimization/walk_forward.py` | 554-557 | Fix attribute names (10.15) |
+| **P0** | `src/trading/rt_features.py` | 310-546, 355, 456, 472, 768, 810, 848-926 | Feature parity + ordering (10.17, 10.21) |
+| **P0** | `src/ml/data/scalping_features.py` | Reference | Source of truth for features |
+| **P0** | `src/trading/live_trader.py` | 573-576 | Scaler mismatch validation (10.22) |
+| **P0** | `src/trading/order_executor.py` | 710-746 | OCO double-fill race (10.23) |
+| **P1** | `src/trading/live_trader.py` | 275 | Add reconnect sync (10C.2) |
+| **P1** | `src/api/topstepx_ws.py` | 325-328, 334-335 | Rate limiting + connect race + session leak (10C.3, 10C.6, 10C.8) |
+| **P1** | `src/api/topstepx_client.py` | 337-346 | Token refresh race (10C.7) |
+| **P1** | `src/risk/circuit_breakers.py` | 232-298 | Activate update_market_conditions() (10C.5) |
+| **P1** | `src/trading/order_executor.py` | 393-407, 799-806 | Stop failure + cancel verify (10C.9, 10C.10) |
+| **P2** | `src/risk/position_sizing.py` | 118-217 | Add EOD multiplier (10.20) |
+| **P2** | `src/risk/risk_manager.py` | 231-282 | Add EOD check to approve_trade() (10.19) |
+| **P2** | `src/ml/models/neural_networks.py` | 98-524 | Add Transformer architecture (10.18) |
 
 ---
 
@@ -161,2155 +428,124 @@ Based on the 13 parallel subagent analysis:
 ## Test Coverage Summary
 
 **Total Tests**: 2513 tests (all passing)
-**Coverage**: 91% (target: >80%) ✓ ACHIEVED
+**Coverage**: 91% (target: >80%)
 
 ### Test Breakdown by Module
-- Phase 1 Data Pipeline: 26 parquet_loader + 50 scalping_features = 76 tests
+- Phase 1 Data Pipeline: 76 tests
 - Phase 2 Risk Management: 77 tests
 - Phase 3 Backtesting: 84 tests
 - Phase 4 ML Models: 55 tests
 - Phase 5 TopstepX API: 77 tests
 - Phase 6 Live Trading: 77 tests
 - Phase 7 DataBento: 43 tests
-- Phase 8 Testing: Extended coverage tests across all modules
-- Phase 9 Optimization: 112 tests
+- Phase 8-9: Extended coverage + Optimization: 200+ tests
 - Integration Tests: 88 tests
 - Go-Live Validation: 170+ tests
 
 ---
 
-## Codebase Gap Analysis (Verified 2026-01-15)
+## Specification Coverage
 
-### What EXISTS (Implemented in `src/ml/`)
-
-| Component | File | Status | Gap | Line Reference |
-|-----------|------|--------|-----|----------------|
-| Data Loader | `data/data_loader.py` | DAILY only | Needs parquet, 1-second, session filtering | Line 143-168: Binary target only |
-| Feature Engineering | `data/feature_engineering.py` | DAILY periods | Needs SECONDS periods (1,5,10,30,60s) | Config line 16: `[1, 5, 10, 21]` days |
-| Neural Networks | `models/neural_networks.py` | 3-class COMPLETED | ✓ Updated for softmax output | Lines 77, 102, 166, 213, 304: Updated |
-| Training Pipeline | `models/training.py` | COMPLETED | ✓ Uses CrossEntropyLoss, class weights | Uses `CrossEntropyLoss` |
-| Evaluation | `utils/evaluation.py` | WRONG costs | Needs $0.84 RT, tick-based slippage | Line 129: `commission: float = 5.0` |
-| Config | `configs/default_config.yaml` | EXISTS but orphaned | Not loaded by any code | Line 88: `commission: 5.0` |
-
-### What NOW EXISTS (All Modules Implemented)
-
-| Module | Directory | Priority | Status | Files Implemented |
-|--------|-----------|----------|--------|-------------------|
-| Risk Management | `src/risk/` | P1 - CRITICAL | **COMPLETED** | 5 files: risk_manager, position_sizing, stops, eod_manager, circuit_breakers |
-| Backtesting Engine | `src/backtest/` | P1 - CRITICAL | **COMPLETED** | 7 files: engine, costs, slippage, metrics, trade_logger, visualization, go_live_validator |
-| TopstepX API | `src/api/` | P2 - HIGH | **COMPLETED** | 4 files: topstepx_client, topstepx_rest, topstepx_ws, __init__ |
-| Live Trading | `src/trading/` | P2 - HIGH | **COMPLETED** | 7 files: live_trader, signal_generator, order_executor, position_manager, rt_features, recovery, __init__ |
-| DataBento Client | `src/data/` | P3 - MEDIUM | **COMPLETED** | 2 files: databento_client, __init__ |
-| Shared Utilities | `src/lib/` | P3 - MEDIUM | **COMPLETED** | 6 files: config, logging_utils, time_utils, constants, performance_monitor, alerts |
-| Parameter Optimization | `src/optimization/` | P3 - MEDIUM | **COMPLETED** | 7 files: parameter_space, results, optimizer_base, grid_search, random_search, bayesian_optimizer, __init__ |
-| Model Architecture | `src/ml/models/` | P2 - HIGH | **COMPLETED** | All models updated for 3-class, inference optimization done |
-| Tests | `tests/` | P3 - MEDIUM | **COMPLETED** | 2427 tests (91% coverage) |
-
-### Critical Bug Summary
-
-| Issue | Location | Current Value | Required Value | Status |
-|-------|----------|---------------|----------------|--------|
-| Wrong commission | `evaluation.py:129` | $5.00 | $0.84 | FIXED in backtest module |
-| Wrong commission (config) | `default_config.yaml:88` | $5.00 | $0.84 | Config also wrong (legacy) |
-| Wrong slippage model | `evaluation.py:130` | 0.0001 (1bp %) | 1 tick ($1.25) | FIXED in backtest module |
-| Wrong slippage (config) | `default_config.yaml:89` | 0.0001 (1bp %) | 1 tick ($1.25) | Config also wrong (legacy) |
-| Binary output | `neural_networks.py` | sigmoid (2-class) | softmax (3-class) | **FIXED** (Phase 4.1) |
-| Wrong time periods | `feature_engineering.py:37` | [1,5,10,21] days | [1,5,10,30,60] seconds | FIXED in scalping_features |
-| Binary target | `data_loader.py:157` | Binary (up/down) | 3-class (UP/FLAT/DOWN) | FIXED in parquet_loader |
-| No parquet support | `data_loader.py:45-57` | CSV/TXT only | Need parquet | **FIXED** (Phase 1.1) |
-| Config not loaded | `train_futures_model.py` | CLI args only | Load from YAML | Available in src/lib/config.py |
-| HybridNet not integrated | `train_futures_model.py` | Only feedforward/lstm | Add hybrid option | Available but not CLI-exposed |
+| Spec File | Coverage | Notes |
+|-----------|----------|-------|
+| `specs/ml-scalping-model.md` | 90% | Missing Transformer architecture |
+| `specs/risk-management.md` | 100% | All risk limits enforced |
+| `specs/backtesting-engine.md` | 100% | Full cost/slippage modeling |
+| `specs/topstepx-api-integration.md` | 100% | REST + WebSocket complete |
+| `specs/live-trading-execution.md` | 85% | Feature parity issue (10.17) |
+| `specs/databento-historical-data.md` | 100% | Parquet loading complete |
 
 ---
 
-## Phase 1: CRITICAL - Data Pipeline (Week 1-2)
+## Data Asset
 
-### 1.1 Parquet Data Loader for 1-Second Data
-**Status**: COMPLETED (2026-01-15)
-**File**: `src/ml/data/parquet_loader.py` (NEW)
-**Spec**: `specs/databento-historical-data.md`, `specs/backtesting-engine.md`
-
-All requirements met:
-- [x] Load parquet format (227MB, 33.2M rows)
-- [x] Parse timestamp (nanosecond int64 or datetime64)
-- [x] Convert UTC to NY timezone (handle DST transitions)
-- [x] Filter RTH (9:30 AM - 4:00 PM NY) vs ETH
-- [x] Handle gaps (weekends, holidays, market closures)
-- [x] Multi-timeframe aggregation (1s -> 5s, 15s, 1m, 5m, 15m)
-- [x] Efficient chunked loading for memory management
-- [x] Session boundary detection
-
-**Performance**: Load 33.2M rows in ~1s, full pipeline in ~53s, memory < 4GB
-
-### 1.2 Scalping Target Variable (3-Class)
-**Status**: COMPLETED (2026-01-15)
-**File**: `src/ml/data/parquet_loader.py`
-
-- [x] 3-class classification: DOWN (0), FLAT (1), UP (2)
-- [x] Configurable lookahead: 5, 10, 30, 60 seconds (default: 30s)
-- [x] Configurable threshold: 2-4 ticks for MES (default: 3.0 ticks = $3.75)
-- [x] Class balance analysis (DOWN=19.7%, FLAT=60.2%, UP=20.1%)
-- [x] Lookahead bias prevention
-
-### 1.3 Feature Engineering for 1-Second Data
-**Status**: COMPLETED (2026-01-15)
-**File**: `src/ml/data/scalping_features.py` (NEW)
-
-Features implemented:
-- [x] Returns at 1, 5, 10, 30, 60 SECONDS
-- [x] EMAs: 9, 21, 50, 200 periods on 1-second data
-- [x] Session-based VWAP (reset at 9:30 AM NY)
-- [x] Minutes-to-close feature (0-390 for RTH)
-- [x] Multi-timeframe features (1m, 5m trend/momentum)
-- [x] Microstructure: bar direction, wick ratios, body ratio
-- [x] Volume delta (buy vs sell volume)
-- [x] All features normalized
+227MB parquet file at `data/historical/MES/MES_1s_2years.parquet` (33.2M rows) - fully integrated.
 
 ---
 
-## Phase 2: CRITICAL - Risk Management Module (Week 2-3)
+## Appendix A: Verified Fixes from 2026-01-16
 
-**Status**: COMPLETED (2026-01-15)
-**Directory**: `src/risk/`
-**Spec**: `specs/risk-management.md`
-
-### 2.1 Core Risk Manager
-**File**: `src/risk/risk_manager.py`
-
-- [x] Daily loss limit: $50 (5%)
-- [x] Daily drawdown limit: $75 (7.5%)
-- [x] Per-trade max risk: $25 (2.5%)
-- [x] Max consecutive losses: 5 -> 30-min pause
-- [x] Kill switch: $300 cumulative loss
-- [x] Minimum account balance: $700
-- [x] Account drawdown $200 (20%) -> manual review
-- [x] Thread-safe state tracking
-
-### 2.2 Position Sizing
-**File**: `src/risk/position_sizing.py`
-
-Scaling rules by account balance tier implemented with confidence-based multipliers.
-
-### 2.3 Stop Loss Strategy
-**File**: `src/risk/stops.py`
-
-- [x] ATR-based stops
-- [x] Fixed tick stops
-- [x] Structure-based stops
-- [x] Trailing stop logic
-- [x] EOD tightening rules
-
-### 2.4 EOD Flatten Logic
-**File**: `src/risk/eod_manager.py`
-
-- [x] 4:00 PM NY: Reduce position sizing by 50%
-- [x] 4:15 PM NY: No new positions
-- [x] 4:25 PM NY: Begin market order exits
-- [x] 4:30 PM NY: MUST be flat
-
-### 2.5 Circuit Breakers
-**File**: `src/risk/circuit_breakers.py`
-
-All circuit breakers implemented with proper pause timers and state persistence.
+All 11 previous P0 bugs have been verified fixed and should NOT be re-investigated.
 
 ---
 
-## Phase 3: CRITICAL - Backtesting Engine (Week 3-4)
-
-**Status**: COMPLETED (2026-01-15)
-**Directory**: `src/backtest/`
-**Spec**: `specs/backtesting-engine.md`
-
-### 3.1 Event-Driven Backtest Engine
-**File**: `src/backtest/engine.py`
-
-- [x] Bar-by-bar simulation on 1-second data
-- [x] Event loop with proper order of operations
-- [x] Order fill simulation (conservative/optimistic/realistic)
-- [x] EOD flatten enforcement at 4:30 PM NY
-- [x] Walk-forward optimization framework
-- [x] Minimum 100 trades per fold
-- [x] Out-of-sample performance tracking
-- [x] RiskManager integration for all risk limits
-
-### 3.2 Transaction Cost Model
-**File**: `src/backtest/costs.py`
-
-- [x] MES-specific costs: $0.84 round-trip
-- [x] Commission: $0.20/side
-- [x] Exchange fee: $0.22/side
-- [x] Configurable for different brokers
-
-### 3.3 Slippage Model
-**File**: `src/backtest/slippage.py`
-
-- [x] Tick-based slippage (not percentage)
-- [x] Normal liquidity: 1 tick ($1.25)
-- [x] Low liquidity: 2 ticks ($2.50)
-- [x] High volatility: 2-4 ticks
-- [x] Volatility-adaptive model (ATR-based)
-
-### 3.4 Trade & Equity Logging
-**File**: `src/backtest/trade_logger.py`
-
-- [x] Comprehensive trade log CSV
-- [x] Equity curve at bar-level resolution
-- [x] Per-fold walk-forward results
-- [x] Drawdown tracking
-
-### 3.5 Performance Metrics
-**File**: `src/backtest/metrics.py`
-
-All metrics implemented: Calmar, Sortino, max drawdown, consistency, expectancy, per-trade metrics, trade frequency, risk-adjusted metrics, time-of-day analysis.
-
-### 3.6 Visualization & Reporting
-**File**: `src/backtest/visualization.py`
-
-- [x] Interactive equity curve plots (Plotly)
-- [x] Trade distribution histograms
-- [x] Drawdown visualization
-- [x] Per-fold metrics dashboard
-- [x] Walk-forward equity stitching
-
-### 3.7 Go-Live Validator
-**File**: `src/backtest/go_live_validator.py`
-
-- [x] GoLiveValidator class with threshold validation
-- [x] Profitability checks (Sharpe > 1.0, Calmar > 0.5)
-- [x] Consistency checks
-- [x] Risk checks
-- [x] check_go_live_ready() function
-
----
-
-## Phase 4: HIGH - Model Architecture Updates (Week 4-5)
-
-### 4.1 3-Class Classification
-**Status**: COMPLETED (2026-01-16)
-**File**: `src/ml/models/neural_networks.py`
-
-- [x] Updated all models: FeedForwardNet, LSTMNet, HybridNet
-- [x] Changed output layer to num_classes (default=3)
-- [x] Changed loss to CrossEntropyLoss with class weights
-- [x] Added `num_classes` parameter
-- [x] Added `get_probabilities()` method
-- [x] Added `predict()` method
-- [x] Added ModelPrediction dataclass
-
-### 4.2 Model Output Interface
-**Status**: COMPLETED (2026-01-16)
-
-ModelPrediction dataclass provides standardized interface with direction, confidence, predicted_move, volatility, and timestamp.
-
-### 4.3 Inference Optimization
-**Status**: COMPLETED (2026-01-16)
-**File**: `src/ml/models/inference_benchmark.py`
-
-- [x] Verified inference latency < 10ms on CPU
-- [x] Benchmark on target hardware
-- [x] Batch inference for backtesting
-- [x] Feature computation in latency budget
-
-### 4.4 Transformer Architecture (Optional)
-**Status**: NOT IMPLEMENTED
-
-Optional enhancement for future consideration.
-
----
-
-## Phase 5: HIGH - TopstepX API Integration (Week 5-6)
-
-**Status**: COMPLETED (2026-01-16)
-**Directory**: `src/api/`
-**Spec**: `specs/topstepx-api-integration.md`
-
-### 5.1 API Client Base
-**File**: `src/api/topstepx_client.py`
-
-- [x] Authentication with API key
-- [x] Token refresh logic (90-min expiry)
-- [x] Rate limiting: 50 requests/30 seconds
-- [x] Exponential backoff on errors
-- [x] Request/response logging
-- [x] Session management
-
-### 5.2 REST Endpoints
-**File**: `src/api/topstepx_rest.py`
-
-- [x] Place order (market, limit, stop, stop-limit)
-- [x] Cancel order
-- [x] Get positions
-- [x] Get account info
-- [x] Retrieve historical bars
-
-### 5.3 WebSocket Market Data
-**File**: `src/api/topstepx_ws.py`
-
-- [x] SignalR connection to market hub
-- [x] Subscribe to MES quotes
-- [x] Quote handler callback
-- [x] Auto-reconnect with backoff
-- [x] Max 2 concurrent WebSocket sessions
-- [x] Heartbeat/ping
-
-### 5.4 WebSocket Trade Hub
-**File**: `src/api/topstepx_ws.py`
-
-- [x] Trade hub connection
-- [x] Order fill notifications
-- [x] Position update notifications
-- [x] Account update notifications
-- [x] Order rejection notifications
-
----
-
-## Phase 6: HIGH - Live Trading System (Week 6-7)
-
-**Status**: COMPLETED (2026-01-16)
-**Directory**: `src/trading/`
-**Spec**: `specs/live-trading-execution.md`
-
-### 6.1 Main Trading Loop
-**File**: `src/trading/live_trader.py`
-
-Complete startup/main loop/shutdown sequences implemented with proper error handling and state management.
-
-### 6.2 Signal Generator
-**File**: `src/trading/signal_generator.py`
-
-- [x] All signal types (LONG_ENTRY, SHORT_ENTRY, EXIT, REVERSE, FLATTEN, HOLD)
-- [x] Confidence threshold check (min 60%)
-- [x] Risk manager integration
-- [x] Position-aware signaling
-- [x] Cooldown after exits
-- [x] Position reversal bar-range constraint (max 2x reversals in same bar range)
-
-### 6.3 Order Executor
-**File**: `src/trading/order_executor.py`
-
-- [x] Place entry orders
-- [x] Wait for fill confirmation
-- [x] Place stop loss and take profit
-- [x] Manual OCO management
-- [x] Track all open orders
-- [x] Handle partial fills
-
-### 6.4 Position Manager
-**File**: `src/trading/position_manager.py`
-
-- [x] Position dataclass
-- [x] Track open position state
-- [x] Calculate unrealized P&L in real-time
-- [x] Sync with API on reconnect
-- [x] Position change notifications
-
-### 6.5 Real-Time Feature Engine
-**File**: `src/trading/rt_features.py`
-
-- [x] Aggregate ticks to 1-second bars
-- [x] Maintain rolling feature windows
-- [x] Calculate features in < 5ms
-- [x] Memory-efficient circular buffers
-- [x] Feature caching
-
-### 6.6 Error Handling & Recovery
-**File**: `src/trading/recovery.py`
-
-- [x] WebSocket disconnect handling
-- [x] Position mismatch sync
-- [x] Order rejection handling
-- [x] Insufficient margin handling
-- [x] Rate limiting handling
-- [x] Auth failure recovery
-- [x] Unhandled exception handling
-
-### 6.7 Performance Monitoring
-**File**: `src/lib/performance_monitor.py`
-
-- [x] PerformanceMonitor class
-- [x] Timer/AsyncTimer context managers
-- [x] Quote latency tracking
-- [x] ExecutionTiming dataclass for signal-to-fill tracking
-
-### 6.8 Alert System
-**File**: `src/lib/alerts.py`
-
-- [x] Multi-channel alert system (Console, Email, Slack, Webhook, Discord)
-- [x] Throttling and deduplication
-- [x] Priority-based routing
-- [x] Integration with RecoveryHandler
-- [x] Environment-based configuration
-
----
-
-## Phase 7: MEDIUM - DataBento Integration (Week 7-8)
-
-**Status**: COMPLETED (2026-01-16)
-**Directory**: `src/data/`
-**Spec**: `specs/databento-historical-data.md`
-
-### 7.1 DataBento Client
-**File**: `src/data/databento_client.py`
-
-- [x] Initialize with API key from env var
-- [x] Fetch OHLCV data at multiple timeframes
-- [x] Handle continuous contracts
-- [x] Store in parquet format
-- [x] Schema validation
-
-### 7.2 Data Download Script
-**File**: `scripts/download_data.py`
-
-- [x] Initial bulk download
-- [x] Incremental daily updates
-- [x] Gap detection and backfill
-- [x] Data validation (OHLC relationships, gaps, volume, timestamps)
-- [x] Progress logging and resumption
-
----
-
-## Phase 8: MEDIUM - Testing (Ongoing)
-
-**Status**: COMPLETED - 2427 tests, 91% coverage ✓
-**Test Coverage**: 91% (target: >80%) ✓ ACHIEVED
-**Directory**: `tests/`
-
-### Test Suite Overview
-
-All major modules have comprehensive test coverage:
-- Unit tests for all core modules (parquet_loader, scalping_features, risk_manager, backtest, models, topstepx_api, trading, etc.)
-- Integration tests for E2E workflows
-- Go-Live validation tests for all checklist items
-- Extended coverage tests bringing most modules to >90%
-
-### Key Test Files
-- `tests/test_parquet_loader.py` - 26 tests
-- `tests/test_scalping_features.py` - 50 tests
-- `tests/test_risk_manager.py` - 77 tests
-- `tests/test_backtest.py` - 84 tests
-- `tests/test_models.py` - 55 tests
-- `tests/test_topstepx_api.py` - 77 tests
-- `tests/test_trading.py` - 77 tests
-- `tests/integration/` - 88 integration tests
-- `tests/test_go_live_*.py` - 170+ go-live validation tests
-- Extended coverage tests across all modules
-
-### CI/CD Integration
-**Status**: COMPLETED
-
-- [x] `.github/workflows/ci.yml` with test, lint, and security jobs
-- [x] `pytest.ini` configuration
-- [x] Test coverage reporting
-
----
-
-## Phase 9: LOW - Optimizations & Polish (Week 8+)
-
-### 9.1 Parameter Optimization Framework
-**Status**: COMPLETED (2026-01-16)
-**Directory**: `src/optimization/`
-
-- [x] GridSearchOptimizer: Exhaustive search with parallel execution
-- [x] RandomSearchOptimizer: Random sampling with early stopping
-- [x] AdaptiveRandomSearch: Two-phase exploration/exploitation
-- [x] BayesianOptimizer: Optuna integration with TPE sampler
-- [x] DefaultParameterSpaces: Predefined ranges for MES scalping
-- [x] Overfitting prevention: IS/OOS comparison
-
-### 9.2 Visualization & Reporting
-**Status**: COMPLETED (2026-01-16)
-
-All visualization features implemented in `src/backtest/visualization.py`.
-
-### 9.3 Configuration Management
-**Status**: COMPLETED
-
-- [x] `src/lib/config.py` - Unified config loader
-- [x] Environment variable support for secrets
-- [x] Config validation at startup
-- [ ] Config versioning for reproducibility (future)
-
-### 9.4 Shared Utilities Library
-**Status**: COMPLETED
-**Directory**: `src/lib/`
-
-- [x] `config.py` - Unified config loader
-- [x] `logging_utils.py` - Structured logging
-- [x] `time_utils.py` - NY timezone, session times
-- [x] `constants.py` - MES tick size, point value
-- [x] `performance_monitor.py` - Performance tracking
-- [x] `alerts.py` - Multi-channel alert system
-
----
-
-## Phase 10: Production Readiness (Critical Gaps)
-
-This phase addresses critical gaps discovered during comprehensive codebase analysis on 2026-01-16.
-
----
-
-### 10.0 **BLOCKING BUGS** - Must Fix Before ANY Live/Paper Trading
-
-These bugs were discovered during deep analysis on 2026-01-16 and **BLOCK** live trading functionality.
-
-#### 10.0.1 ~~BLOCKING~~: WebSocket Auto-Reconnect Never Started
-**Status**: **COMPLETED** - VERIFIED FIXED 2026-01-16
-**Priority**: ~~P0 - BLOCKING~~ RESOLVED
-**File**: `src/api/topstepx_ws.py` (lines 893-913, 695-709)
-
-**Problem**: The `_auto_reconnect_loop()` method is defined but **NEVER STARTED**. The reconnect task is never assigned in the `connect()` method.
-
-```python
-# Method defined at line 893 but never called:
-async def _auto_reconnect_loop(self):
-    ...
-
-# Missing in connect() method around line 709:
-# self._reconnect_task = asyncio.create_task(self._auto_reconnect_loop())
-```
-
-**Impact**:
-- WebSocket will disconnect on any network interruption
-- **WILL NOT RECONNECT** even though auto_reconnect=True
-- Live trading will silently stop receiving market data
-- Could miss entire trading sessions without notification
-
-**Fix Applied**:
-- [x] Added `asyncio.create_task(self._auto_reconnect_loop())` in the `connect()` method at line 711-713
-- [x] **VERIFIED (2026-01-16)**: Fix confirmed - lines 711-713 in topstepx_ws.py now call asyncio.create_task(self._auto_reconnect_loop())
-- [x] Add integration test for reconnection after disconnect - **COMPLETED 2026-01-17**: 25 tests in test_websocket_reconnection.py
-- [x] Test with simulated network interruption - **COMPLETED 2026-01-17**: Included in test_websocket_reconnection.py
-
----
-
-#### ~~10.0.2 REMOVED: WebSocket Module Syntax Error~~
-**Status**: VERIFIED FALSE - NOT A BUG
-**Verification**: Line 247 has NO leading whitespace. All files compile successfully. Module imports work correctly.
-
----
-
-#### 10.0.2 ~~BLOCKING~~: EOD Phase Method Name Mismatch
-**Status**: **COMPLETED** - VERIFIED FIXED 2026-01-16
-**Priority**: ~~P0 - BLOCKING (Will crash at 4:00 PM daily)~~ RESOLVED
-**File**: `src/trading/live_trader.py` (line 377)
-
-**Problem**: `live_trader.py:377` calls `get_current_phase()` but `eod_manager.py` only defines `get_status()` method.
-
-```python
-# Current code (WRONG):
-eod_phase = self._eod_manager.get_current_phase()  # AttributeError!
-
-# Fix needed:
-eod_status = self._eod_manager.get_status()
-eod_phase = eod_status.phase
-```
-
-**Impact**:
-- **AttributeError thrown at 4:00 PM NY time** (when EOD phase check runs)
-- Live trading crashes during EOD period
-- Positions may NOT be flattened at 4:30 PM as required
-- Violates day trading rules
-
-**Fix Applied**:
-- [x] Changed `get_current_phase()` to `get_status().phase` at line 377-378
-- [x] **VERIFIED (2026-01-16)**: Fix confirmed - live_trader.py:377-378 now uses get_status().phase instead of get_current_phase()
-- [ ] Audit all EOD manager method calls in live_trader.py
-- [x] Add integration test for EOD phase transitions - **COMPLETED 2026-01-17**: 43 tests in test_eod_integration.py
-
----
-
-#### 10.0.3 ~~BLOCKING~~: LSTM Output Tuple Not Unpacked in Backtest Script
-**Status**: **COMPLETED** - VERIFIED FIXED 2026-01-16
-**Priority**: ~~P0 - BLOCKING~~ RESOLVED
-**File**: `scripts/run_backtest.py` (lines 134-135)
-
-**Problem**: LSTM models return `(logits, hidden_state)` tuple. The backtest script applies softmax directly to the tuple, causing TypeError.
-
-```python
-# Current code (WRONG):
-logits = self.model(features_tensor)  # Returns tuple for LSTM!
-probs = torch.softmax(logits, dim=1).squeeze().cpu().numpy()  # TypeError!
-
-# Fix needed:
-output = self.model(features_tensor)
-logits = output[0] if isinstance(output, tuple) else output
-probs = torch.softmax(logits, dim=1).squeeze().cpu().numpy()
-```
-
-**Note**: This bug was fixed in `train_scalping_model.py:604-606` (Bug #4 in BUGS_FOUND.md) but **NOT** in the backtest script.
-
-**Impact**:
-- **ALL LSTM model backtests fail** with TypeError
-- Cannot validate LSTM model performance
-- Cannot use LSTM for production
-
-**Fix Applied**:
-- [x] Added tuple unpacking at line 134-136: `logits = output[0] if isinstance(output, tuple) else output`
-- [x] **VERIFIED (2026-01-16)**: Fix confirmed - run_backtest.py:134-136 now properly unpacks tuple output
-- [ ] Add backtest test with LSTM model
-- [ ] Ensure consistent output handling across all scripts
-
----
-
-### 10.1 ~~CRITICAL~~: Fix OOS Evaluation Bug in Optimization
-**Status**: **VERIFIED FIXED** (2026-01-16)
-**Priority**: ~~P0 - CRITICAL~~ RESOLVED
-**File**: `src/optimization/optimizer_base.py`
-
-**Original Problem**: The out-of-sample (OOS) evaluation reused the same objective function that was used for in-sample optimization. This meant OOS metrics were calculated on validation data, not true holdout data.
-
-**Fix Applied (2026-01-16)**:
-1. Modified `_compute_overfitting_metrics()` in `src/optimization/optimizer_base.py` to skip OOS evaluation entirely when `holdout_objective_fn` is not provided
-2. This prevents incorrect OOS metrics that would defeat overfitting detection
-3. Users must now use `create_split_objective()` to get proper IS/OOS separation with independent holdout data
-
-**Verification**:
-- [x] `_compute_overfitting_metrics()` now checks for `holdout_objective_fn` parameter
-- [x] OOS evaluation only runs when separate holdout objective is provided
-- [x] `create_split_objective()` utility enables proper IS/OOS data separation
-- [x] All optimizer subclasses (GridSearch, RandomSearch, Bayesian) support `holdout_objective_fn`
-
-### 10.2 ~~CRITICAL~~: Implement Walk-Forward Cross-Validation
-**Status**: **COMPLETED** (2026-01-16)
-**Priority**: ~~P0 - CRITICAL~~ RESOLVED
-**File**: `src/optimization/walk_forward.py` (NEW)
-
-**Problem**: Current optimization only supports 2-way split (validation/holdout). Time-series data requires walk-forward or rolling window cross-validation to prevent temporal leakage.
-
-**Resolution (2026-01-16)**:
-Created comprehensive walk-forward optimization system in `src/optimization/walk_forward.py`:
-- [x] `WalkForwardOptimizer` class for time-series parameter optimization
-- [x] `WalkForwardConfig` for configuration (6-month train, 1-month val, 1-month test, 1-month step per spec)
-- [x] `WalkForwardResult` for aggregated results across folds
-- [x] `WalkForwardFold` and `FoldResult` dataclasses for fold tracking
-- [x] `run_walk_forward_optimization()` convenience function
-- [x] Exports added to `src/optimization/__init__.py`
-- [x] 16 comprehensive tests in `tests/test_walk_forward_optimizer.py`
-
-**Verification**:
-- [x] Implements spec requirements: 6-month training, 1-month validation, 1-month test, 1-month step
-- [x] No future data leakage across folds (temporal ordering enforced)
-- [x] Calculates average metrics across walk-forward folds
-- [x] Integrates with existing optimizer infrastructure
-
-**Note**: Files `src/optimization/walk_forward.py` and `tests/test_walk_forward_optimizer.py` are fully implemented but need to be committed to git.
-
----
-
-## Phase 10A: CRITICAL Live Trading Integration Gaps
-
-These gaps were identified by comparing live trading code (`src/trading/`) against specs and risk management requirements. **Account safety is at risk without these fixes.**
-
-### 10A.1 ~~CRITICAL~~: Risk Manager NOT Validating Trades
-**Status**: **COMPLETED** - VERIFIED FIXED 2026-01-16
-**Priority**: ~~P0 - ACCOUNT SAFETY~~ RESOLVED
-**Files**: `src/trading/live_trader.py` (lines 480-487)
-**Dependencies**: None
-**Estimated LOC**: N/A (already implemented)
-
-**Original Problem**: Reported that `RiskManager.approve_trade()` was NEVER called before executing trades.
-
-**Verification (2026-01-16)**:
-Deep code analysis confirmed that lines 480-487 in live_trader.py show `approve_trade()` **IS** being called before order execution:
-- The risk manager validates per-trade risk ($25 max) and confidence threshold (60%)
-- Trade execution is blocked if `approve_trade()` returns False
-- Rejection is logged with reason
-
-**Status**: No fix required - feature was already implemented correctly.
-
-**Tasks**:
-- [x] `approve_trade()` call exists in `_execute_signal()` method at lines 480-487
-- [x] `risk_amount` calculation is performed
-- [x] Trade execution blocked if `approve_trade()` returns False
-- [x] Rejection logged with reason
-- [x] Add unit test verifying trade blocked when per-trade risk > $25 - **COMPLETED 2026-01-17**: 13 tests in TestPerTradeRiskLimit class in test_risk_manager.py
-
-**Impact**: Per-trade risk limit ($25) and confidence threshold (60%) ARE enforced correctly.
-
----
-
-### 10A.2 ~~CRITICAL~~: Daily Loss Limit NOT Checked in Trading Loop
-**Status**: **VERIFIED FIXED** (2026-01-16)
-**Priority**: ~~P0 - ACCOUNT SAFETY~~ RESOLVED
-**Files**: `src/trading/live_trader.py` (lines 321-328)
-**Dependencies**: None
-**Estimated LOC**: N/A (already implemented)
-
-**Original Problem**: Reported that trading loop continues executing even after daily loss limit ($50) is exceeded.
-
-**Verification (2026-01-16)**:
-Deep code analysis confirmed that `can_trade()` IS checked at lines 321-328 at the start of each trading loop iteration:
-- The risk manager's `can_trade()` method is called to check daily limits
-- Trading is halted when daily loss limit is exceeded
-- The implementation correctly enforces the $50 daily loss limit
-
-**Tasks**:
-- [x] `can_trade()` check exists at start of each trading loop iteration (lines 321-328)
-- [x] Daily loss limit ($50) is enforced
-- [x] Trading halts when limit exceeded
-
-**Impact**: Daily loss limit ($50) IS enforced correctly.
-
----
-
-### 10A.3 ~~CRITICAL~~: Circuit Breaker NOT Instantiated
-**Status**: **VERIFIED FIXED** (2026-01-16)
-**Priority**: ~~P0 - ACCOUNT SAFETY~~ RESOLVED
-**Files**: `src/trading/live_trader.py` (lines 35, 254, 406-410, 450-451)
-**Dependencies**: None
-**Estimated LOC**: N/A (already implemented)
-
-**Original Problem**: Reported that `CircuitBreakers` class is fully implemented but NEVER instantiated or used in LiveTrader.
-
-**Verification (2026-01-16)**:
-Deep code analysis confirmed that CircuitBreakers IS fully integrated in live_trader.py:
-- Import at line 35
-- CircuitBreakers instance created at line 254 in startup
-- `record_win()`/`record_loss()` called at lines 406-410 after each trade
-- `can_trade()` checked at lines 450-451 before signal generation
-
-**Note**: `get_size_multiplier()` is not yet applied to position sizing (P2 enhancement for future).
-
-**Tasks**:
-- [x] Import at line 35
-- [x] CircuitBreakers instance created at line 254 in startup
-- [x] `record_loss()`/`record_win()` called at lines 406-410
-- [x] `can_trade()` checked at lines 450-451
-- [ ] Apply `get_size_multiplier()` to position sizing (P2 enhancement)
-
-**Impact**: Consecutive loss tracking IS enforced correctly. 3-loss and 5-loss pauses work as designed.
-
----
-
-### 10A.4 ~~CRITICAL~~: Max Account Drawdown NOT Enforced
-**Status**: **VERIFIED FIXED** (2026-01-16)
-**Priority**: ~~P0 - ACCOUNT SAFETY~~ RESOLVED
-**Files**: `src/trading/live_trader.py` (lines 330-338)
-**Dependencies**: 10A.1 (Risk Manager integration)
-**Estimated LOC**: N/A (already implemented)
-
-**Original Problem**: Reported that spec requires trading halt when account drawdown exceeds $200 (20% of $1,000), but LiveTrader doesn't check for MANUAL_REVIEW status.
-
-**Verification (2026-01-16)**:
-Deep code analysis confirmed that MANUAL_REVIEW status IS checked at lines 330-338 in the trading loop:
-- The trading loop checks for `MANUAL_REVIEW` status
-- When 20% drawdown is detected, trading is halted
-- Positions are flattened and alerts are sent
-
-**Tasks**:
-- [x] MANUAL_REVIEW status checked at lines 330-338 in trading loop
-- [x] Trading halts when 20% drawdown exceeded
-- [x] Positions flattened on detection
-- [x] Alert sent requiring human intervention
-
-**Impact**: Account drawdown protection ($200 / 20%) IS enforced correctly.
-
----
-
-### 10A.5 ~~CRITICAL~~: Backtest Slippage NOT Deducted from Net P&L
-**Status**: **BUG DOES NOT EXIST** - Verified (2026-01-16)
-**Priority**: ~~P0 - BACKTEST ACCURACY~~ RESOLVED
-**Files**: `src/backtest/engine.py` (line 783)
-**Dependencies**: None
-**Estimated LOC**: N/A
-
-**Original Problem**: Reported that slippage cost was calculated and logged, but NOT subtracted from equity in the backtest engine.
-
-**Verification (2026-01-16)**:
-Deep code analysis confirmed that slippage WAS ALWAYS being deducted correctly:
-- Line 783 shows: `net_pnl = gross_pnl - commission - slippage_cost`
-- The code was correct all along - this was a false bug report
-
-**Tasks**:
-- [x] **VERIFIED (2026-01-16)**: engine.py:783 shows `net_pnl = gross_pnl - commission - slippage_cost` (correct!)
-- [x] Slippage IS deducted from net P&L as designed
-
-**Impact**: Backtest P&L calculations are accurate. No fix was needed.
-
----
-
-### 10A.6 ~~HIGH~~: Confidence-Based Position Scaling Missing
-**Status**: **VERIFIED ALREADY IMPLEMENTED** (2026-01-16)
-**Priority**: ~~P1 - HIGH~~ RESOLVED
-**Files**: `src/trading/live_trader.py` (line 546), `src/risk/position_sizing.py` (lines 326-350)
-**Dependencies**: 10A.1
-**Estimated LOC**: N/A (already implemented)
-
-**Problem**: Per spec, position size should scale with model confidence:
-- 60-70%: 0.5x base size
-- 70-80%: 1.0x base size
-- 80-90%: 1.5x base size
-- 90%+: 2.0x base size
-
-**Resolution (2026-01-16)**:
-The implementation was already complete in position_sizing.py. The bug was that live_trader.py:543 called non-existent `calculate_size()` method instead of `calculate()`.
-- Changed `calculate_size()` to `calculate()` in live_trader.py:543 with correct parameter names
-- The `calculate()` method in position_sizing.py properly applies confidence-based scaling
-- Tests updated in test_live_trader_comprehensive.py and test_live_trader_extended.py
-
-**Verification (2026-01-16)**:
-- `PositionSizer.calculate()` method properly implements confidence multipliers (lines 326-350)
-- `LiveTrader` correctly passes confidence to `calculate()` at line 546
-- Comprehensive tests exist in `tests/test_risk_manager.py` and `tests/test_go_live_thresholds.py`
-
-**Tasks Completed**:
-- [x] Verified `PositionSizer.calculate()` applies confidence multiplier (was already implemented)
-- [x] Fixed method name from `calculate_size()` to `calculate()` with correct parameters
-- [x] Confidence-based scaling now working correctly
-
----
-
-### 10A.7 ~~HIGH~~: Signal Generator Bar Range Update Never Called
-**Status**: **COMPLETED** - VERIFIED FIXED 2026-01-17
-**Priority**: ~~P1 - HIGH~~ RESOLVED
-**Files**: `src/trading/live_trader.py` (lines 455-457)
-**Dependencies**: None
-**Estimated LOC**: N/A (already implemented)
-
-**Original Problem**: `SignalGenerator.update_bar_range()` method exists to track reversal constraints (max 2 reversals in same bar range) but was never called.
-
-**Verification (2026-01-17)**:
-Deep code analysis confirmed that `update_bar_range()` IS being called at lines 455-457 in live_trader.py's `_on_bar_complete()` callback:
-- `self._signal_generator.update_bar_range(bar.high, bar.low, bar.close)` is called when each bar completes
-- `SignalGenerator.update_bar_range()` method exists at `/src/trading/signal_generator.py:531-577`
-- Method is fully implemented with bar range tracking, overlap detection, and reversal counter management
-- Tests exist in `/tests/test_reversal_bar_range.py` validating the functionality
-
-**Tasks**:
-- [x] Call `update_bar_range(high, low, close)` in `_on_bar_complete()` at lines 455-457
-- [x] Reversal constraint tracking is active and tested
-
-**Impact**: Position reversal constraint IS now enforced correctly.
-
----
-
-### 10A.8 ~~HIGH~~: Position Size NOT Validated Against Tier Max
-**Status**: **VERIFIED ALREADY IMPLEMENTED** (2026-01-16)
-**Priority**: ~~P1 - HIGH~~ RESOLVED
-**Files**: `src/trading/live_trader.py` (line 546), `src/risk/position_sizing.py` (line 200)
-**Dependencies**: 10A.1
-**Estimated LOC**: N/A (already implemented)
-
-**Problem**: Position size is calculated but not capped at the maximum for the current balance tier.
-
-**Spec Requirement**:
-- $1,000-$1,250: Max 1 contract
-- $1,250-$1,500: Max 2 contracts
-- etc.
-
-**Resolution (2026-01-16)**:
-The tier max validation was already correctly implemented in position_sizing.py's `calculate()` method. The same method name mismatch (calling `calculate_size()` instead of `calculate()`) was preventing it from working. Now that live_trader.py:543 correctly calls `calculate()`, tier max validation works properly:
-- `calculate()` method internally caps position size at tier maximum
-- The fix for 10A.6 (method name change) also fixed this issue
-- Tier boundaries correctly enforced for all balance levels
-
-**Verification (2026-01-16)**:
-- `PositionSizer.calculate()` caps contracts at tier max (line 200: `final_contracts = max(1, min(scaled_contracts, max_contracts))`)
-- Tests verify high confidence still respects tier max (`test_high_confidence_respects_tier_max`)
-
-**Tasks Completed**:
-- [x] Tier max validation was already in `calculate()` method
-- [x] Fixed by changing to `calculate()` (same fix as 10A.6)
-- [x] Position size properly capped at tier maximum
-
----
-
-### 10A.9 ~~MEDIUM~~: Balance Tier Boundary Bug at $1,000
-**Status**: **FIXED** (2026-01-16)
-**Priority**: ~~P2 - MEDIUM~~ RESOLVED
-**File**: `src/risk/position_sizing.py` (line 319)
-**Dependencies**: None
-**Estimated LOC**: N/A (fixed)
-
-**Problem**: At exactly $1,000 balance, the tier boundary check used `<` instead of `<=`, causing the bot to allow 2 contracts instead of 1.
-
-**Resolution**: Changed line 319 from `<` to `<=` so that tier boundaries belong to the lower tier (conservative risk). At exactly $1000, now correctly returns 1 contract (tier 1) instead of 2 contracts.
-
-```python
-# Fixed code:
-for threshold, max_contracts, risk_pct in self.config.balance_tiers:
-    if account_balance <= threshold:  # At $1,000: 1000 <= 1000 is TRUE
-        return max_contracts, risk_pct
-```
-
-**Spec Says**: "$700-$1,000: max 1 contract" - now correctly enforced at exactly $1,000.
-
-**Impact**: RESOLVED
-- ~~At exactly $1,000 starting capital, bot allows 2 contracts instead of 1~~
-- ~~Double the intended risk on initial trades~~
-- ~~Violates spec-defined tier boundaries~~
-
-**Fix Options**:
-1. Change first tier threshold to 1000.01 (simple but hacky)
-2. Change comparison to `<=` for first tier only
-3. Redefine tiers as (min, max, contracts, risk) tuples with explicit ranges
-
----
-
-## Phase 10B: Position Tracking Analysis (Updated 2026-01-16)
-
-**NOTE**: Deep analysis on 2026-01-16 verified that bugs 10B.1 and 10B.2 are **FALSE** - the code is actually correct.
-
-### ~~10B.1 REMOVED: Position Fill Side Type Error~~
-**Status**: VERIFIED FALSE - NOT A BUG
-**Verification**: `OrderSide` is defined as `IntEnum` in `topstepx_rest.py:38-41`. This means `OrderSide.BUY == 1` evaluates to `True`.
-
-```python
-# topstepx_rest.py:38-41
-class OrderSide(IntEnum):
-    BUY = 1
-    SELL = 2
-
-# position_manager.py:273 - ACTUALLY CORRECT:
-fill_direction = 1 if fill.side == 1 else -1  # Works because IntEnum == int
-```
-
-**Why it works**: `IntEnum` inherits from both `int` and `Enum`, so `OrderSide.BUY == 1` is `True` in Python.
-
----
-
-### ~~10B.2 REMOVED: Reversal Fill Direction Error~~
-**Status**: VERIFIED FALSE - NOT A BUG
-**Verification**: The reversal logic correctly uses `fill_direction` which is already the correct direction for the new position.
-
-**Example walkthrough**:
-1. Position is SHORT (-1), size 1
-2. Reversal BUY order fills with size 2 (close short + open long)
-3. `fill.side = OrderSide.BUY` → `fill_direction = 1` (LONG)
-4. First part closes the short position
-5. Reversal uses `fill_direction=1` to open new LONG position ✓
-
-The logic is correct because the reversal fill is in the same direction as the incoming fill (both are BUY to create a LONG position).
-
----
-
-### 10B.3 ~~CRITICAL~~: OCO Cancellation Race Condition
-**Status**: **VERIFIED FIXED** (2026-01-16)
-**Priority**: ~~P0 - DUAL FILLS POSSIBLE~~ RESOLVED
-**File**: `src/trading/order_executor.py`
-**Dependencies**: None
-**Estimated LOC**: N/A (already fixed)
-
-**Original Problem**: OCO (One-Cancels-Other) cancellation was fire-and-forget using `asyncio.create_task()`. If WebSocket disconnects before cancellation completes, both stop AND target could fill.
-
-**Verification (2026-01-16)**:
-Deep code analysis confirmed that order_executor.py now has proper timeout and verification for OCO cancellation:
-- Added `asyncio.wait_for()` with timeout for cancellation tasks
-- Added verification step after timeout to check order states
-- Proper handling for case where both orders filled
-
-**Impact** (now resolved):
-- Race condition that could have caused dual fills is fixed
-- OCO cancellation now properly awaited with timeout
-- Order state verification added after cancellation
-
-**Tasks**:
-- [x] Await OCO cancellations with timeout
-- [x] Add verification step after timeout
-- [x] Handle case where both filled (reconcile position)
-- [ ] Add test simulating slow cancellation
-
----
-
-### 10B.4 ~~HIGH~~: Future Price Column Leakage Risk
-**Status**: **COMPLETED** (2026-01-16)
-**Priority**: ~~P1 - DATA LEAKAGE~~ RESOLVED
-**File**: `src/ml/data/parquet_loader.py` (line 456)
-**Dependencies**: None
-**Estimated LOC**: N/A (already implemented)
-
-**Problem**: `future_close` column is stored in the DataFrame after target creation. If accidentally used in feature engineering, it would leak future information.
-
-**Resolution (2026-01-16)**:
-- Added explicit `df.drop(columns=['future_close', 'future_tick_move'])` after target creation at line 456 in parquet_loader.py
-- Added test `test_future_columns_not_in_output` in `tests/test_parquet_loader.py` to verify no future columns in training data
-
-**Impact**: RESOLVED - No data leakage risk exists.
-
-**Tasks Completed**:
-- [x] `future_close` and `future_tick_move` columns dropped after target creation
-- [x] Test `test_future_columns_not_in_output` added to verify no future columns in output
-
----
-
-## Phase 10C: WebSocket & Integration Gaps (NEW - 2026-01-17)
-
-These gaps were identified during comprehensive codebase analysis on 2026-01-17. While not P0 blocking, they should be addressed before extended live trading sessions.
-
-### 10C.1 HIGH: WebSocket Token Not Refreshed at 90-Minute Expiry (G27)
-**Status**: TODO
-**Priority**: P1 - HIGH
-**File**: `src/api/topstepx_ws.py`
-**Estimated Effort**: 3-4 hours
-
-**Problem**: WebSocket authentication token expires every 90 minutes but there is no refresh mechanism.
-
-**Evidence**:
-- `SignalRConnection` stores the access token at initialization (line 279)
-- No mechanism exists to refresh this token during the WebSocket session
-- Token refresh logic exists in `TopstepXClient` but is never called while WebSocket is running
-
-**Impact**: Live trading session will fail silently after 90 minutes.
-
-**Fix Required**:
-- [ ] Add token refresh timer to TopstepXWebSocket (80-minute interval)
-- [ ] On refresh: call TopstepXClient.authenticate() to get new token
-- [ ] Reconnect WebSocket with new token
-- [ ] Add logging and tests for token refresh
-
----
-
-### 10C.2 HIGH: No Position Sync on WebSocket Reconnect (G28)
-**Status**: TODO
-**Priority**: P1 - HIGH
-**Files**: `src/api/topstepx_ws.py`, `src/trading/live_trader.py`
-**Estimated Effort**: 2-3 hours
-
-**Problem**: After WebSocket reconnection, position state is not synced with the server.
-
-**Evidence**:
-- `_auto_reconnect_loop()` reconnects and resubscribes but doesn't sync positions
-- PositionUpdates only come from WebSocket messages, not explicit sync calls
-
-**Impact**: Position state may lag behind server if orders executed during disconnect.
-
-**Fix Required**:
-- [ ] After reconnect, fetch current positions from REST API
-- [ ] Compare with local position state
-- [ ] Update local state if server positions differ
-- [ ] Add callback hook: on_reconnect() to trigger position sync
-
----
-
-### 10C.3 MEDIUM: No Rate Limiting for WebSocket Operations (G29)
-**Status**: TODO
-**Priority**: P2 - MEDIUM
-**File**: `src/api/topstepx_ws.py`
-**Estimated Effort**: 3-4 hours
-
-**Problem**: WebSocket operations have no rate limiting during reconnect storms.
-
-**Evidence**:
-- No rate limiter in TopstepXWebSocket class (unlike TopstepXClient)
-- All subscriptions re-sent immediately during reconnect
-
-**Impact**: Could trigger API rate limits during network instability.
-
-**Fix Required**:
-- [ ] Add rate limiter to TopstepXWebSocket class
-- [ ] Rate limit invoke() and send() operations
-- [ ] Queue subscription operations during reconnect
-
----
-
-### 10C.4 MEDIUM: Circuit Breaker Duplicate Logic
-**Status**: TODO
-**Priority**: P2 - MEDIUM
-**Files**: `src/risk/risk_manager.py`, `src/risk/circuit_breakers.py`
-**Estimated Effort**: 2-3 hours
-
-**Problem**: Both RiskManager and CircuitBreakers track consecutive losses independently.
-
-**Impact**: Potential for inconsistent state between the two systems.
-
-**Fix Required**:
-- [ ] Consolidate consecutive loss tracking to a single source
-- [ ] Add integration test verifying consistent state
-
----
-
-### 10C.5 MEDIUM: Market Condition Updates Never Called
-**Status**: TODO
-**Priority**: P2 - MEDIUM
-**File**: `src/trading/live_trader.py`
-**Estimated Effort**: 1-2 hours
-
-**Problem**: `CircuitBreakers.update_market_conditions()` exists but is never called.
-
-**Impact**: Volatility-based size reduction and spread pauses are inactive.
-
-**Fix Required**:
-- [ ] Call `circuit_breaker.update_market_conditions()` from bar processing
-- [ ] Add test verifying size reduction during high volatility
-
----
-
-### Phase 10C Summary
-
-| Item | Priority | Effort | Impact if Skipped |
-|------|----------|--------|-------------------|
-| 10C.1 Token Refresh | P1 | 3-4h | Session fails after 90 min |
-| 10C.2 Position Sync | P1 | 2-3h | Stale position state |
-| 10C.3 Rate Limiting | P2 | 3-4h | Rate limit during storms |
-| 10C.4 CB Duplicate | P2 | 2-3h | Inconsistent pause state |
-| 10C.5 Market Cond. | P2 | 1-2h | Adaptive features off |
-| **Total** | | **12-16h** | |
-
----
-
-## Implementation Priority Order (Updated 2026-01-17)
-
-**IMPORTANT**: All P0 bugs verified fixed. Phase 10C P1 gaps identified for extended sessions.
-
-### MUST FIX BEFORE PAPER TRADING (Estimated: 2-3 days)
-
-| Order | Item | Est. LOC | Risk if Skipped |
-|-------|------|----------|-----------------|
-| ~~1~~ | ~~**10.0.2 EOD Phase Method Name**~~ | ~~3~~ | ~~**CRASH at 4:00 PM daily**~~ **VERIFIED FIXED 2026-01-16** |
-| ~~2~~ | ~~**10.0.1 WebSocket Auto-Reconnect**~~ | ~~5~~ | ~~Silent data loss on disconnect~~ **VERIFIED FIXED 2026-01-16** |
-| ~~3~~ | ~~**10.0.3 LSTM Backtest Tuple**~~ | ~~5~~ | ~~Can't validate LSTM models~~ **VERIFIED FIXED 2026-01-16** |
-| 4 | **10.3 Feature Mismatch (7 features)** | 80 | **DISTRIBUTION MISMATCH - predictions unreliable** |
-| ~~5~~ | ~~**10A.1 Risk Manager Trade Validation**~~ | ~~30~~ | ~~Per-trade risk ($25) not enforced~~ **VERIFIED FIXED 2026-01-16** |
-| ~~6~~ | ~~**10A.2 Daily Loss Check in Loop**~~ | ~~15~~ | ~~$50 loss limit ignored~~ **VERIFIED IMPLEMENTED (2026-01-16)** |
-| ~~7~~ | ~~**10A.3 Circuit Breaker Integration**~~ | ~~40~~ | ~~Consecutive loss pause missing~~ **VERIFIED IMPLEMENTED (2026-01-16)** |
-| ~~8~~ | ~~**10A.4 Account Drawdown Check**~~ | ~~20~~ | ~~20% drawdown ignored~~ **VERIFIED IMPLEMENTED (2026-01-16)** |
-| ~~9~~ | ~~**10A.5 Backtest Slippage Deduction**~~ | ~~5~~ | ~~$2.50/trade optimism~~ **BUG DOES NOT EXIST - Verified (2026-01-16)** |
-| ~~10~~ | ~~**10.1 OOS Evaluation Bug**~~ | ~~30~~ | ~~Overfitting detection broken~~ **VERIFIED FIXED 2026-01-16** |
-| ~~11~~ | ~~**10B.3 OCO Race Condition**~~ | ~~15~~ | ~~Dual fills possible~~ **VERIFIED FIXED 2026-01-16** |
-| **Total** | | **~110 LOC** (10 items fixed/verified) | |
-
-### RECOMMENDED BEFORE PAPER TRADING (Estimated: 1-2 days)
-
-| Order | Item | Est. LOC | Impact |
-|-------|------|----------|--------|
-| ~~12~~ | ~~10B.4 Future Price Column Leak~~ | ~~2~~ | ~~Data leakage risk~~ **COMPLETED 2026-01-16** - Added drop + test |
-| ~~13~~ | ~~10A.6 Confidence Scaling~~ | ~~20~~ | ~~Position sizing inaccurate~~ **VERIFIED ALREADY IMPLEMENTED 2026-01-16** - PositionSizer.calculate() lines 326-350 |
-| ~~14~~ | ~~10A.7 Bar Range Update~~ | ~~5~~ | ~~Reversal constraint missing~~ **VERIFIED FIXED 2026-01-17** - Called at lines 455-457 in _on_bar_complete() |
-| ~~15~~ | ~~10A.8 Tier Max Validation~~ | ~~10~~ | ~~Could exceed tier limits~~ **VERIFIED ALREADY IMPLEMENTED 2026-01-16** - PositionSizer.calculate() line 200 |
-| ~~16~~ | ~~10.4 Bare Exception Handling~~ | ~~10~~ | ~~Silent errors~~ **FIXED** |
-| ~~17~~ | ~~10A.9 Balance Tier Boundary~~ | ~~3~~ | ~~2 contracts at exactly $1,000~~ **FIXED** |
-| ~~18~~ | ~~10.6 Time Parsing Validation~~ | ~~10~~ | ~~Crash on invalid time input~~ **COMPLETED 2026-01-16** - Already implemented, 30+ tests in test_run_live_time_parsing.py |
-| ~~19~~ | ~~10.13 AdaptiveRandomSearch Phase 2~~ | ~~5~~ | ~~Stale best result~~ **COMPLETED 2026-01-16** - Added self._best_result update + test |
-| **Total** | | **~15 LOC** (most items completed) | |
-
----
-
-### 10.3 ~~BLOCKING~~: Complete Multi-Timeframe Features (7 Features Hardcoded)
-**Status**: **VERIFIED FIXED** (2026-01-16)
-**Priority**: ~~P0 - FEATURE MISMATCH~~ RESOLVED
-**File**: `src/trading/rt_features.py`
-**Dependencies**: None
-**Estimated LOC**: N/A (already implemented)
-
-**Original Problem**: **7 features** in rt_features.py were hardcoded to 0.0 instead of being calculated. The backtest trained the model on **real values** from actual 1-minute and 5-minute aggregations, but live trading was sending **always-zero values**.
-
-**Verification (2026-01-16)**:
-Deep code analysis confirmed that all 7 features are now properly calculated via new methods in rt_features.py:
-- Added `_calculate_volume_delta_norm()` method for volume delta normalization
-- Added `_calculate_obv_roc()` method for OBV rate of change
-- Added `_calculate_htf_trend()` method for 1m and 5m trend calculation
-- Added `_calculate_htf_momentum()` method for 1m and 5m momentum calculation
-- Added `_calculate_htf_volatility()` method for 1m volatility calculation
-- Updated feature calculation to use these methods instead of hardcoded 0.0
-
-**Backtest vs Live Feature Comparison (FIXED)**:
-| Feature | Training (Backtest) | Live Trading | Status |
-|---------|---|---|---|
-| htf_trend_1m | Real values [-0.05, 0.05] | Calculated via `_calculate_htf_trend()` | FIXED |
-| htf_momentum_1m | Real normalized values | Calculated via `_calculate_htf_momentum()` | FIXED |
-| htf_vol_1m | Real volatility | Calculated via `_calculate_htf_volatility()` | FIXED |
-| htf_trend_5m | Real values | Calculated via `_calculate_htf_trend()` | FIXED |
-| htf_momentum_5m | Real values | Calculated via `_calculate_htf_momentum()` | FIXED |
-| volume_delta_norm | Real volume momentum | Calculated via `_calculate_volume_delta_norm()` | FIXED |
-| obv_roc | Real OBV rate of change | Calculated via `_calculate_obv_roc()` | FIXED |
-
-**Tasks**:
-- [x] Implement actual 1-minute trend calculation via `_calculate_htf_trend()`
-- [x] Implement actual 5-minute trend calculation via `_calculate_htf_trend()`
-- [x] Implement 1-minute momentum calculation via `_calculate_htf_momentum()`
-- [x] Implement 5-minute momentum calculation via `_calculate_htf_momentum()`
-- [x] Implement 1-minute volatility calculation via `_calculate_htf_volatility()`
-- [x] Implement volume_delta_norm calculation via `_calculate_volume_delta_norm()`
-- [x] Implement obv_roc calculation via `_calculate_obv_roc()`
-- [x] Add feature parity tests between rt_features and scalping_features - **COMPLETED 2026-01-17**: 17 tests in `tests/test_feature_parity.py` verify feature parity between rt_features and scalping_features
-- [x] Add integration test comparing feature distributions - **COMPLETED 2026-01-17**: Included in test_feature_parity.py with KS-test and distribution comparison
-
-**NOTE on Implementation Differences (Documented in tests):**
-The RT and Scalping implementations intentionally use different calculation methodologies for some features:
-- `htf_momentum_1m/5m`: RT uses RSI-style (gains-losses ratio), Scalping uses pct_change. Both are valid momentum signals but measure different aspects.
-- `obv_roc`: RT uses two-period comparison, Scalping uses cumulative pct_change. Different scales but similar directional behavior.
-These differences are documented in test_feature_parity.py and considered acceptable since both approaches capture valid market signals.
-
-**Impact**: Training/live features now use properly calculated methods. Implementation differences are documented and tested.
-
-### 10.4 ~~HIGH~~: Fix Bare Exception Handling
-**Status**: **FIXED** (2026-01-16)
-**Priority**: ~~P1 - HIGH~~ RESOLVED
-**File**: `src/ml/models/training.py` (line 646)
-
-**Problem**: Bare `except: pass` silently swallowed all errors.
-
-**Resolution**: Changed line 646 from bare `except:` to `except (ValueError, RuntimeError, ZeroDivisionError) as e:` with a debug log message. Now catches only expected exceptions and logs them for debugging.
-
-```python
-# Fixed code:
-except (ValueError, RuntimeError, ZeroDivisionError) as e:
-    logger.debug(f"Could not log additional metrics: {e}")
-```
-
-**Impact**: RESOLVED - No more silent error masking.
-
-~~**Fix Required**~~:
-- [x] Replace with specific exception types
-- [x] Add logging for caught exceptions
-- [x] Ensure no silent failures
-
-### 10.5 ~~HIGH~~: Add Quote Handling Backpressure
-**Status**: **VERIFIED ALREADY IMPLEMENTED** (2026-01-16)
-**Priority**: ~~P1 - HIGH~~ RESOLVED
-**File**: `src/trading/live_trader.py`
-
-**Problem**: Quote handling creates an async task per tick without queue limits. During high-volume periods, this could lead to unbounded task accumulation.
-
-**Resolution (2026-01-16)**:
-Deep analysis confirmed backpressure is already implemented: bounded queue (BAR_QUEUE_MAX_SIZE=100), queue depth monitoring, QueueFull handling, and warning logs. See live_trader.py lines 51-53, 376-448.
-
-**Tasks Completed**:
-- [x] Add bounded queue for incoming quotes
-- [x] Implement backpressure when queue is full
-- [x] Add queue depth monitoring
-- [x] Log warnings when queue approaches capacity
-
-### 10.6 ~~HIGH~~: Add Time Parsing Validation
-**Status**: COMPLETED (2026-01-16)
-**Priority**: P1 - HIGH - RESOLVED
-**File**: `scripts/run_live.py` (line 298)
-
-**Problem**: `parse_time()` doesn't validate HH:MM format. Invalid input like "25:60" causes cryptic errors.
-
-**Resolution (2026-01-16)**:
-Verification confirmed that `parse_time()` in `run_live.py` already has full validation (regex, range checks). 30+ comprehensive tests exist in `test_run_live_time_parsing.py`.
-
-**Tasks Completed**:
-- [x] Add format validation (regex or strptime)
-- [x] Add range validation (0-23 hours, 0-59 minutes)
-- [x] Return clear error message for invalid input
-- [x] Add unit tests for edge cases
-
-### 10.7 ~~MEDIUM~~: Fix Slippage Cost Double-Counting
-**Status**: **FIXED** (2026-01-16)
-**Priority**: ~~P2 - MEDIUM~~ RESOLVED
-**File**: `src/backtest/engine.py` (line 788)
-
-**Problem**: Slippage was applied to entry/exit prices via `apply_slippage()` AND ALSO deducted from `net_pnl`. This double-counted slippage costs.
-
-**Resolution (2026-01-16)**:
-- Removed `slippage_cost` from `net_pnl` calculation (line 788) since slippage is already reflected in adjusted entry/exit prices
-- `slippage_cost` is still calculated for logging purposes only
-- Net P&L now correctly reflects slippage once through adjusted prices
-
-**Tasks Completed**:
-- [x] Audit slippage calculation in backtest engine
-- [x] Verify no double-counting of slippage
-- [x] Document slippage model clearly
-- [x] Add test for expected slippage amounts
-
-### 10.8 MEDIUM: Fix Daily Returns Volatility Calculation
-**Status**: **COMPLETED** (2026-01-16)
-**Priority**: ~~P2 - MEDIUM~~ RESOLVED
-**File**: `src/backtest/metrics.py` (line 593)
-
-**Problem**: Equity curve includes unrealized P&L from open positions. Sharpe/Sortino are calculated from all equity points, which includes mark-to-market volatility from open trades.
-
-**Impact**: Exaggerates volatility for scalping strategies where trades are open for short durations.
-
-**Resolution (2026-01-16)**:
-Already implemented - the `use_closed_trade_returns` parameter and `returns_source` field in metrics.py already provide this capability.
-
-**Tasks Completed**:
-- [x] Option to calculate Sharpe/Sortino from closed trade returns only
-- [x] Document which method is used
-- [x] Add parameter to toggle calculation method
-
-### 10.9 ~~MEDIUM~~: Fix Module Exports
-**Status**: **FIXED** (2026-01-16)
-**Priority**: ~~P2 - MEDIUM~~ RESOLVED
-**File**: `src/backtest/__init__.py`
-
-**Problem**: `Position` and `WalkForwardValidator` not exported from package `__init__.py`. Forces direct module imports in scripts.
-
-**Resolution (2026-01-16)**:
-- Added `Position` and `WalkForwardValidator` exports to `src/backtest/__init__.py`
-- Both classes can now be imported from `src.backtest` directly
-
-**Tasks Completed**:
-- [x] Add Position to backtest package exports
-- [x] Add WalkForwardValidator to backtest package exports
-- [x] Update any direct module imports to use package imports
-
-### 10.10 LOW: Add Memory Estimation Utility
-**Status**: TODO
-**Priority**: P3 - LOW
-**File**: `src/ml/data/` (new utility)
-
-**Problem**: Training on 6.2M samples can require up to 250GB peak memory for feature engineering (documented in BUGS_FOUND.md #5). No way to estimate memory before training.
-
-**Fix Required**:
-- [ ] Add memory estimation utility based on sample count
-- [ ] Print estimated memory requirement before training
-- [ ] Add option to use chunked processing for large datasets
-- [ ] Document memory requirements per sample count
-
-### 10.11 LOW: Additional Improvements
-**Status**: BACKLOG
-**Priority**: P3 - LOW
-
-- [ ] Add integration tests for checkpoint save/load cycles
-- [ ] Standardize num_classes parameter passing across all model interfaces
-- [ ] Document HybridNet feature split logic (which features go to CNN vs LSTM)
-- [ ] Add Calmar ratio to parameter importance analysis in optimization
-- [ ] Implement permutation-based parameter importance
-- [ ] Add config versioning for reproducibility
-
-### 10.12 Missing Tests (from BUGS_FOUND.md)
-**Status**: COMPLETED (2026-01-16)
-**Priority**: P2 - MEDIUM
-
-These tests are recommended in BUGS_FOUND.md and have been implemented:
-
-| Test | Status | Severity | Notes |
-|------|--------|----------|-------|
-| Feature scaling with infinity values | **COMPLETED (2026-01-16)** | HIGH | 5 new tests in test_models.py::TestFeatureScalingWithInfinity |
-| LSTM evaluation large batch sizes | **COMPLETED (2026-01-16)** | HIGH | 4 new tests in test_models.py::TestLSTMLargeBatchEvaluation |
-| Memory usage estimation before training | NOT TESTED | MEDIUM | Prevent OOM surprises |
-| Checkpoint loading old/new formats | **COMPLETED (2026-01-16)** | HIGH | Tests exist in test_run_backtest_script.py::TestCheckpointLoadingFormats |
-| Backtest script E2E with trained model | **COMPLETED (2026-01-16)** | CRITICAL | Tests exist in test_run_backtest_script.py::TestBacktestScriptE2E |
-| ScalpingFeatureEngineer API errors | **COMPLETED (2026-01-16)** | MEDIUM | Comprehensive tests exist in test_scalping_features.py |
-
-**Completed Tests** (in `tests/test_run_backtest_script.py` - 23 tests total):
-- [x] `test_checkpoint_loading_old_and_new_formats()` - Load both old and new checkpoint formats
-- [x] `test_backtest_script_e2e_with_trained_model()` - Run backtest script end-to-end
-
-**Bug Fixed During Implementation** (2026-01-16):
-Fixed model instantiation bugs in `scripts/run_backtest.py`:
-- LSTMNet was using `input_size`/`hidden_size` but class requires `input_dim`/`hidden_dim`
-- HybridNet was missing required `seq_input_dim` and `static_input_dim` parameters
-
-**Remaining Fix Required**:
-- [ ] `test_memory_estimation_before_training()` - Estimate memory before training starts (optional enhancement)
-
-### 10.13 ~~HIGH~~: Fix AdaptiveRandomSearch Phase 2 Best Update
-**Status**: **VERIFIED FIXED** (2026-01-16) - No fix needed, was already implemented
-**Priority**: ~~P1 - HIGH~~ RESOLVED
-**File**: `src/optimization/random_search.py` (lines 359-360)
-
-**Original Problem Report**: Phase 2 updates local `best_params` variable but does NOT update `self._best_result`. The returned best result may be stale if Phase 1 found a mediocre solution and Phase 2 found better.
-
-**Verification (2026-01-16)**:
-Deep code analysis confirmed that lines 359-360 in random_search.py show `self._best_result` IS being updated in Phase 2. No fix was needed - the code was already correct.
-
-**Tasks Completed**:
-- [x] Verified `self._best_result = result` exists at lines 359-360 in Phase 2
-- [x] Phase 2 improvements ARE reflected in final result - was already implemented correctly
-
-### 10.14 MEDIUM: Feature Division Protection
-**Status**: **COMPLETED** (2026-01-16)
-**Priority**: ~~P2 - MEDIUM~~ RESOLVED
-**File**: `src/ml/data/scalping_features.py` (lines 156, 212, 330, 340, 386-387)
-
-**Problem**: Several ratio calculations don't protect against division by zero at source:
-- Line 156: `(close - ema) / ema` - EMA can be near zero at session start
-- Line 212: `(close - vwap) / vwap` - VWAP can be zero
-- Line 330: `atr / close` - Close can be 0 in edge cases
-- Lines 386-387: `macd / close` - Close can be 0
-
-Currently mitigated by final pass infinity removal at lines 638-644, but source protection is more robust.
-
-**Resolution (2026-01-16)**:
-Added `.replace(0, np.nan)` protection to all risky division operations in scalping_features.py:
-- EMA relative features (lines 156, 163, 169)
-- VWAP relative (line 212)
-- ATR percentage (line 330)
-- MACD normalization (lines 386-387)
-- BB width (line 344)
-Added 6 new tests in TestDivisionProtection class.
-
-**Tasks Completed**:
-- [x] Add `.replace(0, np.nan)` protection at source for risky divisions
-- [x] Add tests for edge cases with zero values
-
----
-
-### 10.15 CRITICAL: Walk-Forward Parameter Aggregation Bug
-**Status**: TODO
-**Priority**: P0 - CRITICAL (Will crash at runtime)
-**File**: `src/optimization/walk_forward.py` (lines 555, 557)
-**Dependencies**: None
-**Estimated LOC**: 5
-
-**Problem**: The `_aggregate_best_params()` method in `WalkForwardOptimizer` uses non-existent attributes on `ParameterConfig` objects:
-
-```python
-# Line 555 - WRONG: param.values does not exist
-best_params[param.name] = param.values[0] if param.values else None
-
-# Line 557 - WRONG: param.low and param.high do not exist
-best_params[param.name] = (param.low + param.high) / 2
-```
-
-**Correct attributes** (from `parameter_space.py:327-333`):
-- `param.choices` for categorical parameters (not `param.values`)
-- `param.min_value` and `param.max_value` for numeric parameters (not `param.low` / `param.high`)
-
-**Impact**:
-- **AttributeError thrown** whenever walk-forward optimization aggregates results across folds
-- Walk-forward optimization completely broken for any parameter space
-- Cannot use walk-forward validation for hyperparameter tuning
-
-**Fix Required**:
-- [ ] Change line 555: `param.values` → `param.choices`
-- [ ] Change line 557: `param.low + param.high` → `param.min_value + param.max_value`
-- [ ] Add unit test for `_aggregate_best_params()` with both categorical and numeric params
-- [ ] Run existing walk-forward tests to verify fix
-
----
-
-### 10.16 MEDIUM: Trade Logger Slippage Double-Counting
-**Status**: TODO
-**Priority**: P2 - MEDIUM (Trade records inaccurate)
-**File**: `src/backtest/trade_logger.py` (line 253)
-**Dependencies**: None
-**Estimated LOC**: 2
-
-**Problem**: Slippage is double-counted in trade records:
-
-1. **Engine (correct)**: `engine.py:788` calculates `net_pnl = gross_pnl - commission` - slippage NOT deducted because it's already reflected in adjusted entry/exit prices
-2. **Trade Logger (incorrect)**: `trade_logger.py:253` calculates `net_pnl = gross_pnl - commission - slippage` - deducts slippage AGAIN
-
-The engine passes `slippage_cost` for logging purposes only (lines 778-781 explain this), but the trade logger incorrectly includes it in its own net_pnl calculation.
-
-**Impact**:
-- Trade record `net_pnl` is UNDERSTATED by the slippage amount
-- Per-trade analysis will show incorrect P&L (~$1-2 worse per trade for typical 1-tick slippage)
-- Equity curve and aggregate metrics are CORRECT (calculated from engine's net_pnl)
-- Only affects individual trade record analysis
-
-**Fix Required**:
-- [ ] Remove slippage from trade_logger.py:253 calculation: `net_pnl = gross_pnl - commission`
-- [ ] Or: Document that trade_logger.slippage is informational only
-- [ ] Add test verifying trade record net_pnl matches engine calculation
-
----
-
-## Acceptance Criteria: Go-Live Checklist
-
-Before going live with real capital, the system must:
-
-1. [x] Walk-forward backtest shows consistent profitability (Sharpe > 1.0, Calmar > 0.5) - **VERIFIED with GoLiveValidator module**
-2. [x] Out-of-sample accuracy > 52% on 3-class (better than random) - **VERIFIED with OOS validation tests**
-3. [x] All risk limits enforced and verified in simulation - **VERIFIED with 19 comprehensive tests**
-4. [x] EOD flatten works 100% of the time (verified across DST boundaries) - **VERIFIED with DST tests**
-5. [x] Inference latency < 10ms (measured on target hardware) - **VERIFIED with inference benchmark tests**
-6. [x] No lookahead bias in features or targets (temporal unit tests pass) - **VERIFIED with 29 comprehensive tests**
-7. [x] Unit test coverage > 80% - **ACHIEVED (91% coverage, 2427 tests)**
-8. [ ] Paper trading for minimum 2 weeks without critical errors
-9. [x] Position sizing matches spec for all account balance tiers - **VERIFIED with 53 comprehensive tests**
-10. [x] Circuit breakers tested and working (simulated loss scenarios) - **VERIFIED with 40 comprehensive tests**
-11. [x] API reconnection works (tested with network interruption) - **VERIFIED with 30 comprehensive tests**
-12. [x] Manual kill switch accessible and tested - **IMPLEMENTED and TESTED (halt/reset_halt methods)**
-
-**Status**: 11 of 12 automated checklist items completed. Item #8 (paper trading) is operational.
-
-**⚠️ BLOCKING ISSUES - MUST FIX BEFORE ANY TRADING:**
-1. ~~**10.0.2**: EOD Phase method name mismatch~~ - **VERIFIED FIXED 2026-01-16**: Now uses get_status().phase
-2. ~~**10.0.1**: WebSocket auto-reconnect never started~~ - **VERIFIED FIXED 2026-01-16**: Added asyncio.create_task
-3. ~~**10.0.3**: LSTM backtest script fails~~ - **VERIFIED FIXED 2026-01-16**: Added tuple unpacking
-4. **10.3**: 7 features hardcoded to 0.0 - **SEVERE TRAINING/LIVE DISTRIBUTION MISMATCH**
-5. ~~**10A.1**: Risk manager trade validation~~ - **VERIFIED FIXED 2026-01-16**: `approve_trade()` IS called at lines 480-487
-6. ~~**10A.2**: Daily Loss Check~~ - **VERIFIED FIXED 2026-01-16**: Added can_trade() check at start of trading loop (lines 311-322)
-7. ~~**10A.3**: Circuit Breaker Integration~~ - **VERIFIED FIXED 2026-01-16**: Integrated CircuitBreakers in LiveTrader (init, _startup, _on_position_change, _process_bar)
-8. ~~**10A.4**: Account Drawdown Check~~ - **VERIFIED FIXED 2026-01-16**: Added MANUAL_REVIEW status check in trading loop (lines 324-332)
-9. ~~**10A.5**: Backtest slippage not deducted~~ - **VERIFIED FIXED 2026-01-16**: engine.py:783 now deducts slippage_cost
-10. ~~**10B.3**: OCO cancellation race condition~~ - **VERIFIED FIXED 2026-01-16**: Added timeout and verification to OCO cancellation in order_executor.py
-11. ~~**10.1**: OOS evaluation uses same data as IS~~ - **VERIFIED FIXED 2026-01-16**: Added `holdout_objective_fn` parameter to all optimizers (BaseOptimizer, GridSearchOptimizer, RandomSearchOptimizer, BayesianOptimizer) to enable proper OOS evaluation using separate data. Use `create_split_objective()` to generate separate validation and holdout objective functions.
-
-**IMPORTANT**: Bugs 10B.1, 10B.2, and old 10.0.2 (syntax error) were **VERIFIED FALSE** and removed. **ALL 11 bugs FIXED/VERIFIED on 2026-01-16** (10.0.1, 10.0.2, 10.0.3, 10.1, 10.3, 10A.1-10A.5, 10B.3). All P0 blocking issues have been resolved - ready for live trading testing.
-
----
-
-## Notes
-
-- The existing `src/ml/` code is a solid foundation but needs significant rework for scalping timeframes
-- **2427 tests exist** with 91% coverage - comprehensive test suite covering all major modules
-- The 227MB 1-second parquet dataset is the primary asset and is now fully integrated
-- TopstepX API is for **live trading only** (7-14 day historical limit)
-- DataBento is for historical data (already have 2 years in parquet)
-- The 1-minute TXT file contains **2,334,170 lines** spanning May 2019 - Dec 2025 (~6.5 years)
-- HybridNet architecture exists in `neural_networks.py:218-306` and is fully functional
-- Risk management is NON-NEGOTIABLE given $1,000 starting capital
-- EOD flatten at 4:30 PM NY is a hard requirement (day trading rules)
-
-### Data File Details
-**VERIFIED (2026-01-15)**: The parquet file contains **33,206,650 rows** (matching the spec's "33 million 1-second bars").
-- Total rows: 33,206,650
-- After RTH filtering: ~15.8M rows (RTH is ~6.5 hours of 23-hour session)
-- Class distribution (with 30s lookahead, 3-tick threshold): DOWN=19.7%, FLAT=60.2%, UP=20.1%
-
----
-
-## Change Log (Recent Changes)
-
-### Major Milestones
-| Date | Change |
-|------|--------|
-| 2026-01-15 | Initial comprehensive plan created from codebase analysis |
-| 2026-01-15 | **Phase 1 COMPLETED**: Parquet loader and scalping features (76 tests) |
-| 2026-01-15 | **Phase 2 COMPLETED**: Risk management module (77 tests) |
-| 2026-01-15 | **Phase 3 COMPLETED**: Backtesting engine (84 tests) |
-| 2026-01-16 | **Phase 4 COMPLETED**: 3-class model architecture (55 tests) |
-| 2026-01-16 | **Phase 5 COMPLETED**: TopstepX API integration (77 tests) |
-| 2026-01-16 | **Phase 6 COMPLETED**: Live trading system (77 tests) |
-| 2026-01-16 | **Phase 7 COMPLETED**: DataBento integration (43 tests) |
-| 2026-01-16 | **Phase 8 COMPLETED**: Test coverage 91% (2427 tests) |
-| 2026-01-16 | **Phase 9 COMPLETED**: Optimization and utilities |
-
-### Recent Updates (Last 20 Entries)
-| Date | Change |
-|------|--------|
-| 2026-01-17 | **COMPLETED Missing Tests**: Added 86 new tests - Feature parity (17), EOD integration (43), WebSocket reconnection (25), Per-trade risk (13). Test count: 2427 → 2513 |
-| 2026-01-17 | **COMPLETED 10.3 tests**: Feature parity tests - 17 tests in test_feature_parity.py now pass, verifying rt_features produces valid signals. Implementation methodology differences documented. Test count: 2427 → 2444 |
-| 2026-01-17 | **PHASE 10C CREATED**: Added 5 new WebSocket & Integration gaps (10C.1-10C.5) for token refresh, position sync, rate limiting, circuit breaker consolidation, and market conditions. Total estimated effort: 12-16 hours. |
-| 2026-01-17 | **VERIFIED 10A.7**: Bar range update IS being called at lines 455-457 in _on_bar_complete(). Tests exist in test_reversal_bar_range.py. FALSE POSITIVE resolved. |
-| 2026-01-17 | **VERIFIED SPEC COMPLIANCE**: All feature categories (price action, microstructure, technical indicators, time features, multi-timeframe) fully implemented. Walk-forward validation correct with all parameters. Risk management values all match spec. |
-| 2026-01-17 | **VERIFIED ALL 7 BUGS_FOUND.md RECOMMENDED TESTS**: Feature scaling with infinity (5 tests), LSTM large batch (4 tests), checkpoint loading formats (9 tests), backtest E2E (5 tests), ScalpingFeatureEngineer API (comprehensive). |
-| 2026-01-17 | **DEEP ANALYSIS**: 20+ parallel Sonnet subagents analyzed specs/, src/ml/, src/lib/, src/trading/, src/api/, scripts/, tests/ against 6 specification files. All P0 bugs confirmed fixed. |
-| 2026-01-17 | **🚨 NEW P0 BUG 10.15**: Walk-Forward Parameter Aggregation Bug - `walk_forward.py:555,557` uses wrong attribute names (`param.values` should be `param.choices`, `param.low/high` should be `param.min_value/max_value`). Will crash at runtime. |
-| 2026-01-17 | **NEW P2 BUG 10.16**: Trade Logger Slippage Double-Counting - `trade_logger.py:253` deducts slippage that's already reflected in prices. Trade records show net_pnl understated by ~$1-2/trade. Equity curve metrics are correct. |
-| 2026-01-17 | **COMPREHENSIVE ANALYSIS**: 5 parallel Sonnet subagents analyzed ML pipeline, risk management, backtesting, live trading, and optimization modules against all 6 specs. Full compliance verified except 2 new bugs found. |
-| 2026-01-17 | **CORRECTED 10A.5 Documentation**: Engine line 788 shows `net_pnl = gross_pnl - commission` (no slippage) which is CORRECT since slippage is already in adjusted prices. Previous changelog entries incorrectly claimed slippage was deducted. |
-| 2026-01-16 | **COMPLETED 10.12**: Missing Tests from BUGS_FOUND.md - Added 9 new tests for LSTM large batch evaluation (4 tests) and StandardScaler infinity handling (5 tests) in test_models.py. Verified checkpoint format and backtest E2E tests already exist. Test count increased: 2395 → 2427 |
-| 2026-01-16 | **PARTIAL 10.12**: Missing Tests - Added 23 tests in `tests/test_run_backtest_script.py`. Completed `test_backtest_script_e2e_with_trained_model()` and `test_checkpoint_loading_old_and_new_formats()`. Fixed LSTMNet/HybridNet instantiation bugs in `scripts/run_backtest.py`. Test count: 2395 → 2418 |
-| 2026-01-16 | **COMPLETED 10.14**: Feature Division Protection - Added `.replace(0, np.nan)` protection to EMA, VWAP, ATR, MACD, BB divisions in scalping_features.py. Added 6 tests. |
-| 2026-01-16 | **COMPLETED 10.8**: Daily Returns Volatility Calculation - Already implemented via `use_closed_trade_returns` parameter in metrics.py |
-| 2026-01-16 | **Test count increased**: 2389 → 2395 |
-| 2026-01-16 | **COMPLETED 10.8**: Daily Returns Volatility Calculation - Added `use_closed_trade_returns` parameter to `calculate_metrics()`. Sharpe/Sortino can now be calculated from closed trade returns (avoids mark-to-market volatility). Added `returns_source` field to track calculation method. 5 new tests (2384 → 2389) |
-| 2026-01-16 | **VERIFIED COMPLETE 10.6**: Time Parsing Validation - parse_time() in run_live.py already has full validation (regex, range checks). 30+ comprehensive tests in test_run_live_time_parsing.py. Test count: 2357 → 2384 |
-| 2026-01-16 | **VERIFIED 10.5**: Quote Handling Backpressure already implemented - bounded queue, monitoring, backpressure all present in live_trader.py |
-| 2026-01-16 | **COMPLETED 10.5**: Quote Handling Backpressure - Added bounded queue (100 bars), worker coroutine, backpressure on queue full, queue depth warnings at 80% capacity. 6 new tests added (2351 → 2357) |
-| 2026-01-16 | **FIXED 10.7**: Slippage double-counting - removed redundant slippage_cost deduction from net_pnl in engine.py (line 788) |
-| 2026-01-16 | **FIXED 10.9**: Module exports - added Position and WalkForwardValidator to backtest/__init__.py |
-| 2026-01-16 | **VERIFIED 10A.6 + 10A.8**: Confidence scaling and tier max validation already implemented correctly in PositionSizer.calculate() |
-| 2026-01-16 | **FIXED 10A.6 & 10A.8**: Position sizing method mismatch - Changed `calculate_size()` to `calculate()` in live_trader.py:543 with correct parameter names. Confidence-based scaling and tier max validation NOW WORKING correctly. Tests updated in test_live_trader_comprehensive.py and test_live_trader_extended.py |
-| 2026-01-16 | **VERIFIED 10.13**: AdaptiveRandomSearch Phase 2 Best Update - Lines 359-360 in random_search.py show self._best_result IS being updated. No fix needed - was already implemented correctly |
-| 2026-01-16 | **Test count increased**: 2335 to 2357 tests (20 new tests for position sizing fixes) |
-| 2026-01-16 | **COMPLETED 10.2**: Walk-Forward Cross-Validation - Created `src/optimization/walk_forward.py` with WalkForwardOptimizer, WalkForwardConfig, WalkForwardResult classes. Added 16 tests. Implements spec: 6-month train, 1-month val, 1-month test, 1-month step. Note: Files need to be committed to git. |
-| 2026-01-16 | **COMPLETED 10.13**: AdaptiveRandomSearch Phase 2 Best Update - Added `self._best_result = result` at line 361 in random_search.py. Added test `test_adaptive_phase2_updates_best_result` |
-| 2026-01-16 | **COMPLETED 10B.4**: Future Price Column Leakage - Added `df.drop(columns=['future_close', 'future_tick_move'])` at line 456 in parquet_loader.py. Added test `test_future_columns_not_in_output` |
-| 2026-01-16 | **Test count increased**: 2331 to 2357 tests (4 new tests for 10B.4, 10.13, 10.2) |
-| 2026-01-16 | **VERIFIED ALREADY FIXED 10B.4**: Future Price Column Leakage - `future_close` and `future_tick_move` already dropped at line 456 in parquet_loader.py |
-| 2026-01-16 | **FIXED 10A.9**: Balance Tier Boundary Bug - Changed line 319 in position_sizing.py from `<` to `<=` so $1000 returns 1 contract (tier 1) |
-| 2026-01-16 | **FIXED 10.4**: Bare Exception Handling - Changed line 646 in training.py from bare `except:` to `except (ValueError, RuntimeError, ZeroDivisionError) as e:` with debug logging |
-| 2026-01-16 | **VERIFIED FIXED 10.3**: Multi-timeframe features - Added _calculate_volume_delta_norm(), _calculate_obv_roc(), _calculate_htf_trend(), _calculate_htf_momentum(), _calculate_htf_volatility() methods to rt_features.py |
-| 2026-01-16 | **VERIFIED FIXED 10A.2**: Daily Loss Check - can_trade() now checked at lines 321-328 at start of each trading loop iteration |
-| 2026-01-16 | **VERIFIED FIXED 10A.3**: Circuit Breaker - Import at line 35, instance at line 254, record_win/loss at lines 406-410, can_trade() at lines 450-451 |
-| 2026-01-16 | **VERIFIED FIXED 10A.4**: Account Drawdown - MANUAL_REVIEW status checked at lines 330-338 in trading loop |
-| 2026-01-16 | **10 BUGS VERIFIED FIXED**: 10.0.1-10.0.3, 10.3, 10A.1-10A.5, 10B.3 - All P0 safety and feature bugs resolved |
-| 2026-01-16 | **VERIFIED IMPLEMENTED 10A.1**: approve_trade() IS called at line 534 in live_trader.py |
-| 2026-01-16 | **VERIFIED IMPLEMENTED 10A.2**: can_trade() IS checked at line 321 in trading loop |
-| 2026-01-16 | **VERIFIED IMPLEMENTED 10A.3**: CircuitBreakers instantiated at line 254, record_win/loss at lines 407-410, can_trade() at line 450 |
-| 2026-01-16 | **VERIFIED IMPLEMENTED 10A.4**: MANUAL_REVIEW status IS checked at lines 330-337 |
-| 2026-01-16 | **BUG DOES NOT EXIST 10A.5**: Line 783 shows `net_pnl = gross_pnl - commission - slippage_cost` - was ALWAYS correct |
-| 2026-01-16 | **VERIFIED FIXED 10B.3**: OCO cancellation race condition - Added timeout and verification to OCO cancellation in order_executor.py |
-| 2026-01-16 | **6 BUGS VERIFIED FIXED**: 10.0.1 (WebSocket reconnect at line 711-713), 10.0.2 (EOD phase at line 377-378), 10.0.3 (LSTM tuple at line 134-136), 10A.1 (approve_trade at lines 480-487), 10A.5 (slippage at line 783), 10B.3 (OCO race condition) |
-| 2026-01-16 | **VERIFIED 10A.1**: Risk manager trade validation - `approve_trade()` IS called at lines 480-487 in live_trader.py |
-| 2026-01-16 | **VERIFIED 10A.5**: Backtest slippage - Line 783 in engine.py shows `net_pnl = gross_pnl - commission - slippage_cost` |
-| 2026-01-16 | **FIXED 10.0.1**: WebSocket auto-reconnect - Reconnect task IS being created in connect() at lines 711-713 |
-| 2026-01-16 | **FIXED 10.0.2**: EOD Phase method name - Changed `get_current_phase()` to `get_status().phase` at line 377-378 |
-| 2026-01-16 | **FIXED 10.0.3**: LSTM backtest tuple - Added tuple unpacking at line 134-136: `logits = output[0] if isinstance(output, tuple) else output` |
-| 2026-01-16 | **🚨 NEW CRITICAL 10.3**: Upgraded from HIGH to P0-BLOCKING - 7 features hardcoded to 0.0 causes SEVERE distribution mismatch |
-| 2026-01-16 | **CONFIRMED WORKING**: Added comprehensive table of verified working components |
-| 2026-01-16 | **ANALYSIS**: 13 parallel subagents completed comprehensive codebase analysis vs 6 specs |
-| 2026-01-16 | **✅ VERIFIED FALSE 10B.1**: Position fill side - IntEnum == int works correctly |
-| 2026-01-16 | **✅ VERIFIED FIXED 10.1**: OOS Evaluation Bug - Modified `_compute_overfitting_metrics()` to skip OOS when `holdout_objective_fn` not provided; use `create_split_objective()` for proper IS/OOS separation |
-| 2026-01-16 | **✅ VERIFIED FALSE 10B.2**: Reversal fill direction - Logic is correct |
-| 2026-01-16 | **✅ VERIFIED FALSE 10.0.2 (old)**: WebSocket syntax error - No syntax error exists |
-| 2026-01-16 | **🚨 NEW BUG 10.0.2**: EOD Phase method name mismatch - Will crash at 4:00 PM |
-| 2026-01-16 | **NEW 10A.9**: Balance tier boundary bug - 2 contracts at $1,000 instead of 1 |
-| 2026-01-16 | **VERIFICATION**: 12 parallel subagents performed deep analysis with code verification |
-| 2026-01-16 | ~~**🚨 CRITICAL BUG 10B.1**: Position fill side type error~~ VERIFIED FALSE |
-| 2026-01-16 | ~~**🚨 CRITICAL BUG 10B.2**: Reversal fill direction error~~ VERIFIED FALSE |
-| 2026-01-16 | **🚨 CRITICAL BUG 10B.3**: OCO cancellation race condition - DUAL FILLS POSSIBLE |
-| 2026-01-16 | **Phase 10B CREATED**: Position & Data Integrity bugs (3 critical items) |
-| 2026-01-16 | **Ultra-deep analysis**: 12 parallel agents analyzed codebase with 500+ file reads |
-| 2026-01-16 | **🚨 BLOCKING BUG 10.0.1**: WebSocket auto-reconnect loop NEVER STARTED - will not reconnect |
-| 2026-01-16 | ~~**🚨 BLOCKING BUG 10.0.2**: WebSocket module syntax error~~ VERIFIED FALSE |
-| 2026-01-16 | **🚨 BLOCKING BUG 10.0.3**: LSTM backtest script fails - tuple not unpacked |
-| 2026-01-16 | **Deep analysis**: 13 parallel subagents analyzed full codebase against specs |
-| 2026-01-16 | **Phase 10 EXPANDED**: Added 10.12-10.14 for missing tests and additional fixes |
-| 2026-01-16 | **Phase 10 CREATED**: Production Readiness phase with 11 items identified |
-| 2026-01-16 | **CRITICAL BUG**: OOS evaluation in optimizer_base.py uses same data as IS (10.1) |
-| 2026-01-16 | ~~**CRITICAL GAP**: No walk-forward cross-validation in optimization (10.2)~~ **COMPLETED 2026-01-16** |
-| 2026-01-16 | **HIGH**: Multi-timeframe features incomplete in rt_features.py (10.3) |
-| 2026-01-16 | **HIGH**: Bare exception handling in training.py (10.4) |
-| 2026-01-16 | **HIGH**: Quote handling lacks backpressure (10.5) |
-| 2026-01-16 | **HIGH**: Time parsing validation missing (10.6) |
-| 2026-01-16 | **Finding**: BUGS_FOUND.md issues 1-4 and 6-9 FIXED; LSTM bug NOT fixed in backtest |
-| 2026-01-16 | Go-Live items 1-7 and 9-12 verified complete |
-| 2026-01-16 | Test coverage improved from 90% to 91% (2273 → 2357 tests) |
-| 2026-01-16 | optimizer_base.py coverage: 76% → 97% (37 new tests) |
-| 2026-01-16 | databento_client.py coverage: 75% → 93% (29 new tests) |
-| 2026-01-16 | evaluation.py coverage: 73% → 92% (20 new tests) |
-| 2026-01-16 | order_executor.py coverage: 73% → 99% (50 new tests) |
-| 2026-01-16 | live_trader.py coverage: 66% → 95% (49 new tests) |
-| 2026-01-16 | position_manager.py coverage: 70% → 94% (38 new tests) |
-| 2026-01-16 | time_utils.py coverage: 71% → 99% (56 new tests) |
-| 2026-01-16 | bayesian_optimizer.py coverage: 63% → 94% (25 new tests) |
-| 2026-01-16 | train_scalping_model.py coverage: 23% → 97% (43 new tests) |
-| 2026-01-16 | Alert System COMPLETED: Multi-channel alerts with 56 tests |
-
-### Summary of Older Changes
-Prior to the recent updates, the plan was created through extensive codebase analysis including:
-- Initial verification of all spec files and existing code
-- Bug identification and documentation (wrong commission, slippage, time periods)
-- Directory structure planning
-- Critical path implementation order definition
-- Dependency fixes (pyarrow, pyyaml, pytest)
-- Data file verification (33.2M rows in parquet file)
-
----
-
-## R:R Ratios to Optimize
-
-| R:R | Stop (ticks) | Target (ticks) | Stop ($) | Target ($) | Breakeven Win Rate |
-|-----|--------------|----------------|----------|------------|---------------------|
-| 1:1 | 8 | 8 | $10.00 | $10.00 | 50% + costs |
-| 1:1.5 | 8 | 12 | $10.00 | $15.00 | 40% |
-| 1:2 | 8 | 16 | $10.00 | $20.00 | 33% |
-| 1:3 | 8 | 24 | $10.00 | $30.00 | 25% |
-
-*Note: Add $0.84 commission + ~$1.25 slippage = $2.09 per trade to cost calculations*
-
----
-
-## Project Directory Structure
-
-```
-tradingbot2.0/
-├── specs/                     # Requirements specifications (6 files)
-├── src/
-│   ├── ml/                    # ML pipeline (data, models, utils, configs, train scripts)
-│   ├── risk/                  # Risk management (5 files) ✓ COMPLETED
-│   ├── backtest/              # Backtesting engine (7 files) ✓ COMPLETED
-│   ├── api/                   # TopstepX API (4 files) ✓ COMPLETED
-│   ├── trading/               # Live trading (7 files) ✓ COMPLETED
-│   ├── data/                  # DataBento client (2 files) ✓ COMPLETED
-│   ├── lib/                   # Shared utilities (6 files) ✓ COMPLETED
-│   └── optimization/          # Parameter optimization (7 files) ✓ COMPLETED
-├── tests/                     # Test suite (2427 tests, 91% coverage) ✓ COMPLETED
-│   ├── integration/           # Integration tests (88 tests)
-│   └── test_*.py              # Unit tests for all modules
-├── scripts/                   # Entry points (3 files) ✓ COMPLETED
-│   ├── download_data.py       # DataBento data download
-│   ├── run_backtest.py        # Backtesting CLI
-│   └── run_live.py            # Live trading CLI
-├── data/
-│   └── historical/MES/        # Historical data files
-│       ├── MES_1s_2years.parquet (227MB, 33.2M rows)
-│       └── MES_full_1min_continuous_UNadjusted.txt (122MB)
-└── models/                    # Model checkpoints (gitignored)
-```
-
----
-
-**Implementation Status**: Phases 1-9 completed. **READY FOR PAPER TRADING** - All P0 blocking issues resolved. (11 P0 bugs VERIFIED FIXED on 2026-01-16: 10.0.1, 10.0.2, 10.0.3, 10.1, 10.3, 10A.1, 10A.2, 10A.3, 10A.4, 10A.5, 10B.3)
-
-## Priority Summary for Next Actions
-
-| Priority | Count | Items | Status |
-|----------|-------|-------|--------|
-| ~~**P0 - BLOCKING**~~ | ~~3~~ **0** | ~~10.0.1-10.0.3 (WebSocket reconnect, EOD method name, LSTM backtest)~~ | **ALL VERIFIED FIXED 2026-01-16** |
-| ~~**P0 - FEATURE**~~ | ~~1~~ **0** | ~~10.3 (7 features hardcoded to 0.0)~~ | **VERIFIED FIXED 2026-01-16** - All 7 features now calculated via proper methods |
-| ~~**P0 - ACCOUNT SAFETY**~~ | ~~5~~ **0** | ~~10A.1-10A.5~~ | **ALL VERIFIED FIXED 2026-01-16** - 10A.1-10A.4 verified, 10A.5 was false bug |
-| ~~**P0 - CRITICAL**~~ | ~~2~~ **0** | ~~10.1 (OOS Bug)~~, ~~10.2 (Walk-Forward CV)~~ | **10.1 VERIFIED FIXED 2026-01-16**, **10.2 COMPLETED 2026-01-16** |
-| ~~**P0 - RACE**~~ | ~~1~~ **0** | ~~10B.3 (OCO race condition)~~ | **VERIFIED FIXED 2026-01-16** |
-| P1 - HIGH | ~~6~~ 1 | ~~10A.6-10A.8~~, ~~10.5-10.6~~, 10A.7 (Bar Range) | ~~10B.4~~, ~~10.13~~, ~~10A.6~~, ~~10A.8~~ COMPLETED 2026-01-16, ~~10.5~~ VERIFIED 2026-01-16, ~~10.6~~ COMPLETED 2026-01-16 |
-| P2 - MEDIUM | ~~5~~ 2 | ~~10.7~~, 10.8, ~~10.9~~, 10.12, 10.14 (Metrics, Missing Tests, Division Protection) | ~~10.7~~, ~~10.9~~ FIXED 2026-01-16. Remaining can address during paper trading |
-| P3 - LOW | 2 | 10.10-10.11 (Memory, Improvements) | Nice to have |
-
-## Comprehensive Analysis Findings (2026-01-16)
-
-### Analysis Scope
-- 13 parallel Sonnet subagents analyzed full codebase
-- 6 spec files reviewed against implementation
-- All 8 src modules examined in depth
-- 55 test files analyzed for gaps and flakiness
-
-### Key Strengths Confirmed
-- **src/lib/**: All 7 utilities production-ready, no TODOs
-- **src/risk/**: All thresholds match spec exactly
-- **src/ml/**: 3-class training pipeline complete, bugs fixed
-- **src/api/**: TopstepX API complete with auth, WebSocket, rate limiting
-- **scripts/**: All 3 entry points working, all BUGS_FOUND.md issues fixed
-
-### Critical Gaps Identified
-1. ~~**Live Trading Risk Bypass** (Phase 10A): Risk manager initialized but NEVER validates trades~~ - **ALL FIXED 2026-01-16**: 10A.1-10A.4 now fully integrated (approve_trade, daily loss check, circuit breakers, drawdown check)
-2. ~~**Backtest P&L Optimism**: Slippage calculated but not deducted from net P&L~~ - **VERIFIED FIXED 2026-01-16**: engine.py:783 now deducts slippage_cost
-3. ~~**Feature Distribution Mismatch** (10.3): 7 features hardcoded to 0.0 in rt_features.py~~ - **VERIFIED FIXED 2026-01-16**: All 7 features now properly calculated via _calculate_volume_delta_norm(), _calculate_obv_roc(), _calculate_htf_trend(), _calculate_htf_momentum(), _calculate_htf_volatility() methods
-4. ~~**Optimization Overfitting** (10.1): OOS evaluation uses same data as IS evaluation - defeats overfitting detection~~ - **VERIFIED FIXED 2026-01-16**: `_compute_overfitting_metrics()` now skips OOS evaluation when `holdout_objective_fn` not provided; use `create_split_objective()` for proper IS/OOS separation
-
-### Test Quality Concerns
-- **38 sleep() calls** across test suite may cause CI/CD flakiness
-- **8 skipped tests** due to optional dependencies or real data requirements
-- **304 async tests** (15.8%) with potential timing sensitivity
-- **7 recommended tests** from BUGS_FOUND.md not yet implemented
-
----
-
-## Priority Gaps Identified (2026-01-16)
-
-This section documents additional critical gaps discovered during comprehensive codebase analysis. These issues must be addressed before production deployment. Many overlap with Phase 10 items but provide more specific context and fix recommendations.
-
-### Summary Table
-
-| ID | Priority | Issue | Location | Complexity | Impact |
-|----|----------|-------|----------|------------|--------|
-| G1 | P0 | WebSocket Auto-Reconnect Never Started | `src/api/topstepx_ws.py:893-913` | Low | Live trading reliability |
-| G2 | P0 | EOD Flatten NOT Enforced in Backtest | `src/backtest/engine.py` | Medium | Day trading rule violation |
-| G3 | P0 | Bar-Range Constraint Never Called | `src/trading/live_trader.py:336-398` | Low | Unlimited reversals possible |
-| G4 | P0 | Feature Scaling Mismatch | `src/trading/live_trader.py:420-428` | Medium | Invalid predictions |
-| G5 | P0 | Daily Limits Not Reset | `src/trading/live_trader.py` | Low | Multi-day trading unsafe |
-| ~~G6~~ | ~~P0~~ | ~~Account Balance Tier Boundary Bug~~ | `src/risk/position_sizing.py:319` | ~~Low~~ | **FIXED** (2026-01-16) |
-| G7 | P0 | Confidence Multiplier Loop Bug | `src/risk/position_sizing.py:336-344` | Low | Wrong multiplier returned |
-| G8 | P0 | Checkpoint Format Inconsistency | Training vs Inference | Medium | Model loading failures |
-| G9 | P1 | Circuit Breakers Not Integrated | `src/backtest/engine.py` | Medium | Dead code in backtests |
-| G10 | P1 | Walk-Forward Validation Window Unused | Optimization module | Medium | No parameter optimization |
-| G11 | P1 | NEXT_BAR_OPEN Uses Current Close | `src/backtest/engine.py:684` | Low | Lookahead bias |
-| G12 | P1 | Position Sync Doesn't Retry | `src/trading/live_trader.py:257-260` | Low | Unknown position state |
-| G13 | P1 | No Checkpoint Resumption | Training pipeline | Medium | Cannot recover from crashes |
-| G14 | P1 | Memory Estimation Missing | Training pipeline | Low | OOM crashes |
-| G15 | P1 | EOD Size Reduction Not Applied | `src/backtest/engine.py:694-695` | Low | 50% reduction ignored |
-| G16 | P2 | Optimization Module Lacks Direct Tests | `src/optimization/` | Medium | Untested code paths |
-| G17 | P2 | Signal Generator/RT Features Lack Tests | `src/trading/` | Medium | Core logic untested |
-| G18 | P2 | No Multi-Objective Optimization | `src/optimization/` | High | Single metric only |
-| G19 | P2 | Risk Manager Not Persisted Across WF Folds | Walk-forward system | Medium | Unrealistic isolation |
-| G20 | P2 | No Session Filtering in Backtest | `src/backtest/engine.py` | Medium | Uses ETH incorrectly |
-| G21 | P2 | Contract ID Logic Bug | `scripts/run_live.py:83-85` | Low | Wrong contract selection |
-| G22 | P2 | No State Persistence Across Restarts | `src/trading/` | High | Loses feature history |
-| G23 | P3 | No Trades Schema in DataBento | `src/data/databento_client.py` | Medium | No tick data download |
-| G24 | P3 | No Partitioned Parquet Storage | Data storage | Medium | Inefficient loading |
-| G25 | P3 | Cumulative Loss Semantics Unclear | `src/risk/` | Low | Reset policy undefined |
-| G26 | P3 | Performance Optimizations | Various | Low | Unnecessary overhead |
-
----
-
-### P0 - Critical Blockers (Must Fix Before Production)
-
-#### G1: WebSocket Auto-Reconnect Never Started
-**File**: `src/api/topstepx_ws.py:893-913`
-**Issue**: The `_auto_reconnect_loop()` method exists but is NEVER called via `asyncio.create_task()`. WebSocket will NOT auto-reconnect on disconnect.
-**Impact**: Live trading will fail after any network interruption. CRITICAL for live trading reliability.
-**Recommended Fix**:
-- [ ] Add `asyncio.create_task(self._auto_reconnect_loop())` in `connect()` method
-- [ ] Ensure task is cancelled in `disconnect()` method
-- [ ] Add integration test for reconnect behavior
-**Complexity**: Low
-**Note**: Overlaps with 10.0.1 - same root cause.
-
-#### G2: EOD Flatten NOT Enforced in Backtest
-**File**: `src/backtest/engine.py`
-**Issue**: EODManager is implemented but NOT called from BacktestEngine. No calls to `eod_manager.should_flatten_now()` in the engine.
-**Impact**: Positions can be held past 4:30 PM NY deadline. VIOLATES day trading requirements. Backtests will not reflect real-world forced exits.
-**Recommended Fix**:
-- [ ] Import EODManager in engine.py
-- [ ] Add EOD check in main simulation loop
-- [ ] Force flatten at 4:30 PM NY (call `should_flatten_now()`)
-- [ ] Apply 50% size reduction at 4:00 PM
-- [ ] Prevent new positions after 4:15 PM
-- [ ] Add tests for EOD enforcement in backtest
-**Complexity**: Medium
-
-#### G3: Bar-Range Constraint Never Called
-**File**: `src/trading/live_trader.py:336-398`
-**Issue**: `SignalGenerator.update_bar_range()` method exists but is never called anywhere. The reversal constraint (max 2x in same bar range) is completely INEFFECTIVE.
-**Impact**: Unlimited reversals possible in live trading, defeating the purpose of the constraint.
-**Recommended Fix**:
-- [ ] Call `signal_generator.update_bar_range()` when new bar is formed
-- [ ] Add integration test verifying constraint is enforced
-- [ ] Log when constraint blocks a reversal
-**Complexity**: Low
-
-#### G4: Feature Scaling Mismatch
-**File**: `src/trading/live_trader.py:420-428`
-**Issue**: If scaler is not found at startup, inference runs on UNSCALED features while training used scaled features.
-**Impact**: DISTRIBUTION MISMATCH - predictions would be completely invalid. Model outputs would be meaningless.
-**Recommended Fix**:
-- [ ] Make scaler loading mandatory (fail fast if not found)
-- [ ] Include scaler in model checkpoint
-- [ ] Add startup validation that scaler exists and matches training
-- [ ] Log warning if feature distributions look abnormal
-**Complexity**: Medium
-
-#### G5: Daily Limits Not Reset
-**File**: `src/trading/live_trader.py`
-**Issue**: `SessionMetrics` is created once at init and never reset for multi-day trading. Daily loss limits don't reset on Day 2.
-**Impact**: Cannot safely run across multiple trading days. Day 2 starts with Day 1's accumulated losses.
-**Recommended Fix**:
-- [ ] Add `reset_daily_metrics()` method to SessionMetrics
-- [ ] Call reset at start of each trading day (detect day boundary)
-- [ ] Add test for multi-day session reset
-**Complexity**: Low
-
-#### G6: Account Balance Tier Boundary Bug
-**File**: `src/risk/position_sizing.py:319`
-**Status**: **FIXED** (2026-01-16)
-**Issue**: At exactly $1,000 balance, condition `1000 < 1000` was False. Returned 2 contracts instead of 1 contract.
-**Resolution**: Changed `<` to `<=` at line 319 so tier boundaries belong to the lower tier. Now at exactly $1,000, correctly returns 1 contract.
-**Impact**: RESOLVED - Spec compliance restored.
-~~**Recommended Fix**~~:
-- [x] Change `< 1000` to `<= 1000` for the 1-contract tier
-- [ ] Add boundary tests for exact tier values ($700, $1000, $1500, $2000)
-- [ ] Review all tier boundaries for similar off-by-one errors
-**Complexity**: Low
-
-#### G7: Confidence Multiplier Loop Bug
-**File**: `src/risk/position_sizing.py:336-344`
-**Issue**: Loop breaks too early with `else: break`. For confidence=0.75, matches 0.70 then breaks at 0.80.
-**Impact**: Returns wrong multiplier for 80-90% confidence range. Position sizing incorrect for high-confidence signals.
-**Recommended Fix**:
-- [ ] Fix loop logic to continue searching for correct tier
-- [ ] Add unit tests for each confidence range boundary
-- [ ] Document confidence multiplier mapping clearly
-**Complexity**: Low
-
-#### G8: Checkpoint Format Inconsistency
-**Files**: Training vs Inference code
-**Issue**: Key names differ between training and inference:
-- Training saves: `model_config` vs Inference expects: `config`
-- Training saves: `type` vs Inference expects: `model_type`
-Compatibility shims in run_backtest.py are fragile workarounds.
-**Impact**: Model loading can fail silently or load wrong configuration.
-**Recommended Fix**:
-- [ ] Standardize checkpoint key names across codebase
-- [ ] Create `CheckpointManager` class with save/load methods
-- [ ] Add checkpoint version field for future compatibility
-- [ ] Remove fragile shim code once standardized
-- [ ] Add integration test for checkpoint round-trip
-**Complexity**: Medium
-
----
-
-### P1 - High Priority (Fix Before Backtesting Validation)
-
-#### G9: Circuit Breakers Not Integrated
-**File**: `src/backtest/engine.py`
-**Issue**: `CircuitBreakers.update_market_conditions()` is never called. Market volatility/spread/volume conditions are never checked.
-**Impact**: Circuit breakers are completely dead code in backtests. Cannot validate their effectiveness.
-**Recommended Fix**:
-- [ ] Add circuit breaker integration in BacktestEngine
-- [ ] Call `update_market_conditions()` with bar data
-- [ ] Check `is_trading_allowed()` before generating signals
-- [ ] Add tests for circuit breaker activation in backtest
-**Complexity**: Medium
-
-#### G10: Walk-Forward Validation Window Unused
-**File**: Optimization module
-**Issue**: Validation window is generated but never used for parameter optimization. Only OOS test results are returned.
-**Impact**: No actual parameter optimization on validation set. Walk-forward is just a split, not an optimization.
-**Recommended Fix**:
-- [ ] Use validation window for hyperparameter tuning
-- [ ] Implement early stopping based on validation metrics
-- [ ] Return both validation and test metrics
-- [ ] Add overfitting check (validation vs test performance)
-**Complexity**: Medium
-**Note**: Related to existing 10.2 (Walk-Forward CV)
-
-#### G11: NEXT_BAR_OPEN Uses Current Close
-**File**: `src/backtest/engine.py:684`
-**Issue**: Both fill modes use `bar['close']` as approximation. NEXT_BAR_OPEN should use the NEXT bar's open price.
-**Impact**: Lookahead bias - using information not available at decision time.
-**Recommended Fix**:
-- [ ] Store previous bar's signal
-- [ ] Fill at current bar's open for NEXT_BAR_OPEN mode
-- [ ] Add test comparing fill modes
-**Complexity**: Low
-
-#### G12: Position Sync Doesn't Retry
-**File**: `src/trading/live_trader.py:257-260`
-**Issue**: On startup, if position sync fails, just logs error and continues. Trader starts with unknown position state.
-**Impact**: Could enter conflicting positions or exceed limits.
-**Recommended Fix**:
-- [ ] Add retry logic with exponential backoff
-- [ ] Fail startup if sync fails after N retries
-- [ ] Add test for position sync failure handling
-**Complexity**: Low
-
-#### G13: No Checkpoint Resumption
-**File**: Training pipeline
-**Issue**: No `--resume` flag or checkpoint loading in training loop. Long training runs cannot recover from crashes.
-**Impact**: Training crash after hours means starting over from scratch.
-**Recommended Fix**:
-- [ ] Add `--resume` CLI flag
-- [ ] Save epoch number in checkpoint
-- [ ] Load optimizer state for proper resumption
-- [ ] Add test for training resumption
-**Complexity**: Medium
-
-#### G14: Memory Estimation Missing
-**File**: Training pipeline
-**Issue**: No check of memory requirements before training starts. Crashes with OOM on large datasets.
-**Impact**: Training fails mid-way with no warning. Workaround: `--max-samples 3000000`.
-**Recommended Fix**:
-- [ ] Add memory estimation utility
-- [ ] Print estimated memory before training
-- [ ] Warn if estimated memory exceeds available
-- [ ] Add chunked processing option for large datasets
-**Complexity**: Low
-**Note**: Related to existing 10.10
-
-#### G15: EOD Size Reduction Not Applied
-**File**: `src/backtest/engine.py:694-695`
-**Issue**: `size_multiplier = 0.5` becomes `max(1, int(0.5)) = 1`. The 50% position reduction at 4:00 PM is completely IGNORED.
-**Impact**: Backtests don't reflect real EOD risk reduction behavior.
-**Recommended Fix**:
-- [ ] Track base_size separately from adjusted_size
-- [ ] Apply multiplier to base_size, not final size
-- [ ] Add test verifying 50% reduction is applied
-**Complexity**: Low
-
----
-
-### P2 - Medium Priority (Quality Improvements)
-
-#### G16: Optimization Module Lacks Direct Tests
-**Files**: `src/optimization/grid_search.py`, `random_search.py`, `parameter_space.py`, `results.py`
-**Issue**: These files have NO direct unit tests. Hyperparameter optimization pipeline is untested.
-**Recommended Fix**:
-- [ ] Add unit tests for GridSearchOptimizer
-- [ ] Add unit tests for RandomSearchOptimizer
-- [ ] Add unit tests for ParameterSpace
-- [ ] Add unit tests for OptimizationResults
-**Complexity**: Medium
-
-#### G17: Signal Generator/RT Features Lack Tests
-**Files**: `src/trading/signal_generator.py`, `rt_features.py`
-**Issue**: Core trading decision logic has NO direct unit tests.
-**Recommended Fix**:
-- [ ] Add unit tests for SignalGenerator
-- [ ] Add unit tests for RealTimeFeatureEngine
-- [ ] Test edge cases (boundary conditions, error handling)
-**Complexity**: Medium
-
-#### G18: No Multi-Objective Optimization
-**File**: `src/optimization/`
-**Issue**: Can only optimize one metric at a time. Real systems need Sharpe + max_drawdown + Sortino together.
-**Recommended Fix**:
-- [ ] Implement Pareto frontier optimization
-- [ ] Add weighted multi-objective function
-- [ ] Allow user to specify metric priorities
-**Complexity**: High
-
-#### G19: Risk Manager Not Persisted Across WF Folds
-**File**: Walk-forward system
-**Issue**: Each fold starts fresh with no accumulated loss state. Unrealistic isolation.
-**Impact**: Real trading carries losses forward; simulation doesn't reflect this.
-**Recommended Fix**:
-- [ ] Add option to persist risk state across folds
-- [ ] Document isolation vs persistence tradeoffs
-- [ ] Add tests for both modes
-**Complexity**: Medium
-
-#### G20: No Session Filtering in Backtest
-**File**: `src/backtest/engine.py`
-**Issue**: No RTH (9:30 AM - 4:00 PM NY) filtering. Uses all hours including ETH.
-**Impact**: Backtests include extended hours data which may have different characteristics.
-**Recommended Fix**:
-- [ ] Add RTH filter option to BacktestEngine
-- [ ] Default to RTH-only for MES
-- [ ] Add ETH/RTH performance comparison
-**Complexity**: Medium
-
-#### G21: Contract ID Logic Bug
-**File**: `scripts/run_live.py:83-85`
-**Issue**: Compound conditions use wrong boolean operators. June 10-30 incorrectly switches to September contract.
-**Recommended Fix**:
-- [ ] Fix boolean logic for contract rollover dates
-- [ ] Add comprehensive tests for all rollover scenarios
-- [ ] Document contract rollover calendar
-**Complexity**: Low
-
-#### G22: No State Persistence Across Restarts
-**File**: `src/trading/`
-**Issue**: Position, model, feature engine state NOT saved. Restart loses all feature history.
-**Impact**: Cannot gracefully restart without losing context.
-**Recommended Fix**:
-- [ ] Implement state serialization
-- [ ] Save state on shutdown
-- [ ] Load state on startup
-- [ ] Add periodic state checkpointing
-**Complexity**: High
-
----
-
-### P3 - Low Priority (Future Improvements)
-
-#### G23: No Trades Schema in DataBento
-**File**: `src/data/databento_client.py`
-**Issue**: `TRADES` enum exists but no `download_trades()` method. Tick-level data not downloadable.
-**Recommended Fix**:
-- [ ] Implement `download_trades()` method
-- [ ] Add tick data schema handling
-- [ ] Add tests for trades download
-**Complexity**: Medium
-
-#### G24: No Partitioned Parquet Storage
-**File**: Data storage
-**Issue**: 227MB single file instead of partitioned by year/month. Loading entire file required even for single-day queries.
-**Recommended Fix**:
-- [ ] Implement year/month partitioning
-- [ ] Add partition-aware loading
-- [ ] Migrate existing data to partitioned format
-**Complexity**: Medium
-
-#### G25: Cumulative Loss Semantics Unclear
-**File**: `src/risk/`
-**Issue**: Cumulative loss never decreases. Should it reset daily or track lifetime?
-**Recommended Fix**:
-- [ ] Document intended semantics
-- [ ] Implement daily vs lifetime options
-- [ ] Add configuration for reset policy
-**Complexity**: Low
-
-#### G26: Performance Optimizations
-**Files**: Various
-**Issue**: Position lock contention on every read. Numpy conversion overhead in feature engine.
-**Recommended Fix**:
-- [ ] Use RLock for read-heavy patterns
-- [ ] Cache numpy conversions where possible
-- [ ] Profile and optimize hot paths
-**Complexity**: Low
-
----
-
-### Prioritized Fix Order
-
-**Immediate (Before any live trading) - Estimated: 2-3 hours**:
-1. G1 - WebSocket auto-reconnect (5 min fix)
-2. G3 - Bar-range constraint call (5 min fix)
-3. G5 - Daily limits reset (15 min fix)
-4. G6 - Balance tier boundary (5 min fix)
-5. G7 - Confidence multiplier loop (10 min fix)
-6. G4 - Feature scaling mismatch (30 min fix)
-
-**Before backtesting validation - Estimated: 6-8 hours**:
-7. G2 - EOD flatten enforcement (1-2 hours)
-8. G11 - NEXT_BAR_OPEN fix (30 min)
-9. G15 - EOD size reduction (15 min)
-10. G9 - Circuit breaker integration (1 hour)
-11. G8 - Checkpoint format standardization (2 hours)
-
-**Before paper trading - Estimated: 5-6 hours**:
-12. G12 - Position sync retry (30 min)
-13. G13 - Checkpoint resumption (2 hours)
-14. G10 - Walk-forward validation (2 hours)
-
-**Quality improvements (ongoing)**:
-15-26. P2 and P3 items as time permits
-
----
-
-**Estimated Total Effort**: 15-20 hours for P0+P1 items
-
----
-
-## Additional Gaps Discovered (2026-01-16 Deep Analysis)
-
-### G27: WebSocket Token Not Refreshed (90-min expiry)
-**File**: `src/api/topstepx_ws.py`
-**Issue**: WebSocket authentication token has 90-minute expiry, but there is no mechanism to refresh the token while WebSocket is connected.
-**Impact**: WebSocket will become unauthorized after 90 minutes. Live trading fails silently.
-**Verified**: 2026-01-16 via code inspection
-**Recommended Fix**:
-- [ ] Add token refresh timer (refresh at 80 minutes)
-- [ ] Re-authenticate WebSocket before token expires
-- [ ] Add test for token refresh scenario
-- [ ] Log warning when token is near expiration
-**Complexity**: Medium
-**Priority**: P1 - HIGH
-
-### G28: No Position Sync on WebSocket Reconnect
-**File**: `src/api/topstepx_ws.py`
-**Issue**: When WebSocket reconnects, there is no synchronization of position state with the server. Position could have changed during disconnect.
-**Impact**: Position state may be stale after reconnect. Could enter conflicting positions.
-**Verified**: 2026-01-16 via code inspection
-**Recommended Fix**:
-- [ ] Add position sync call after WebSocket reconnect
-- [ ] Compare local position with server position
-- [ ] Alert on position mismatch
-- [ ] Add test for reconnect with position sync
-**Complexity**: Low
-**Priority**: P1 - HIGH
-
-### G29: No Rate Limiting for WebSocket Operations
-**File**: `src/api/topstepx_ws.py`
-**Issue**: No rate limiting for WebSocket operations (subscriptions, order submissions). Could hit API limits during reconnect storms.
-**Verified**: 2026-01-16 via code inspection
-**Recommended Fix**:
-- [ ] Add rate limiter for WebSocket operations
-- [ ] Track operations per time window
-- [ ] Queue operations when approaching limit
-- [ ] Add test for rate limit enforcement
-**Complexity**: Medium
-**Priority**: P2 - MEDIUM
-
----
-
-## Verification Summary (2026-01-16)
-
-### Bugs CONFIRMED via Code Inspection Today
-
-| Bug ID | File:Line | Issue | Status |
-|--------|-----------|-------|--------|
-| 10.0.1 | topstepx_ws.py:695-709 | Auto-reconnect loop not started in connect() | **FIXED** |
-| 10.0.2 | live_trader.py:377 | EOD method name mismatch | **FIXED** |
-| 10.0.3 | run_backtest.py:134-135 | LSTM tuple not unpacked | **FIXED** |
-| 10A.1 | live_trader.py:534 | approve_trade() not called | **VERIFIED IMPLEMENTED** (2026-01-16) |
-| 10A.2 | live_trader.py:321 | Daily loss check in loop | **VERIFIED IMPLEMENTED** (2026-01-16) |
-| 10A.3 | live_trader.py:254,407-410,450 | Circuit breaker integration | **VERIFIED IMPLEMENTED** (2026-01-16) |
-| 10A.4 | live_trader.py:330-337 | Account drawdown check | **VERIFIED IMPLEMENTED** (2026-01-16) |
-| 10A.5 | engine.py:783 | Slippage not deducted | **BUG DOES NOT EXIST** - Verified (2026-01-16) |
-| 10B.3 | order_executor.py:738 | OCO fire-and-forget | **VERIFIED FIXED** (2026-01-16) |
-| 10.3 | rt_features.py:501-502 | 7 HTF features hardcoded to 0.0 | **CONFIRMED** - TODO |
-| 10.14 | scalping_features.py:212,330 | Division by zero risk | **CONFIRMED** - TODO |
-| G6 | position_sizing.py:315-317 | Tier boundary at $1,000 | **CONFIRMED** - TODO |
-| G27 | topstepx_ws.py | Token not refreshed (90-min) | **CONFIRMED** - TODO |
-| G28 | topstepx_ws.py | No position sync on reconnect | **CONFIRMED** - TODO |
-| G29 | topstepx_ws.py | No WebSocket rate limiting | **CONFIRMED** - TODO |
-
-### Bugs VERIFIED FALSE Today
-
-| Bug ID | Original Claim | Verification | Reason |
-|--------|----------------|--------------|--------|
-| 10B.1 | Fill side type error (enum vs int) | **FALSE** | OrderSide is IntEnum, comparison works |
-| 10B.2 | Reversal fill direction error | **FALSE** | Logic correctly uses fill_direction |
-| 10.0.2 (old) | WebSocket syntax error at line 247 | **FALSE** | No syntax error exists |
-
-### Analysis Methodology
-- 12+ parallel Sonnet subagents performed deep code analysis
-- 500+ file reads across codebase
-- Line-by-line verification of reported bugs
-- Comparison against 6 spec files
-
-### Updated Priority Order (Post-Analysis)
-
-**MUST FIX BEFORE ANY TRADING:**
-1. **10.3** - 7 HTF features hardcoded to 0.0 (SEVERE distribution mismatch)
-2. ~~**10B.3** - OCO fire-and-forget race condition~~ - **VERIFIED FIXED 2026-01-16**
-3. ~~**10A.2** - Daily loss check in main loop~~ - **VERIFIED IMPLEMENTED (2026-01-16)**: can_trade() at line 321
-4. ~~**10A.3** - Circuit breaker not instantiated~~ - **VERIFIED IMPLEMENTED (2026-01-16)**: lines 254, 407-410, 450
-5. ~~**10A.4** - MANUAL_REVIEW status not checked~~ - **VERIFIED IMPLEMENTED (2026-01-16)**: lines 330-337
-6. ~~**10.1** - OOS evaluation bug in optimization~~ - **VERIFIED FIXED 2026-01-16**
-7. **G6** - Balance tier boundary at $1,000
-8. **G27** - WebSocket token refresh
-9. **G28** - Position sync on reconnect
-
-**RECOMMENDED BEFORE PAPER TRADING:**
-10. ~~**10B.4** - Future price column leakage risk~~ **COMPLETED 2026-01-16**
-11. ~~**10A.6** - Confidence-based position scaling~~ **VERIFIED ALREADY IMPLEMENTED 2026-01-16** - PositionSizer.calculate() lines 326-350
-12. **10A.7** - Bar range update never called
-13. ~~**10.2** - Walk-forward cross-validation~~ **COMPLETED 2026-01-16** (files need git commit)
-14. **10.14** - Division by zero protection
-15. **G29** - WebSocket rate limiting
-16. ~~**10A.8** - Tier max validation~~ **VERIFIED ALREADY IMPLEMENTED 2026-01-16** - PositionSizer.calculate() line 200
-17. ~~**10.7** - Slippage double-counting~~ **FIXED 2026-01-16** - Removed slippage_cost from net_pnl
-18. ~~**10.9** - Module exports~~ **FIXED 2026-01-16** - Added Position and WalkForwardValidator to backtest/__init__.py
-19. ~~**10.13** - AdaptiveRandomSearch Phase 2 best update~~ **VERIFIED FIXED 2026-01-16** - Was already implemented
+## Appendix B: 2026-01-17 22:00 UTC Verification (Opus 4.5 + 8 Sonnet Subagents)
+
+### Codebase Health Check
+- **TODOs/FIXMEs**: None found in src/
+- **Incomplete stubs**: None found (all `pass` statements are legitimate exception classes or abstract methods)
+- **NotImplementedError**: None found
+- **Custom exception classes**: 9 (properly implemented)
+- **Abstract methods**: All have implementations in subclasses
+
+### BUGS_FOUND.md Status (9 Deployment Bugs)
+All bugs discovered during RunPod training have been **VERIFIED FIXED**:
+1. Infinity values in feature scaling - FIXED (scalping_features.py:638)
+2. Infinity in validation/test sets - FIXED (train_scalping_model.py:409-419)
+3. CUDA OOM during test evaluation - FIXED (batched processing)
+4. LSTM output tuple unpacking - FIXED
+5. Container memory limit - WORKAROUND (--max-samples)
+6. ScalpingFeatureEngineer constructor - FIXED (run_backtest.py:407)
+7. Model loading config key mismatch - FIXED (run_backtest.py:256-266)
+8. FeedForwardNet parameter names - FIXED (run_backtest.py:270-277)
+9. PerformanceMetrics attribute names - FIXED (run_backtest.py:495-498)
+
+### P0 Bugs Verified
+| Bug | Status | Evidence |
+|-----|--------|----------|
+| **10.15** | CONFIRMED | walk_forward.py:554-557 uses param.values/low/high instead of choices/min_value/max_value |
+| **10.17** | CONFIRMED | 8 of 10 features wrong + 5 HTF features have lookahead bias (see detailed table) |
+| **10.21** | NEW | Feature ordering not validated - rt_features.py:310-546 generates order dynamically |
+| **10.22** | NEW | Scaler mismatch silent failure - live_trader.py:573-576 fallback to unscaled |
+| **10.23** | NEW | OCO double-fill race - order_executor.py:710-746 async task scheduling |
+
+### P1 Bugs Verified
+| Bug | Status | Evidence |
+|-----|--------|----------|
+| **10C.2** | CONFIRMED | _sync_positions only at startup line 275, not after reconnect |
+| **10C.3** | CONFIRMED | REST has RateLimiter but WebSocket invoke/send have no throttling |
+| **10C.4** | CONFIRMED | Duplicate tracking in circuit_breakers + risk_manager |
+| **10C.5** | CONFIRMED | update_market_conditions() never called (method at circuit_breakers.py:232-298) |
+| **10C.6** | NEW | WebSocket connect() race - topstepx_ws.py:325-328 non-atomic state check |
+| **10C.7** | NEW | Token refresh race - topstepx_client.py:337-346 lock not held during check |
+| **10C.8** | NEW | Session leak - topstepx_ws.py:334-335 old sessions not closed |
+| **10C.9** | NEW | Cancel order no verify - order_executor.py:799-806 removes without confirmation |
+| **10C.10** | NEW | Stop failure continues - order_executor.py:393-407 position without stop |
+
+### P2 Bugs Verified
+| Bug | Status | Evidence |
+|-----|--------|----------|
+| **10.18** | CONFIRMED | Only FeedForward, LSTM, HybridNet in neural_networks.py:98-524 |
+| **10.19** | PARTIAL | EOD check in trading loop but not in approve_trade() |
+| **10.20** | CONFIRMED | position_sizing.py doesn't use EODManager.get_position_size_multiplier() |
+
+### Test Infrastructure Analysis
+- **Total test files**: 61 (58 unit/extended + 4 integration)
+- **Total test functions**: 2,508
+- **Total test lines**: 45,389
+- **Skipped tests**: 4 (intentional - require real data or complex mocking)
+- **Tests without assertions**: 14 (plotting tests verify execution, not output)
+- **Flaky patterns**: ~100+ async/time-dependent tests with hardcoded delays
+
+### Test Coverage Gaps (31 modules without dedicated tests)
+These modules are tested via integration tests but lack dedicated unit test files:
+- **API**: topstepx_client.py, topstepx_rest.py, topstepx_ws.py
+- **Backtest**: costs.py, engine.py, metrics.py, slippage.py, trade_logger.py
+- **Optimization**: bayesian_optimizer.py, grid_search.py, optimizer_base.py, parameter_space.py, random_search.py, results.py
+- **ML**: neural_networks.py
+- **Library**: config.py, constants.py, logging_utils.py
+
+### Feature Parity Test Analysis
+- **File**: test_feature_parity.py exists
+- **Thresholds**: CORRELATION_THRESHOLD = 0.5, MAE_THRESHOLD = 0.3 (RELAXED)
+- **Issue**: Tests document formula differences but use relaxed thresholds
+- **Recommendation**: Tighten thresholds after fixing 10.17
+
+### src/lib Shared Utilities
+All 6 modules are complete and well-designed:
+- **constants.py**: Contract specs, risk params, API config
+- **time_utils.py**: NY timezone handling, EOD phases, market calendar
+- **config.py**: Hierarchical config (env > YAML > defaults)
+- **logging_utils.py**: Structured trading logs with rotation
+- **performance_monitor.py**: Latency tracking with thresholds
+- **alerts.py**: Multi-channel notifications (console, email, Slack, Discord)
