@@ -122,7 +122,7 @@ class FeatureConfig:
 @dataclass
 class ModelConfig:
     """Configuration for ML model."""
-    # Model type: 'feedforward', 'lstm', 'hybrid'
+    # Model type: 'feedforward', 'lstm', 'hybrid', 'transformer'
     model_type: str = "feedforward"
     # Path to saved model
     path: Optional[str] = None
@@ -142,6 +142,13 @@ class ModelConfig:
     lstm_dropout: float = 0.3
     lstm_bidirectional: bool = False
     seq_length: int = 60
+    # Transformer settings
+    transformer_d_model: int = 64
+    transformer_nhead: int = 4
+    transformer_num_layers: int = 2
+    transformer_dim_feedforward: int = 256
+    transformer_dropout: float = 0.1
+    transformer_pooling: str = 'last'  # 'last', 'mean', or 'cls'
     # Target variable
     lookahead_seconds: int = DEFAULT_LOOKAHEAD_SECONDS
     threshold_ticks: float = DEFAULT_THRESHOLD_TICKS

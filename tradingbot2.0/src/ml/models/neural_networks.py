@@ -5,7 +5,8 @@ This module provides:
 1. FeedForwardNet: Simple MLP for tabular features
 2. LSTMNet: LSTM for sequential/temporal patterns
 3. HybridNet: Combined model with both architectures
-4. ModelPrediction: Structured output for inference
+4. TransformerNet: Transformer encoder for attention-based sequence modeling
+5. ModelPrediction: Structured output for inference
 
 Supports both binary classification (UP/DOWN) and 3-class classification
 (DOWN/FLAT/UP) for scalping applications.
@@ -524,6 +525,273 @@ class HybridNet(nn.Module):
             return predictions
 
 
+class PositionalEncoding(nn.Module):
+    """
+    Positional Encoding for Transformer models.
+
+    Adds positional information to input embeddings using sine and cosine
+    functions of different frequencies, as described in "Attention is All You Need".
+
+    This allows the Transformer to understand sequence order since attention
+    is permutation-invariant without positional information.
+    """
+
+    def __init__(self, d_model: int, max_len: int = 5000, dropout: float = 0.1):
+        """
+        Initialize positional encoding.
+
+        Args:
+            d_model: Embedding/model dimension
+            max_len: Maximum sequence length to support
+            dropout: Dropout probability applied after adding positional encoding
+        """
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        # Create positional encoding matrix
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model)
+        )
+
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)  # Shape: (1, max_len, d_model)
+
+        # Register as buffer (not a parameter, but saved with model)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Add positional encoding to input.
+
+        Args:
+            x: Input tensor of shape (batch_size, seq_length, d_model)
+
+        Returns:
+            Tensor with positional encoding added, same shape as input
+        """
+        x = x + self.pe[:, :x.size(1), :]
+        return self.dropout(x)
+
+
+class TransformerNet(nn.Module):
+    """
+    Transformer Encoder for sequential pattern recognition.
+
+    Uses self-attention mechanism to capture global dependencies in the
+    input sequence. Particularly effective for:
+    - Capturing long-range dependencies in time series
+    - Parallel processing (unlike RNNs)
+    - Learning complex feature interactions
+
+    Architecture (per ml-scalping-model.md spec):
+        Input (sequence) → Positional Encoding
+                        → Multi-Head Attention × N layers
+                        → Dense(num_classes) → Softmax
+
+    For training: Returns raw logits (CrossEntropyLoss applies log_softmax internally)
+    For inference: Use get_probabilities() or ModelPrediction.from_logits()
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        d_model: int = 64,
+        nhead: int = 4,
+        num_layers: int = 2,
+        dim_feedforward: int = 256,
+        dropout_rate: float = 0.1,
+        max_seq_len: int = 500,
+        num_classes: int = 3,
+        pooling: str = 'last'
+    ):
+        """
+        Initialize Transformer encoder.
+
+        Args:
+            input_dim: Number of features per timestep
+            d_model: Transformer model dimension (embedding size).
+                     Must be divisible by nhead.
+            nhead: Number of attention heads. More heads allow the model
+                   to attend to different parts of the sequence simultaneously.
+            num_layers: Number of transformer encoder layers. More layers
+                        allow for deeper feature extraction.
+            dim_feedforward: Dimension of the feedforward network in each
+                            transformer layer (typically 2-4x d_model).
+            dropout_rate: Dropout probability for regularization.
+            max_seq_len: Maximum sequence length for positional encoding.
+            num_classes: Number of output classes (3 for UP/FLAT/DOWN).
+            pooling: How to aggregate sequence output ('last', 'mean', 'cls').
+                    - 'last': Use last timestep output
+                    - 'mean': Average all timestep outputs
+                    - 'cls': Use [CLS] token (prepended to sequence)
+        """
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.d_model = d_model
+        self.nhead = nhead
+        self.num_layers = num_layers
+        self.num_classes = num_classes
+        self.pooling = pooling
+        self.use_cls_token = (pooling == 'cls')
+
+        # Input projection: map features to d_model dimension
+        self.input_projection = nn.Linear(input_dim, d_model)
+
+        # Optional CLS token for classification (like BERT)
+        if self.use_cls_token:
+            self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
+            nn.init.normal_(self.cls_token, std=0.02)
+
+        # Positional encoding
+        self.pos_encoder = PositionalEncoding(d_model, max_seq_len, dropout_rate)
+
+        # Transformer encoder layers
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout_rate,
+            batch_first=True,  # Input shape: (batch, seq, feature)
+            activation='gelu'  # GELU activation (better for transformers)
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_layers,
+            norm=nn.LayerNorm(d_model)  # Final layer normalization
+        )
+
+        # Output layers
+        self.fc = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
+            nn.GELU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(d_model // 2, num_classes)
+        )
+
+        # Initialize weights
+        self._init_weights()
+
+    def _init_weights(self):
+        """Initialize weights using Xavier initialization."""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+            elif isinstance(module, nn.LayerNorm):
+                nn.init.constant_(module.bias, 0)
+                nn.init.constant_(module.weight, 1.0)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        src_key_padding_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """
+        Forward pass - returns raw logits.
+
+        Args:
+            x: Input tensor of shape (batch_size, seq_length, input_dim)
+            src_key_padding_mask: Optional mask for padded sequences.
+                                  Shape: (batch_size, seq_length)
+                                  True values indicate positions to ignore.
+
+        Returns:
+            Logits tensor of shape (batch_size, num_classes)
+        """
+        batch_size, seq_len, _ = x.shape
+
+        # Project input to d_model dimension
+        x = self.input_projection(x)  # (batch, seq, d_model)
+
+        # Add CLS token if using 'cls' pooling
+        if self.use_cls_token:
+            cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+            x = torch.cat([cls_tokens, x], dim=1)  # (batch, seq+1, d_model)
+
+            # Extend padding mask for CLS token
+            if src_key_padding_mask is not None:
+                cls_mask = torch.zeros(batch_size, 1, dtype=torch.bool, device=x.device)
+                src_key_padding_mask = torch.cat([cls_mask, src_key_padding_mask], dim=1)
+
+        # Add positional encoding
+        x = self.pos_encoder(x)
+
+        # Transformer encoder
+        x = self.transformer_encoder(x, src_key_padding_mask=src_key_padding_mask)
+
+        # Pooling to get single representation per sequence
+        if self.pooling == 'last':
+            # Use last timestep (or last non-padded if using mask)
+            x = x[:, -1, :]
+        elif self.pooling == 'mean':
+            # Average over sequence dimension
+            if src_key_padding_mask is not None:
+                # Mask out padded positions before averaging
+                mask = ~src_key_padding_mask.unsqueeze(-1)
+                x = (x * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+            else:
+                x = x.mean(dim=1)
+        elif self.pooling == 'cls':
+            # Use CLS token output (first position)
+            x = x[:, 0, :]
+        else:
+            raise ValueError(f"Unknown pooling method: {self.pooling}")
+
+        # Output layer - raw logits, no activation
+        x = self.fc(x)
+
+        return x
+
+    def get_probabilities(
+        self,
+        x: torch.Tensor,
+        src_key_padding_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """
+        Get class probabilities (for inference).
+
+        Args:
+            x: Input tensor of shape (batch_size, seq_length, input_dim)
+            src_key_padding_mask: Optional mask for padded sequences
+
+        Returns:
+            Probability tensor of shape (batch_size, num_classes)
+        """
+        logits = self.forward(x, src_key_padding_mask)
+        return F.softmax(logits, dim=1)
+
+    def predict(
+        self,
+        x: torch.Tensor,
+        volatility: float = 0.0,
+        src_key_padding_mask: Optional[torch.Tensor] = None
+    ) -> List[ModelPrediction]:
+        """
+        Make structured predictions for inference.
+
+        Args:
+            x: Input tensor of shape (batch_size, seq_length, input_dim)
+            volatility: ATR or other volatility measure for position sizing
+            src_key_padding_mask: Optional mask for padded sequences
+
+        Returns:
+            List of ModelPrediction instances, one per sample
+        """
+        self.eval()
+        with torch.no_grad():
+            logits = self.forward(x, src_key_padding_mask)
+            predictions = []
+            for i in range(logits.shape[0]):
+                pred = ModelPrediction.from_logits(logits[i], volatility=volatility)
+                predictions.append(pred)
+            return predictions
+
+
 def create_model(
     model_type: str,
     input_dim: int,
@@ -534,13 +802,23 @@ def create_model(
     Factory function to create models.
 
     Args:
-        model_type: 'feedforward', 'lstm', or 'hybrid'
+        model_type: 'feedforward', 'lstm', 'hybrid', or 'transformer'
         input_dim: Input feature dimension
         num_classes: Number of output classes (2=binary, 3=scalping with FLAT)
         **kwargs: Model-specific parameters
 
     Returns:
         Instantiated model
+
+    Example:
+        # FeedForward for tabular features
+        model = create_model('feedforward', 40, num_classes=3)
+
+        # LSTM for sequences
+        model = create_model('lstm', 40, hidden_dim=64, num_layers=2)
+
+        # Transformer for attention-based sequence modeling
+        model = create_model('transformer', 40, d_model=64, nhead=4, num_layers=2)
     """
     if model_type.lower() == 'feedforward':
         return FeedForwardNet(input_dim, num_classes=num_classes, **kwargs)
@@ -549,8 +827,11 @@ def create_model(
     elif model_type.lower() == 'hybrid':
         static_dim = kwargs.pop('static_input_dim', input_dim // 2)
         return HybridNet(input_dim, static_dim, num_classes=num_classes, **kwargs)
+    elif model_type.lower() == 'transformer':
+        return TransformerNet(input_dim, num_classes=num_classes, **kwargs)
     else:
-        raise ValueError(f"Unknown model type: {model_type}")
+        raise ValueError(f"Unknown model type: {model_type}. "
+                        f"Supported: 'feedforward', 'lstm', 'hybrid', 'transformer'")
 
 
 class EarlyStopping:
@@ -648,10 +929,34 @@ if __name__ == "__main__":
     print(f"  Expected: ({batch_size}, {num_classes})")
     print(f"  Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
+    # Test TransformerNet
+    model = TransformerNet(
+        input_dim=input_dim,
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        num_classes=num_classes
+    )
+    x = torch.randn(batch_size, seq_length, input_dim)
+    output = model(x)
+    print(f"\nTransformerNet output shape: {output.shape}")
+    print(f"  Expected: ({batch_size}, {num_classes})")
+    print(f"  Parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+    # Test TransformerNet with different pooling methods
+    for pooling in ['last', 'mean', 'cls']:
+        model = TransformerNet(input_dim=input_dim, d_model=64, nhead=4, pooling=pooling)
+        output = model(x)
+        print(f"  Pooling '{pooling}': output shape {output.shape}")
+
+    # Test probabilities
+    probs = model.get_probabilities(x)
+    print(f"  Probabilities sum: {probs.sum(dim=1).mean():.4f} (should be ~1.0)")
+
     # Test create_model factory
     print("\n" + "="*60)
     print("Testing create_model factory:")
-    for model_type in ['feedforward', 'lstm', 'hybrid']:
+    for model_type in ['feedforward', 'lstm', 'hybrid', 'transformer']:
         model = create_model(model_type, input_dim, num_classes=3)
         print(f"  {model_type}: num_classes={model.num_classes}")
 

@@ -26,6 +26,8 @@ from models.neural_networks import (
     FeedForwardNet,
     LSTMNet,
     HybridNet,
+    TransformerNet,
+    PositionalEncoding,
     ModelPrediction,
     create_model,
     EarlyStopping
@@ -91,6 +93,19 @@ def hybrid_model(input_dim, num_classes):
         static_input_dim=20,
         lstm_hidden=32,
         lstm_layers=1,
+        num_classes=num_classes
+    )
+
+
+@pytest.fixture
+def transformer_model(input_dim, num_classes):
+    """Create a TransformerNet for testing."""
+    return TransformerNet(
+        input_dim=input_dim,
+        d_model=64,
+        nhead=4,
+        num_layers=2,
+        dropout_rate=0.1,
         num_classes=num_classes
     )
 
@@ -269,6 +284,310 @@ class TestHybridNet:
 
 
 # ============================================================================
+# PositionalEncoding Tests
+# ============================================================================
+
+class TestPositionalEncoding:
+    """Tests for PositionalEncoding module."""
+
+    def test_output_shape(self):
+        """Test output shape matches input shape."""
+        d_model = 64
+        max_len = 100
+        batch_size = 16
+        seq_len = 50
+
+        pos_enc = PositionalEncoding(d_model=d_model, max_len=max_len)
+        x = torch.randn(batch_size, seq_len, d_model)
+        output = pos_enc(x)
+
+        assert output.shape == x.shape
+
+    def test_adds_positional_information(self):
+        """Test that positional encoding adds information to input."""
+        d_model = 64
+        pos_enc = PositionalEncoding(d_model=d_model, dropout=0.0)
+        x = torch.zeros(1, 10, d_model)
+        output = pos_enc(x)
+
+        # Output should not be all zeros (positional encoding was added)
+        assert not torch.allclose(output, torch.zeros_like(output))
+
+    def test_different_positions_have_different_encoding(self):
+        """Test that different positions have different encodings."""
+        d_model = 64
+        pos_enc = PositionalEncoding(d_model=d_model, dropout=0.0)
+        x = torch.zeros(1, 10, d_model)
+        output = pos_enc(x)
+
+        # Each position should have a unique encoding
+        pos_0 = output[0, 0, :]
+        pos_5 = output[0, 5, :]
+        assert not torch.allclose(pos_0, pos_5)
+
+    def test_deterministic_without_dropout(self):
+        """Test encoding is deterministic when dropout is 0."""
+        d_model = 64
+        pos_enc = PositionalEncoding(d_model=d_model, dropout=0.0)
+        x = torch.randn(4, 20, d_model)
+
+        output1 = pos_enc(x)
+        output2 = pos_enc(x)
+
+        assert torch.allclose(output1, output2)
+
+
+# ============================================================================
+# TransformerNet Tests
+# ============================================================================
+
+class TestTransformerNet:
+    """Tests for TransformerNet with 3-class output."""
+
+    def test_output_shape(self, transformer_model, batch_size, seq_length, input_dim, num_classes):
+        """Test output shape is (batch_size, num_classes)."""
+        x = torch.randn(batch_size, seq_length, input_dim)
+        output = transformer_model(x)
+        assert output.shape == (batch_size, num_classes)
+
+    def test_output_is_raw_logits(self, transformer_model, batch_size, seq_length, input_dim):
+        """Test that output is raw logits (not probabilities)."""
+        x = torch.randn(batch_size, seq_length, input_dim)
+        output = transformer_model(x)
+        # Raw logits can be negative and don't sum to 1
+        assert output.min() < 0 or output.max() > 1
+
+    def test_get_probabilities_sums_to_one(self, transformer_model, batch_size, seq_length, input_dim):
+        """Test that get_probabilities returns valid probabilities."""
+        x = torch.randn(batch_size, seq_length, input_dim)
+        probs = transformer_model.get_probabilities(x)
+        sums = probs.sum(dim=1)
+        assert torch.allclose(sums, torch.ones(batch_size), atol=1e-5)
+
+    def test_get_probabilities_range(self, transformer_model, batch_size, seq_length, input_dim):
+        """Test that probabilities are in [0, 1] range."""
+        x = torch.randn(batch_size, seq_length, input_dim)
+        probs = transformer_model.get_probabilities(x)
+        assert (probs >= 0).all()
+        assert (probs <= 1).all()
+
+    def test_predict_returns_model_predictions(self, transformer_model, batch_size, seq_length, input_dim):
+        """Test predict() returns list of ModelPrediction instances."""
+        x = torch.randn(batch_size, seq_length, input_dim)
+        predictions = transformer_model.predict(x)
+        assert len(predictions) == batch_size
+        assert all(isinstance(p, ModelPrediction) for p in predictions)
+
+    def test_predict_direction_values(self, transformer_model, batch_size, seq_length, input_dim):
+        """Test that direction is in {-1, 0, 1}."""
+        x = torch.randn(batch_size, seq_length, input_dim)
+        predictions = transformer_model.predict(x)
+        for p in predictions:
+            assert p.direction in [-1, 0, 1]
+
+    def test_predict_confidence_range(self, transformer_model, batch_size, seq_length, input_dim):
+        """Test that confidence is in [0, 1]."""
+        x = torch.randn(batch_size, seq_length, input_dim)
+        predictions = transformer_model.predict(x)
+        for p in predictions:
+            assert 0 <= p.confidence <= 1
+
+    def test_num_classes_attribute(self, transformer_model, num_classes):
+        """Test num_classes attribute is set correctly."""
+        assert transformer_model.num_classes == num_classes
+
+    def test_different_pooling_methods(self, input_dim, seq_length):
+        """Test all three pooling methods work correctly."""
+        batch_size = 8
+        x = torch.randn(batch_size, seq_length, input_dim)
+
+        for pooling in ['last', 'mean', 'cls']:
+            model = TransformerNet(input_dim=input_dim, d_model=64, nhead=4, pooling=pooling)
+            output = model(x)
+            assert output.shape == (batch_size, 3), f"Pooling '{pooling}' failed"
+
+    def test_cls_pooling_uses_cls_token(self, input_dim, seq_length):
+        """Test CLS pooling adds CLS token and uses its output."""
+        model = TransformerNet(input_dim=input_dim, d_model=64, nhead=4, pooling='cls')
+        assert model.use_cls_token
+        assert hasattr(model, 'cls_token')
+
+        x = torch.randn(4, seq_length, input_dim)
+        output = model(x)
+        assert output.shape == (4, 3)
+
+    def test_with_padding_mask(self, transformer_model, batch_size, seq_length, input_dim):
+        """Test forward pass with padding mask."""
+        x = torch.randn(batch_size, seq_length, input_dim)
+        # Create mask where last 5 positions are padded
+        mask = torch.zeros(batch_size, seq_length, dtype=torch.bool)
+        mask[:, -5:] = True
+
+        output = transformer_model(x, src_key_padding_mask=mask)
+        assert output.shape == (batch_size, 3)
+
+    def test_mean_pooling_with_mask(self, input_dim):
+        """Test mean pooling correctly ignores masked positions."""
+        model = TransformerNet(input_dim=input_dim, d_model=64, nhead=4, pooling='mean')
+        batch_size = 4
+        seq_len = 20
+
+        x = torch.randn(batch_size, seq_len, input_dim)
+        mask = torch.zeros(batch_size, seq_len, dtype=torch.bool)
+        mask[:, 10:] = True  # Mask last 10 positions
+
+        output = model(x, src_key_padding_mask=mask)
+        assert output.shape == (batch_size, 3)
+
+    def test_single_sample(self, input_dim, seq_length):
+        """Test with single sample (batch_size=1)."""
+        model = TransformerNet(input_dim=input_dim, d_model=64, nhead=4)
+        model.eval()
+        x = torch.randn(1, seq_length, input_dim)
+        output = model(x)
+        assert output.shape == (1, 3)
+
+    def test_weight_initialization(self, transformer_model):
+        """Test that weights are initialized (not all zeros)."""
+        for name, param in transformer_model.named_parameters():
+            if 'weight' in name:
+                assert not torch.all(param == 0), f"Weight {name} is all zeros"
+
+    def test_binary_classification(self, input_dim, seq_length):
+        """Test backward compatibility with 2-class."""
+        model = TransformerNet(input_dim=input_dim, d_model=64, nhead=4, num_classes=2)
+        x = torch.randn(4, seq_length, input_dim)
+        output = model(x)
+        assert output.shape == (4, 2)
+        assert model.num_classes == 2
+
+    def test_crossentropy_loss_compatibility(self, transformer_model, batch_size, seq_length, input_dim):
+        """Test model outputs work with CrossEntropyLoss."""
+        x = torch.randn(batch_size, seq_length, input_dim)
+        targets = torch.randint(0, 3, (batch_size,))
+
+        criterion = nn.CrossEntropyLoss()
+        output = transformer_model(x)
+
+        loss = criterion(output, targets)
+        assert loss.item() >= 0
+
+    def test_backward_pass(self, transformer_model, batch_size, seq_length, input_dim):
+        """Test backward pass and gradient computation."""
+        x = torch.randn(batch_size, seq_length, input_dim)
+        targets = torch.randint(0, 3, (batch_size,))
+
+        criterion = nn.CrossEntropyLoss()
+        output = transformer_model(x)
+        loss = criterion(output, targets)
+
+        loss.backward()
+
+        # Check gradients exist
+        for param in transformer_model.parameters():
+            if param.requires_grad:
+                assert param.grad is not None
+
+    def test_different_sequence_lengths(self, input_dim):
+        """Test model handles different sequence lengths."""
+        model = TransformerNet(input_dim=input_dim, d_model=64, nhead=4)
+        model.eval()
+
+        for seq_len in [10, 50, 100]:
+            x = torch.randn(4, seq_len, input_dim)
+            output = model(x)
+            assert output.shape == (4, 3)
+
+    def test_nhead_divides_d_model(self, input_dim):
+        """Test that nhead must divide d_model evenly."""
+        # This should work (64 / 4 = 16)
+        model = TransformerNet(input_dim=input_dim, d_model=64, nhead=4)
+        assert model.d_model == 64
+
+        # This should also work (64 / 8 = 8)
+        model = TransformerNet(input_dim=input_dim, d_model=64, nhead=8)
+        assert model.nhead == 8
+
+
+class TestTransformerNetInferenceLatency:
+    """Test Transformer inference latency requirements (< 10ms)."""
+
+    def test_transformer_inference_latency(self, input_dim, seq_length):
+        """Test TransformerNet inference is fast enough."""
+        import time
+
+        model = TransformerNet(
+            input_dim=input_dim,
+            d_model=64,
+            nhead=4,
+            num_layers=2
+        )
+        model.eval()
+        x = torch.randn(1, seq_length, input_dim)
+
+        # Warm up
+        for _ in range(10):
+            model(x)
+
+        # Measure
+        times = []
+        for _ in range(100):
+            start = time.perf_counter()
+            with torch.no_grad():
+                model(x)
+            end = time.perf_counter()
+            times.append((end - start) * 1000)  # ms
+
+        avg_time = np.mean(times)
+        p99_time = np.percentile(times, 99)
+
+        # Should be under 10ms for real-time trading
+        assert avg_time < 10, f"Average inference time {avg_time:.2f}ms exceeds 10ms"
+        assert p99_time < 15, f"P99 inference time {p99_time:.2f}ms too high"
+
+    def test_transformer_vs_lstm_latency_comparison(self, input_dim, seq_length):
+        """Compare Transformer latency with LSTM as baseline."""
+        import time
+
+        # Create both models with similar capacity
+        transformer = TransformerNet(input_dim=input_dim, d_model=64, nhead=4, num_layers=2)
+        lstm = LSTMNet(input_dim=input_dim, hidden_dim=64, num_layers=2)
+
+        transformer.eval()
+        lstm.eval()
+
+        x = torch.randn(1, seq_length, input_dim)
+
+        # Warm up
+        for _ in range(10):
+            transformer(x)
+            lstm(x)
+
+        # Measure Transformer
+        transformer_times = []
+        for _ in range(50):
+            start = time.perf_counter()
+            with torch.no_grad():
+                transformer(x)
+            transformer_times.append((time.perf_counter() - start) * 1000)
+
+        # Measure LSTM
+        lstm_times = []
+        for _ in range(50):
+            start = time.perf_counter()
+            with torch.no_grad():
+                lstm(x)
+            lstm_times.append((time.perf_counter() - start) * 1000)
+
+        transformer_avg = np.mean(transformer_times)
+        lstm_avg = np.mean(lstm_times)
+
+        # Both should be under 10ms
+        assert transformer_avg < 10, f"Transformer avg {transformer_avg:.2f}ms exceeds 10ms"
+        assert lstm_avg < 10, f"LSTM avg {lstm_avg:.2f}ms exceeds 10ms"
+
+
+# ============================================================================
 # ModelPrediction Tests
 # ============================================================================
 
@@ -375,6 +694,29 @@ class TestCreateModel:
         model = create_model('hybrid', input_dim, num_classes=3, static_input_dim=20)
         assert isinstance(model, HybridNet)
         assert model.num_classes == 3
+
+    def test_create_transformer(self, input_dim):
+        """Test creating transformer model."""
+        model = create_model('transformer', input_dim, num_classes=3)
+        assert isinstance(model, TransformerNet)
+        assert model.num_classes == 3
+
+    def test_create_transformer_with_params(self, input_dim):
+        """Test creating transformer model with custom parameters."""
+        model = create_model(
+            'transformer',
+            input_dim,
+            num_classes=3,
+            d_model=128,
+            nhead=8,
+            num_layers=4,
+            pooling='cls'
+        )
+        assert isinstance(model, TransformerNet)
+        assert model.d_model == 128
+        assert model.nhead == 8
+        assert model.num_layers == 4
+        assert model.pooling == 'cls'
 
     def test_default_num_classes(self, input_dim):
         """Test default num_classes is 3."""
