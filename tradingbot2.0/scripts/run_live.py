@@ -296,9 +296,52 @@ def parse_args() -> argparse.Namespace:
 
 
 def parse_time(time_str: str) -> time:
-    """Parse time string (HH:MM) to time object."""
+    """
+    Parse time string (HH:MM) to time object.
+
+    Validates:
+    - Format is exactly HH:MM (with colon)
+    - Hours are 0-23
+    - Minutes are 0-59
+
+    Args:
+        time_str: Time string in HH:MM format
+
+    Returns:
+        time: Parsed time object
+
+    Raises:
+        ValueError: If format is invalid or values out of range
+    """
+    import re
+
+    # Validate format with regex
+    if not re.match(r'^\d{1,2}:\d{2}$', time_str):
+        raise ValueError(
+            f"Invalid time format: '{time_str}'. Expected HH:MM (e.g., '09:30', '16:00')"
+        )
+
     parts = time_str.split(':')
-    return time(int(parts[0]), int(parts[1]))
+
+    try:
+        hours = int(parts[0])
+        minutes = int(parts[1])
+    except ValueError:
+        raise ValueError(
+            f"Invalid time values in '{time_str}'. Hours and minutes must be integers."
+        )
+
+    # Validate ranges
+    if not (0 <= hours <= 23):
+        raise ValueError(
+            f"Invalid hour: {hours}. Must be 0-23."
+        )
+    if not (0 <= minutes <= 59):
+        raise ValueError(
+            f"Invalid minute: {minutes}. Must be 0-59."
+        )
+
+    return time(hours, minutes)
 
 
 def main():
