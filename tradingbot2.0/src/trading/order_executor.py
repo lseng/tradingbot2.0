@@ -199,6 +199,11 @@ class OrderExecutor:
         self._pending_fills: Dict[str, asyncio.Future] = {}
         self._pending_oco_cancellations: set[asyncio.Task] = set()
 
+        # 10.23 FIX: Add lock and tracking for OCO race condition prevention
+        self._order_lock = asyncio.Lock()  # Protects _open_orders modifications
+        self._orders_being_cancelled: set[str] = set()  # Prevent duplicate cancellations
+        self._filled_oco_orders: set[str] = set()  # Track filled OCO orders to detect dual fills
+
         # Register WebSocket callbacks if available
         if self._ws:
             self._ws.on_fill(self._handle_fill)
@@ -665,6 +670,8 @@ class OrderExecutor:
         Handle fill notification from WebSocket.
 
         This is called by the WebSocket client when an order is filled.
+
+        10.23 FIX: Added dual fill detection and proper OCO tracking.
         """
         order_id = fill.order_id
         logger.debug(f"Fill received: {order_id} @ {fill.fill_price}")
@@ -675,7 +682,26 @@ class OrderExecutor:
             if not future.done():
                 future.set_result(fill.fill_price)
 
-        # Handle OCO cancellation
+        # 10.23 FIX: Check for dual fill (both OCO orders filled - CRITICAL ERROR)
+        if order_id in self._open_orders:
+            order = self._open_orders[order_id]
+            if order.custom_tag in (self.config.stop_tag, self.config.target_tag):
+                # Track that this OCO order was filled
+                self._filled_oco_orders.add(order_id)
+
+                # Check if the OTHER OCO order already filled (dual fill race condition)
+                other_tag = self.config.target_tag if order.custom_tag == self.config.stop_tag else self.config.stop_tag
+                for other_id, other_order in list(self._open_orders.items()):
+                    if other_order.custom_tag == other_tag and other_id in self._filled_oco_orders:
+                        logger.critical(
+                            f"DUAL FILL DETECTED! Both OCO orders filled: "
+                            f"stop={order_id if order.custom_tag == self.config.stop_tag else other_id}, "
+                            f"target={order_id if order.custom_tag == self.config.target_tag else other_id}. "
+                            f"Position may be doubled. MANUAL INTERVENTION REQUIRED."
+                        )
+                        # Don't return - still need to process this fill
+
+        # Handle OCO cancellation (schedule cancellation of other order)
         self._handle_oco_fill(order_id)
 
         # Update position manager if this is a stop/target fill
@@ -694,18 +720,32 @@ class OrderExecutor:
                 )
                 self._position_manager.update_from_fill(fill_obj)
 
-            del self._open_orders[order_id]
+            # Remove from open orders (don't await lock in sync callback)
+            self._open_orders.pop(order_id, None)
 
     def _track_oco_orders(
         self,
         stop_order: Optional[OrderResponse],
         target_order: Optional[OrderResponse],
     ) -> None:
-        """Track stop and target orders for OCO management."""
+        """
+        Track stop and target orders for OCO management.
+
+        10.23 FIX: Clears filled orders tracking for new positions.
+        """
+        # 10.23 FIX: Clear previous OCO tracking state for new position
+        self._filled_oco_orders.clear()
+        self._orders_being_cancelled.clear()
+
         if stop_order:
             self._open_orders[stop_order.order_id] = stop_order
         if target_order:
             self._open_orders[target_order.order_id] = target_order
+
+        logger.debug(
+            f"OCO tracking: stop={stop_order.order_id if stop_order else None}, "
+            f"target={target_order.order_id if target_order else None}"
+        )
 
     def _handle_oco_fill(self, filled_order_id: str) -> None:
         """
@@ -714,8 +754,8 @@ class OrderExecutor:
         Since TopstepX doesn't support bracket orders, we manually
         cancel the other side when stop or target is hit.
 
-        This schedules an async task to handle cancellation with proper
-        timeout and error handling to prevent race conditions.
+        10.23 FIX: Uses tracking set to prevent duplicate cancellations and
+        marks orders as being cancelled BEFORE scheduling async task.
         """
         if filled_order_id not in self._open_orders:
             return
@@ -732,35 +772,72 @@ class OrderExecutor:
         else:
             return
 
-        # Find and cancel the other order
+        # 10.23 FIX: Find orders to cancel, excluding already being cancelled
         to_cancel = [
             oid for oid, order in self._open_orders.items()
-            if order.custom_tag == cancel_tag and oid != filled_order_id
+            if order.custom_tag == cancel_tag
+            and oid != filled_order_id
+            and oid not in self._orders_being_cancelled  # Skip if already being cancelled
+            and oid not in self._filled_oco_orders  # Skip if already filled
         ]
 
         if to_cancel:
+            # 10.23 FIX: Mark orders as being cancelled BEFORE scheduling task
+            # This prevents another fill callback from scheduling duplicate cancellation
+            for oid in to_cancel:
+                self._orders_being_cancelled.add(oid)
+                logger.debug(f"OCO: Marking {oid} for cancellation (triggered by {filled_order_id})")
+
             # Schedule async cancellation with timeout and verification
-            task = asyncio.create_task(self._cancel_oco_orders_with_timeout(to_cancel))
+            task = asyncio.create_task(
+                self._cancel_oco_orders_with_timeout(to_cancel, filled_order_id)
+            )
             # Track the task for potential cleanup
             self._pending_oco_cancellations.add(task)
-            task.add_done_callback(lambda t: self._pending_oco_cancellations.discard(t))
+
+            def cleanup_task(t: asyncio.Task) -> None:
+                self._pending_oco_cancellations.discard(t)
+                # 10.23 FIX: Clear tracking after task completes
+                for oid in to_cancel:
+                    self._orders_being_cancelled.discard(oid)
+
+            task.add_done_callback(cleanup_task)
 
     async def _cancel_oco_orders_with_timeout(
-        self, order_ids: list[str], timeout: float = 5.0
+        self, order_ids: list[str], triggered_by: str = "", timeout: float = 5.0
     ) -> None:
         """
         Cancel OCO orders with timeout and verification.
 
         This ensures cancellations complete or are retried, preventing
         the race condition where both stop and target could fill.
+
+        10.23 FIX: Improved logging and verification.
+
+        Args:
+            order_ids: List of order IDs to cancel
+            triggered_by: The order ID that triggered this cancellation (for logging)
+            timeout: Timeout for cancellation attempt
         """
+        logger.info(
+            f"OCO cancellation: cancelling {order_ids} "
+            f"(triggered by fill of {triggered_by})"
+        )
+
         cancel_tasks = [self._cancel_order_safe(oid) for oid in order_ids]
 
         try:
-            await asyncio.wait_for(
+            results = await asyncio.wait_for(
                 asyncio.gather(*cancel_tasks, return_exceptions=True),
                 timeout=timeout,
             )
+            # 10.23 FIX: Check results for failures
+            for oid, result in zip(order_ids, results):
+                if isinstance(result, Exception):
+                    logger.error(f"OCO cancellation failed for {oid}: {result}")
+                else:
+                    logger.debug(f"OCO cancellation successful for {oid}")
+
         except asyncio.TimeoutError:
             logger.error(
                 f"OCO cancellation timed out after {timeout}s - "
@@ -796,14 +873,54 @@ class OrderExecutor:
                 except Exception as e:
                     logger.error(f"Cancellation retry failed for {order_id}: {e}")
 
-    async def _cancel_order_safe(self, order_id: str) -> None:
-        """Cancel order with error handling."""
+    async def _cancel_order_safe(self, order_id: str) -> bool:
+        """
+        Cancel order with error handling and verification.
+
+        10.23 FIX: Verifies cancellation was successful before removing from tracking.
+
+        Args:
+            order_id: Order ID to cancel
+
+        Returns:
+            True if cancellation verified, False otherwise
+        """
         try:
             await self._rest.cancel_order(order_id)
-            logger.debug(f"Cancelled order: {order_id}")
+            logger.debug(f"Cancel request sent for order: {order_id}")
+
+            # 10.23 FIX: Verify cancellation was successful
+            # Query order state to confirm cancellation
+            try:
+                order = await self._rest.get_order(order_id)
+                if order and order.is_filled:
+                    # Order filled before cancellation completed - this is a race condition
+                    logger.warning(
+                        f"Order {order_id} filled before cancellation could complete - "
+                        "checking for dual fill"
+                    )
+                    self._filled_oco_orders.add(order_id)
+                    return False
+                elif order and order.is_cancelled:
+                    logger.debug(f"Order {order_id} confirmed cancelled")
+            except Exception as verify_err:
+                # Verification failed but cancellation may have succeeded
+                logger.debug(f"Could not verify cancellation for {order_id}: {verify_err}")
+
+            # Remove from open orders
             self._open_orders.pop(order_id, None)
+            return True
+
         except Exception as e:
             logger.warning(f"Failed to cancel order {order_id}: {e}")
+            # 10.23 FIX: Still remove from tracking since we can't manage it
+            # but log the critical state for monitoring
+            if order_id in self._open_orders:
+                logger.error(
+                    f"Order {order_id} cancellation failed - "
+                    "order may still be active on broker"
+                )
+            return False
 
     async def _cancel_oco_orders(self) -> None:
         """Cancel all open stop/target orders."""

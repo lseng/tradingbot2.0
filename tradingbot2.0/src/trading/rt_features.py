@@ -278,6 +278,15 @@ class RealTimeFeatureEngine:
         # Open price for each bar (for volume delta calculation)
         self._opens: Deque[float] = deque(maxlen=self.config.max_bars)
 
+        # 10.17 fix: State for MACD signal line (9-period EMA of MACD)
+        self._macd_signal: float = 0.0
+
+        # 10.17 fix: Stochastic K history for 3-period SMA smoothing
+        self._stoch_k_history: Deque[float] = deque(maxlen=3)
+
+        # 10.17 fix: VWAP history for slope calculation
+        self._vwap_history: Deque[float] = deque(maxlen=self.config.max_bars)
+
         validation_status = "enabled" if expected_feature_names else "disabled (no expected names provided)"
         logger.info(
             f"RealTimeFeatureEngine initialized with {self.config.max_bars} bar buffer, "
@@ -438,11 +447,10 @@ class RealTimeFeatureEngine:
         features.append(close_to_vwap)
         names.append('close_to_vwap')
 
-        # VWAP slope (approximation)
-        if len(self._bars) >= 10:
-            features.append((vwap - prices[-10]) / prices[-10])
-        else:
-            features.append(0.0)
+        # VWAP slope (10.17 fix: use VWAP percent change, not price comparison)
+        # scalping_features.py uses: vwap.pct_change(10) = (vwap_now - vwap_10ago) / vwap_10ago
+        vwap_slope = self._get_vwap_slope(vwap)
+        features.append(vwap_slope)
         names.append('vwap_slope')
 
         # 4. Minutes to close
@@ -532,19 +540,26 @@ class RealTimeFeatureEngine:
         features.append(rsi_norm)
         names.append('rsi_norm')
 
-        # MACD
-        if 12 in self._ema_state and 26 in self._ema_state:
-            ema_12 = self._get_ema(prices, 12)
-            ema_26 = self._get_ema(prices, 26)
+        # MACD (10.17 fix: properly calculate macd_hist_norm)
+        if 12 in self._ema_state and 26 in self._ema_state and 9 in self._ema_state:
+            ema_12 = self._ema_state[12]
+            ema_26 = self._ema_state[26]
             macd = ema_12 - ema_26
             macd_norm = macd / prices[-1] if prices[-1] != 0 else 0.0
+            # MACD histogram = MACD - signal line
+            # Signal line is 9-period EMA of MACD, approximated via state
+            # We track MACD signal separately for proper histogram calculation
+            macd_signal = self._get_macd_signal(macd)
+            macd_histogram = macd - macd_signal
+            macd_hist_norm = macd_histogram / prices[-1] if prices[-1] != 0 else 0.0
         else:
             macd_norm = 0.0
+            macd_hist_norm = 0.0
         features.append(macd_norm)
-        features.append(0.0)  # MACD histogram (simplified)
+        features.append(macd_hist_norm)
         names.extend(['macd_norm', 'macd_hist_norm'])
 
-        # Stochastic
+        # Stochastic (10.17 fix: properly calculate stoch_d with 3-period smoothing)
         if len(prices) >= self.config.rsi_period:
             low_min = np.min(lows[-self.config.rsi_period:])
             high_max = np.max(highs[-self.config.rsi_period:])
@@ -554,10 +569,14 @@ class RealTimeFeatureEngine:
             else:
                 stoch_k = 50
             stoch_k_norm = (stoch_k - 50) / 50
+            # stoch_d is 3-period SMA of stoch_k - use rolling state
+            stoch_d = self._get_stoch_d(stoch_k)
+            stoch_d_norm = (stoch_d - 50) / 50
         else:
             stoch_k_norm = 0.0
+            stoch_d_norm = 0.0
         features.append(stoch_k_norm)
-        features.append(stoch_k_norm)  # Simplified D
+        features.append(stoch_d_norm)
         names.extend(['stoch_k_norm', 'stoch_d_norm'])
 
         # 9. Microstructure features
@@ -604,22 +623,26 @@ class RealTimeFeatureEngine:
             features.append(vol_ratio)
             names.append(f'volume_ratio_{window}s')
 
-        # Volume delta and OBV ROC (10.3: Fix hardcoded values)
-        volume_delta = self._calculate_volume_delta_norm(prices, volumes)
-        obv_roc = self._calculate_obv_roc(prices, volumes)
+        # Volume delta and OBV ROC (10.17 fix: match scalping_features.py lookback periods)
+        # volume_delta_norm uses 30-bar lookback (not 60)
+        # obv_roc uses 30-bar lookback (not 14)
+        volume_delta = self._calculate_volume_delta_norm(prices, volumes, lookback=30)
+        obv_roc = self._calculate_obv_roc(prices, volumes, lookback=30)
         features.append(volume_delta)
         features.append(obv_roc)
         names.extend(['volume_delta_norm', 'obv_roc'])
 
-        # 11. Multi-timeframe features (10.3: Fix hardcoded values)
-        # 1-minute timeframe (60 seconds)
-        htf_trend_1m = self._calculate_htf_trend(prices, 60)
-        htf_momentum_1m = self._calculate_htf_momentum(prices, 60)
-        htf_vol_1m = self._calculate_htf_volatility(prices, 60)
-        # 5-minute timeframe (300 seconds)
-        htf_trend_5m = self._calculate_htf_trend(prices, 300)
-        htf_momentum_5m = self._calculate_htf_momentum(prices, 300)
-        features.extend([htf_trend_1m, htf_momentum_1m, htf_vol_1m, htf_trend_5m, htf_momentum_5m])
+        # 11. Multi-timeframe features (10.17 fix: use lagged aggregated bars to prevent lookahead)
+        # scalping_features.py uses proper lagging: shift(1) on aggregated bars before forward-fill
+        # This ensures we only see PREVIOUS completed bars, not current incomplete ones
+        htf_features = self._calculate_htf_features()
+        features.extend([
+            htf_features['htf_trend_1m'],
+            htf_features['htf_momentum_1m'],
+            htf_features['htf_vol_1m'],
+            htf_features['htf_trend_5m'],
+            htf_features['htf_momentum_5m'],
+        ])
         names.extend(['htf_trend_1m', 'htf_momentum_1m', 'htf_vol_1m', 'htf_trend_5m', 'htf_momentum_5m'])
 
         # Store feature names
@@ -664,12 +687,19 @@ class RealTimeFeatureEngine:
             self._vwap_cumsum_pv = 0.0
             self._vwap_cumsum_v = 0.0
             self._vwap_reset_date = bar_date
+            # 10.17 fix: Also reset VWAP history on new session
+            self._vwap_history.clear()
             logger.debug(f"VWAP reset for new session: {bar_date}")
 
         # Update VWAP
         typical_price = (bar.high + bar.low + bar.close) / 3
         self._vwap_cumsum_pv += typical_price * bar.volume
         self._vwap_cumsum_v += bar.volume
+
+        # 10.17 fix: Track VWAP history for slope calculation
+        if self._vwap_cumsum_v > 0:
+            current_vwap = self._vwap_cumsum_pv / self._vwap_cumsum_v
+            self._vwap_history.append(current_vwap)
 
     def _update_volume_delta_state(self, bar: OHLCV) -> None:
         """Update volume delta state for volume_delta_norm feature."""
@@ -746,7 +776,18 @@ class RealTimeFeatureEngine:
             self._5m_current['volume'] += bar.volume
 
     def _calculate_htf_features(self) -> Dict[str, float]:
-        """Calculate multi-timeframe features from aggregated bars."""
+        """
+        Calculate multi-timeframe features from aggregated bars.
+
+        10.17 FIX: Matches scalping_features.py exactly (lines 485-557)
+
+        scalping_features.py references:
+        - trend_1m: (close[n] - close[n-1]) / close[n-1], lagged 1 bar
+        - momentum_1m: close.pct_change(5), lagged 1 bar = (close[n-1] - close[n-6]) / close[n-6]
+        - vol_1m: pct_change().rolling(5).std(), lagged 1 bar
+        - trend_5m: same pattern for 5-min bars
+        - momentum_5m: close.pct_change(3), lagged 1 bar = (close[n-1] - close[n-4]) / close[n-4]
+        """
         features = {
             'htf_trend_1m': 0.0,
             'htf_momentum_1m': 0.0,
@@ -755,48 +796,56 @@ class RealTimeFeatureEngine:
             'htf_momentum_5m': 0.0,
         }
 
-        # 1-minute features (need at least 6 completed 1-min bars for momentum calc)
-        if len(self._1m_bars) >= 6:
+        # 1-minute features (need at least 7 completed 1-min bars for 5-bar momentum + 1 lag)
+        if len(self._1m_bars) >= 7:
             bars_1m = list(self._1m_bars)
 
-            # trend_1m: return of previous completed bar (lagged)
-            # We use the second-to-last bar to avoid lookahead
-            if bars_1m[-2]['close'] > 0:
+            # trend_1m: bar-to-bar return of PREVIOUS completed bar (lagged by 1)
+            # scalping_features.py: (close[n] - close[n-1]) / close[n-1], then shift(1)
+            # At bar N, we use: (close[N-1] - close[N-2]) / close[N-2]
+            # bars[-2] = N-1, bars[-3] = N-2 (last completed bar is bars[-1], we use -2 for lag)
+            if bars_1m[-3]['close'] > 0:
                 features['htf_trend_1m'] = (
                     (bars_1m[-2]['close'] - bars_1m[-3]['close']) / bars_1m[-3]['close']
-                    if bars_1m[-3]['close'] > 0 else 0.0
                 )
 
-            # momentum_1m: 5-bar return (lagged by 1)
-            if bars_1m[-6]['close'] > 0:
+            # momentum_1m: 5-bar pct_change, lagged by 1
+            # scalping_features.py: pct_change(5) then shift(1)
+            # At bar N: (close[N-1] - close[N-6]) / close[N-6]
+            # bars[-2] = N-1, bars[-7] = N-6
+            if bars_1m[-7]['close'] > 0:
                 features['htf_momentum_1m'] = (
-                    (bars_1m[-2]['close'] - bars_1m[-6]['close']) / bars_1m[-6]['close']
+                    (bars_1m[-2]['close'] - bars_1m[-7]['close']) / bars_1m[-7]['close']
                 )
 
-            # vol_1m: 5-bar rolling std of returns (lagged)
+            # vol_1m: 5-bar rolling std of returns, lagged by 1
+            # scalping_features.py: pct_change().rolling(5).std(), then shift(1)
+            # Need returns for bars N-6 to N-2 (5 returns, each calculated from consecutive bars)
             returns_1m = []
-            for i in range(-6, -1):
-                if bars_1m[i-1]['close'] > 0:
-                    returns_1m.append(
-                        (bars_1m[i]['close'] - bars_1m[i-1]['close']) / bars_1m[i-1]['close']
-                    )
+            for i in range(-7, -2):  # indices -7 to -3, calculate returns to -6 to -2
+                if bars_1m[i]['close'] > 0:
+                    ret = (bars_1m[i+1]['close'] - bars_1m[i]['close']) / bars_1m[i]['close']
+                    returns_1m.append(ret)
             if len(returns_1m) >= 5:
                 features['htf_vol_1m'] = float(np.std(returns_1m))
 
-        # 5-minute features (need at least 4 completed 5-min bars for momentum calc)
-        if len(self._5m_bars) >= 4:
+        # 5-minute features (need at least 5 completed 5-min bars for 3-bar momentum + 1 lag)
+        if len(self._5m_bars) >= 5:
             bars_5m = list(self._5m_bars)
 
-            # trend_5m: return of previous completed bar (lagged)
-            if bars_5m[-2]['close'] > 0 and bars_5m[-3]['close'] > 0:
+            # trend_5m: bar-to-bar return, lagged by 1
+            # At bar N: (close[N-1] - close[N-2]) / close[N-2]
+            if bars_5m[-3]['close'] > 0:
                 features['htf_trend_5m'] = (
                     (bars_5m[-2]['close'] - bars_5m[-3]['close']) / bars_5m[-3]['close']
                 )
 
-            # momentum_5m: 3-bar return (lagged by 1) = 15-minute momentum
-            if bars_5m[-4]['close'] > 0:
+            # momentum_5m: 3-bar pct_change, lagged by 1 = 15-minute momentum
+            # At bar N: (close[N-1] - close[N-4]) / close[N-4]
+            # bars[-2] = N-1, bars[-5] = N-4
+            if bars_5m[-5]['close'] > 0:
                 features['htf_momentum_5m'] = (
-                    (bars_5m[-2]['close'] - bars_5m[-4]['close']) / bars_5m[-4]['close']
+                    (bars_5m[-2]['close'] - bars_5m[-5]['close']) / bars_5m[-5]['close']
                 )
 
         return features
@@ -855,6 +904,10 @@ class RealTimeFeatureEngine:
         self._5m_bars.clear()
         self._5m_current = None
         self._5m_current_period = None
+        # 10.17 fix: Reset new state variables
+        self._macd_signal = 0.0
+        self._stoch_k_history.clear()
+        self._vwap_history.clear()
         logger.info("RealTimeFeatureEngine reset")
 
     def _calculate_volume_delta_norm(
@@ -1017,3 +1070,80 @@ class RealTimeFeatureEngine:
         vol = float(np.std(returns))
         # Normalize to reasonable range (typical MES 1-second vol is very small)
         return float(np.clip(vol * 100, 0.0, 1.0))
+
+    # ==========================================================================
+    # 10.17 FIX: Helper methods for feature parity with scalping_features.py
+    # ==========================================================================
+
+    def _get_macd_signal(self, macd: float) -> float:
+        """
+        Calculate MACD signal line (9-period EMA of MACD).
+
+        Uses incremental EMA calculation for efficiency.
+        scalping_features.py reference: line 387
+            self.df['macd_signal'] = self.df['macd'].ewm(span=9, adjust=False).mean()
+
+        Args:
+            macd: Current MACD value
+
+        Returns:
+            MACD signal line value
+        """
+        alpha = 2.0 / (9 + 1)  # 9-period EMA
+        if self._macd_signal == 0.0:
+            # First value - initialize with MACD
+            self._macd_signal = macd
+        else:
+            self._macd_signal = alpha * macd + (1 - alpha) * self._macd_signal
+        return self._macd_signal
+
+    def _get_stoch_d(self, stoch_k: float) -> float:
+        """
+        Calculate Stochastic %D (3-period SMA of %K).
+
+        scalping_features.py reference: line 402
+            self.df['stoch_d'] = self.df['stoch_k'].rolling(window=3).mean()
+
+        Args:
+            stoch_k: Current Stochastic %K value
+
+        Returns:
+            Stochastic %D value (3-period SMA of K)
+        """
+        self._stoch_k_history.append(stoch_k)
+
+        if len(self._stoch_k_history) < 3:
+            # Not enough history, return K value
+            return stoch_k
+
+        # 3-period simple moving average
+        return sum(self._stoch_k_history) / len(self._stoch_k_history)
+
+    def _get_vwap_slope(self, current_vwap: float) -> float:
+        """
+        Calculate VWAP slope (10-bar percent change of VWAP).
+
+        scalping_features.py reference: line 219
+            self.df['vwap_slope'] = self.df['vwap'].pct_change(10)
+
+        This calculates: (current_vwap - vwap_10_bars_ago) / vwap_10_bars_ago
+        NOT: (current_vwap - price_10_bars_ago) / price_10_bars_ago (the old bug)
+
+        Args:
+            current_vwap: Current VWAP value
+
+        Returns:
+            VWAP slope (percent change over 10 bars)
+        """
+        if len(self._vwap_history) < 10:
+            return 0.0
+
+        # Get VWAP from 10 bars ago
+        vwap_10_ago = self._vwap_history[-10]
+
+        if abs(vwap_10_ago) < 1e-10:
+            return 0.0
+
+        # Percent change
+        slope = (current_vwap - vwap_10_ago) / vwap_10_ago
+        return float(slope)

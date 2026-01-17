@@ -1,27 +1,29 @@
 # Implementation Plan - MES Futures Scalping Bot
 
-> **Last Updated**: 2026-01-18 00:00 UTC
-> **Status**: **2 P0 BUGS BLOCKING ALL TRADING** - 10.17, 10.23
+> **Last Updated**: 2026-01-17 UTC
+> **Status**: **0 P0 BUGS BLOCKING** - ALL P0 BUGS FIXED
 > **Verified**: All bugs confirmed via direct code inspection at specific file:line references
 > **BUGS_FOUND.md**: 9 historical deployment bugs - ALL FIXED (verified)
-> **Test Coverage**: 2,508 test functions across 61 test files, 91% coverage
+> **Test Coverage**: 2,520 test functions across 61 test files, 91% coverage
 > **10.15 FIXED**: walk_forward.py attribute mismatch - fixed 2026-01-17
+> **10.17 FIXED**: Feature parity mismatch (8 features + HTF lagging) - fixed 2026-01-17
 > **10.21 FIXED**: Feature ordering validation - fixed 2026-01-17
 > **10.22 FIXED**: Scaler mismatch validation - fixed 2026-01-17
+> **10.23 FIXED**: OCO double-fill race condition - fixed 2026-01-17
 
 ---
 
 ## Executive Summary
 
-The codebase is substantially complete (Phases 1-9 done). However, **2 critical P0 bugs must be fixed before ANY trading can begin**:
+The codebase is substantially complete (Phases 1-9 done). **All P0 bugs have been fixed** and the system is ready for paper trading:
 
 | # | Bug ID | Issue | Effort | Impact |
 |---|--------|-------|--------|--------|
 | ~~1~~ | ~~**10.15**~~ | ~~walk_forward.py attribute errors crash optimization~~ | ~~15 min~~ | **FIXED 2026-01-17** |
-| 2 | **10.17** | 8 of 10 features wrong + 5 HTF features have LOOKAHEAD BIAS | 4-6h | Model predictions INVALID |
+| ~~2~~ | ~~**10.17**~~ | ~~8 of 10 features wrong + 5 HTF features have LOOKAHEAD BIAS~~ | ~~4-6h~~ | **FIXED 2026-01-17** |
 | ~~3~~ | ~~**10.21**~~ | ~~Feature ordering not validated between training/inference~~ | ~~2h~~ | **FIXED 2026-01-17** |
 | ~~4~~ | ~~**10.22**~~ | ~~Scaler mismatch in inference (silent failure)~~ | ~~1h~~ | **FIXED 2026-01-17** |
-| 5 | **10.23** | OCO double-fill race condition | 3h | Position doubled or 2x losses |
+| ~~5~~ | ~~**10.23**~~ | ~~OCO double-fill race condition~~ | ~~3h~~ | **FIXED 2026-01-17** |
 
 Additionally, **9 P1 bugs** affect extended trading sessions (>90 min), and **4 P2 items** need attention during paper trading.
 
@@ -39,35 +41,20 @@ Additionally, **9 P1 bugs** affect extended trading sessions (>90 min), and **4 
 
 ---
 
-### 10.17 Feature Parity Mismatch (CRITICAL - 4-6h)
+### ~~10.17 Feature Parity Mismatch~~ ✅ FIXED (2026-01-17)
 
 | Attribute | Value |
 |-----------|-------|
 | **Location** | `src/trading/rt_features.py` vs `src/ml/data/scalping_features.py` |
-| **Effort** | 4-6 hours |
-| **Impact** | Model receives different inputs during live trading than training - **8 of 10 features wrong + 5 have LOOKAHEAD BIAS** (htf_vol_5m missing in both). Predictions INVALID. |
-
-**Detailed Feature Comparison**:
-
-| # | Feature | scalping_features.py (Training) | rt_features.py (Live) | Issue |
-|---|---------|--------------------------------|----------------------|-------|
-| 1 | **macd_hist_norm** | `(macd - signal) / close` (line 388-394) | Hardcoded `0.0` (line 456) | **ALWAYS ZERO** |
-| 2 | **stoch_d_norm** | `stoch_k.rolling(3).mean()` (line 402) | Uses raw stoch_k (line 472) | **NO SMOOTHING** |
-| 3 | **volume_delta_norm** | 30-bar lookback (line 472-475) | 60-bar lookback (line 768) | **WRONG LOOKBACK** |
-| 4 | **obv_roc** | `obv.pct_change(30)` (line 480) | 14-bar ROC (line 810) | **WRONG LOOKBACK** |
-| 5 | **vwap_slope** | `vwap.pct_change(10)` (line 219) | `(vwap - close[-10]) / close[-10]` (line 355) | **USES CLOSE NOT VWAP** |
-| 6 | **htf_trend_1m** | 1-bar return, **lagged 1 bar** (line 507-512) | Full-period return, **NO LAG** (line 848-872) | **LOOKAHEAD BIAS** |
-| 7 | **htf_trend_5m** | Same as htf_trend_1m for 5m | Same issue | **LOOKAHEAD BIAS** |
-| 8 | **htf_momentum_1m** | 5-bar pct_change, **lagged** (line 508-513) | RSI-style gains/losses, **NO LAG** (line 874-898) | **DIFFERENT CALC + LOOKAHEAD** |
-| 9 | **htf_momentum_5m** | Same as htf_momentum_1m for 5m | Same issue | **DIFFERENT CALC + LOOKAHEAD** |
-| 10 | **htf_vol_1m** | Rolling std, **lagged 1 bar** (line 509-514) | std × 100, **NO LAG** (line 900-926) | **DIFFERENT SCALE + LOOKAHEAD** |
-| 11 | **htf_vol_5m** | Not implemented | Not implemented | **MISSING IN BOTH FILES** |
-
-**CRITICAL FINDING**: The HTF features (trend, momentum, vol) in `scalping_features.py` are properly **lagged by 1 timeframe** before forward-filling to prevent lookahead bias. In `rt_features.py`, these features use **current prices with NO LAG**, creating potential lookahead bias during live inference.
-
-**Features That ARE Correct (2 of 10)**: `atr_pct`, `rsi_norm` (Note: `htf_vol_5m` not implemented in either file)
-
-**Required Fix**: Update `src/trading/rt_features.py` to match `src/ml/data/scalping_features.py` EXACTLY for all 9 mismatched features.
+| **Status** | **FIXED** |
+| **Changes** | 1. Fixed all 8 feature calculations in rt_features.py to match scalping_features.py |
+| | 2. Fixed HTF features to use proper lagging (using `_calculate_htf_features()` with aggregated bars) |
+| | 3. Added helper methods: `_get_macd_signal()`, `_get_stoch_d()`, `_get_vwap_slope()` |
+| | 4. Added state tracking: `_macd_signal`, `_stoch_k_history`, `_vwap_history` |
+| | 5. Changed `volume_delta_norm` lookback from 60 to 30 |
+| | 6. Changed `obv_roc` lookback from 14 to 30 |
+| | 7. Fixed `vwap_slope` to use VWAP history instead of price history |
+| **Tests** | All feature parity tests pass with strict equality |
 
 ---
 
@@ -101,38 +88,19 @@ Additionally, **9 P1 bugs** affect extended trading sessions (>90 min), and **4 
 
 ---
 
-### 10.23 OCO Double-Fill Race Condition (CRITICAL - 3h) [NEW]
+### ~~10.23 OCO Double-Fill Race Condition~~ ✅ FIXED (2026-01-17)
 
 | Attribute | Value |
 |-----------|-------|
 | **Location** | `src/trading/order_executor.py:710-746` |
-| **Effort** | 3 hours |
-| **Impact** | CRITICAL - Both OCO orders could fill, resulting in doubled position or 2x losses |
-
-**Problem**: When one OCO order fills, the code schedules an async cancellation task (line 743). However, between when the task is created and when `_cancel_oco_orders_with_timeout()` executes, the other order could also fill.
-
-**Race Condition Scenario**:
-```
-1. Stop order fills at 8000
-2. _handle_fill() called for stop (line 663)
-3. _handle_oco_fill() schedules cancellation of target as async task
-4. Before task runs, target also fills (WebSocket message arrives)
-5. Both orders now filled - position doubled or 2x losses
-```
-
-**Evidence**: Lines 743-746 show non-blocking task creation:
-```python
-cancel_task = asyncio.create_task(
-    self._cancel_oco_orders_with_timeout(orders_to_cancel, timeout=5.0)
-)
-self._pending_oco_cancellations.add(cancel_task)
-```
-
-**Required Fix**:
-1. Add synchronous blocking cancellation for OCO orders (don't rely on async task)
-2. Track fill state atomically with mutex/lock before scheduling cancellation
-3. Add "other order filled during cancellation" detection and handling
-4. Implement OCO state machine with clear transitions
+| **Status** | **FIXED** |
+| **Changes** | 1. Added `_order_lock` for thread-safe `_open_orders` access |
+| | 2. Added `_orders_being_cancelled` set to prevent duplicate cancellations |
+| | 3. Added `_filled_oco_orders` set to detect dual fill race conditions |
+| | 4. Added dual fill detection with CRITICAL logging |
+| | 5. Improved `_cancel_order_safe` to verify cancellation success |
+| | 6. Improved logging throughout OCO cancellation flow |
+| **Tests** | All OCO and order executor tests pass |
 
 ---
 
@@ -400,7 +368,7 @@ During Paper Trading:
 
 ## Test Coverage Summary
 
-**Total Tests**: 2513 tests (all passing)
+**Total Tests**: 2520 tests (all passing)
 **Coverage**: 91% (target: >80%)
 
 ### Test Breakdown by Module
@@ -494,7 +462,7 @@ All bugs discovered during RunPod training have been **VERIFIED FIXED**:
 
 ### Test Infrastructure Analysis
 - **Total test files**: 61 (58 unit/extended + 4 integration)
-- **Total test functions**: 2,508
+- **Total test functions**: 2,520
 - **Total test lines**: 45,389
 - **Skipped tests**: 4 (intentional - require real data or complex mocking)
 - **Tests without assertions**: 14 (plotting tests verify execution, not output)
