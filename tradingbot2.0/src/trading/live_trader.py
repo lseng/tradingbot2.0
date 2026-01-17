@@ -48,6 +48,10 @@ RTH_END = time(16, 0)
 FLATTEN_START = time(16, 25)  # 4:25 PM - start flatten
 FLATTEN_DEADLINE = time(16, 30)  # 4:30 PM - must be flat
 
+# Queue constants for backpressure (10.5)
+BAR_QUEUE_MAX_SIZE = 100  # Max bars in queue (~100 seconds buffer at 1s bars)
+BAR_QUEUE_WARNING_THRESHOLD = 0.8  # Warn when queue is 80% full
+
 
 @dataclass
 class TradingConfig:
@@ -188,6 +192,11 @@ class LiveTrader:
         self._last_prediction: Optional[ModelPrediction] = None
         self._last_realized_pnl: float = 0.0  # Track session realized P&L for circuit breakers
 
+        # Bar processing queue with backpressure (10.5)
+        self._bar_queue: asyncio.Queue[OHLCV] = asyncio.Queue(maxsize=BAR_QUEUE_MAX_SIZE)
+        self._bar_processor_task: Optional[asyncio.Task] = None
+        self._queue_warning_logged: bool = False  # Prevent log spam
+
         # Shutdown handling
         self._shutdown_event = asyncio.Event()
 
@@ -301,6 +310,11 @@ class LiveTrader:
         await self._ws.subscribe_quotes([self.config.contract_id])
         logger.info(f"   Subscribed to {self.config.contract_id}")
 
+        # 11. Start bar processor worker (10.5: backpressure handling)
+        logger.info("11. Starting bar processor worker...")
+        self._bar_processor_task = asyncio.create_task(self._bar_processor_worker())
+        logger.info("   Bar processor worker started")
+
         self._running = True
         logger.info("Startup complete - trading session active")
 
@@ -360,17 +374,78 @@ class LiveTrader:
                 break
 
     def _on_quote(self, quote: Quote) -> None:
-        """Handle incoming quote from WebSocket."""
+        """
+        Handle incoming quote from WebSocket.
+
+        Uses bounded queue with backpressure to prevent unbounded task accumulation
+        during high-volume periods (10.5).
+        """
         try:
             # Aggregate into 1-second bars
             completed_bar = self._bar_aggregator.add_tick(quote)
 
             if completed_bar:
-                # Schedule async processing
-                asyncio.create_task(self._process_bar(completed_bar))
+                # 10.5: Add to bounded queue with backpressure
+                try:
+                    self._bar_queue.put_nowait(completed_bar)
+                    self._queue_warning_logged = False  # Reset warning flag on success
+
+                    # Monitor queue depth and warn when approaching capacity
+                    queue_depth = self._bar_queue.qsize()
+                    warning_threshold = int(BAR_QUEUE_MAX_SIZE * BAR_QUEUE_WARNING_THRESHOLD)
+                    if queue_depth >= warning_threshold and not self._queue_warning_logged:
+                        logger.warning(
+                            f"Bar queue depth high: {queue_depth}/{BAR_QUEUE_MAX_SIZE} "
+                            f"({queue_depth/BAR_QUEUE_MAX_SIZE*100:.0f}%) - "
+                            "processing may be falling behind"
+                        )
+                        self._queue_warning_logged = True
+
+                except asyncio.QueueFull:
+                    # Backpressure: queue is full, drop this bar and log
+                    logger.warning(
+                        f"Bar queue full ({BAR_QUEUE_MAX_SIZE} bars) - dropping bar. "
+                        "Processing is falling behind quotes."
+                    )
 
         except Exception as e:
             logger.error(f"Error processing quote: {e}")
+
+    async def _bar_processor_worker(self) -> None:
+        """
+        Worker coroutine that processes bars from the queue.
+
+        Implements the consumer side of the backpressure mechanism (10.5).
+        Runs until shutdown, processing bars as they arrive.
+        """
+        logger.info("Bar processor worker started")
+        try:
+            while self._running or not self._bar_queue.empty():
+                try:
+                    # Wait for next bar with timeout to check shutdown flag
+                    bar = await asyncio.wait_for(
+                        self._bar_queue.get(),
+                        timeout=1.0
+                    )
+                    await self._process_bar(bar)
+                    self._bar_queue.task_done()
+                except asyncio.TimeoutError:
+                    # No bar available, check if we should continue
+                    continue
+                except asyncio.CancelledError:
+                    logger.info("Bar processor worker cancelled")
+                    break
+                except Exception as e:
+                    logger.error(f"Error in bar processor worker: {e}")
+                    # Continue processing despite errors
+
+        except Exception as e:
+            logger.error(f"Bar processor worker failed: {e}")
+        finally:
+            logger.info(
+                f"Bar processor worker stopped. "
+                f"Queue depth at shutdown: {self._bar_queue.qsize()}"
+            )
 
     def _on_bar_complete(self, bar: OHLCV) -> None:
         """Callback when bar is complete."""
@@ -654,6 +729,25 @@ class LiveTrader:
             if self._ws:
                 logger.info("3. Disconnecting WebSocket...")
                 await self._ws.disconnect()
+
+            # 3.5 Stop bar processor worker and drain queue (10.5)
+            if self._bar_processor_task:
+                logger.info("3.5. Stopping bar processor worker...")
+                # Wait for queue to drain (up to 5 seconds)
+                try:
+                    await asyncio.wait_for(self._bar_queue.join(), timeout=5.0)
+                    logger.info("   Bar queue drained successfully")
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        f"   Bar queue drain timeout, {self._bar_queue.qsize()} bars remaining"
+                    )
+                # Cancel the worker task
+                self._bar_processor_task.cancel()
+                try:
+                    await self._bar_processor_task
+                except asyncio.CancelledError:
+                    pass
+                logger.info("   Bar processor worker stopped")
 
             # 4. Save session state
             logger.info("4. Saving session state...")

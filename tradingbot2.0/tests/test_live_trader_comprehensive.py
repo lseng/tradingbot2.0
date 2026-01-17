@@ -377,7 +377,7 @@ class TestLiveTraderQuoteHandling:
         trader._bar_aggregator.add_tick.assert_called_once_with(mock_quote)
 
     def test_on_quote_handles_completed_bar(self):
-        """Test completed bar triggers async processing."""
+        """Test completed bar is added to queue for processing (10.5 backpressure)."""
         config = TradingConfig()
         trader = LiveTrader(config, api_key="test")
 
@@ -395,9 +395,13 @@ class TestLiveTraderQuoteHandling:
 
         mock_quote = Mock()
 
-        with patch('asyncio.create_task') as mock_create_task:
-            trader._on_quote(mock_quote)
-            mock_create_task.assert_called_once()
+        # 10.5: Now uses queue instead of create_task for backpressure
+        trader._on_quote(mock_quote)
+
+        # Verify bar was added to queue
+        assert trader._bar_queue.qsize() == 1
+        queued_bar = trader._bar_queue.get_nowait()
+        assert queued_bar == completed_bar
 
     def test_on_quote_handles_error(self):
         """Test error handling in quote callback."""
@@ -410,6 +414,197 @@ class TestLiveTraderQuoteHandling:
 
         # Should not raise
         trader._on_quote(mock_quote)
+
+    def test_on_quote_queue_full_backpressure(self):
+        """Test backpressure when queue is full (10.5)."""
+        from src.trading.live_trader import BAR_QUEUE_MAX_SIZE
+
+        config = TradingConfig()
+        trader = LiveTrader(config, api_key="test")
+
+        # Create completed bar
+        completed_bar = OHLCV(
+            timestamp=datetime.now(),
+            open=6000.0,
+            high=6001.0,
+            low=5999.0,
+            close=6000.5,
+            volume=100,
+        )
+
+        trader._bar_aggregator = Mock()
+        trader._bar_aggregator.add_tick.return_value = completed_bar
+
+        mock_quote = Mock()
+
+        # Fill the queue to max
+        for _ in range(BAR_QUEUE_MAX_SIZE):
+            trader._bar_queue.put_nowait(completed_bar)
+
+        # Next quote should trigger backpressure (drop bar)
+        trader._on_quote(mock_quote)
+
+        # Queue should still be at max (bar was dropped)
+        assert trader._bar_queue.qsize() == BAR_QUEUE_MAX_SIZE
+
+    def test_on_quote_queue_warning_threshold(self):
+        """Test warning when queue approaches capacity (10.5)."""
+        from src.trading.live_trader import BAR_QUEUE_MAX_SIZE, BAR_QUEUE_WARNING_THRESHOLD
+        import logging
+
+        config = TradingConfig()
+        trader = LiveTrader(config, api_key="test")
+
+        completed_bar = OHLCV(
+            timestamp=datetime.now(),
+            open=6000.0,
+            high=6001.0,
+            low=5999.0,
+            close=6000.5,
+            volume=100,
+        )
+
+        trader._bar_aggregator = Mock()
+        trader._bar_aggregator.add_tick.return_value = completed_bar
+
+        mock_quote = Mock()
+
+        # Fill queue to just below warning threshold
+        warning_threshold = int(BAR_QUEUE_MAX_SIZE * BAR_QUEUE_WARNING_THRESHOLD)
+        for _ in range(warning_threshold - 1):
+            trader._bar_queue.put_nowait(completed_bar)
+
+        # Warning flag should not be set yet
+        assert not trader._queue_warning_logged
+
+        # Add one more to trigger warning
+        with patch('src.trading.live_trader.logger') as mock_logger:
+            trader._on_quote(mock_quote)
+            # Warning should have been logged
+            mock_logger.warning.assert_called()
+            assert trader._queue_warning_logged
+
+    def test_bar_queue_initialization(self):
+        """Test bar queue is initialized with correct max size (10.5)."""
+        from src.trading.live_trader import BAR_QUEUE_MAX_SIZE
+
+        config = TradingConfig()
+        trader = LiveTrader(config, api_key="test")
+
+        assert trader._bar_queue.maxsize == BAR_QUEUE_MAX_SIZE
+        assert trader._bar_processor_task is None  # Not started until _startup
+
+
+class TestBarProcessorWorker:
+    """Tests for bar processor worker (10.5 backpressure)."""
+
+    @pytest.mark.asyncio
+    async def test_bar_processor_worker_processes_bars(self):
+        """Test worker processes bars from queue."""
+        config = TradingConfig()
+        trader = LiveTrader(config, api_key="test")
+        trader._running = True
+
+        # Mock _process_bar
+        processed_bars = []
+        async def mock_process_bar(bar):
+            processed_bars.append(bar)
+        trader._process_bar = mock_process_bar
+
+        # Add bars to queue
+        bars = [
+            OHLCV(timestamp=datetime.now(), open=6000.0, high=6001.0, low=5999.0, close=6000.5, volume=100),
+            OHLCV(timestamp=datetime.now(), open=6001.0, high=6002.0, low=6000.0, close=6001.5, volume=200),
+        ]
+        for bar in bars:
+            trader._bar_queue.put_nowait(bar)
+
+        # Start worker
+        worker_task = asyncio.create_task(trader._bar_processor_worker())
+
+        # Wait for queue to drain
+        await asyncio.wait_for(trader._bar_queue.join(), timeout=2.0)
+
+        # Stop the worker
+        trader._running = False
+        await asyncio.sleep(0.1)
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
+
+        # Verify all bars were processed
+        assert len(processed_bars) == 2
+        assert processed_bars[0] == bars[0]
+        assert processed_bars[1] == bars[1]
+
+    @pytest.mark.asyncio
+    async def test_bar_processor_worker_handles_cancellation(self):
+        """Test worker handles cancellation gracefully."""
+        config = TradingConfig()
+        trader = LiveTrader(config, api_key="test")
+        trader._running = True
+
+        async def slow_process_bar(bar):
+            await asyncio.sleep(10)  # Simulates slow processing
+        trader._process_bar = slow_process_bar
+
+        # Start worker
+        worker_task = asyncio.create_task(trader._bar_processor_worker())
+
+        # Cancel immediately
+        await asyncio.sleep(0.1)
+        worker_task.cancel()
+
+        # Should complete without raising
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_bar_processor_worker_continues_on_error(self):
+        """Test worker continues processing after errors."""
+        config = TradingConfig()
+        trader = LiveTrader(config, api_key="test")
+        trader._running = True
+
+        # Mock _process_bar to fail on first call, succeed on second
+        call_count = [0]
+        processed_bars = []
+        async def mock_process_bar(bar):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise ValueError("Test error")
+            processed_bars.append(bar)
+        trader._process_bar = mock_process_bar
+
+        # Add bars to queue
+        bars = [
+            OHLCV(timestamp=datetime.now(), open=6000.0, high=6001.0, low=5999.0, close=6000.5, volume=100),
+            OHLCV(timestamp=datetime.now(), open=6001.0, high=6002.0, low=6000.0, close=6001.5, volume=200),
+        ]
+        for bar in bars:
+            trader._bar_queue.put_nowait(bar)
+
+        # Start worker
+        worker_task = asyncio.create_task(trader._bar_processor_worker())
+
+        # Wait for processing
+        await asyncio.sleep(0.5)
+
+        # Stop the worker
+        trader._running = False
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
+
+        # Should have processed second bar despite first error
+        assert len(processed_bars) == 1
+        assert processed_bars[0] == bars[1]
 
 
 class TestLiveTraderBarProcessing:

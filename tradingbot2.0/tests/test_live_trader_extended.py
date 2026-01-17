@@ -720,7 +720,7 @@ class TestLiveTraderOnQuote:
         mock_aggregator.add_tick.assert_called_once_with(quote)
 
     def test_on_quote_completed_bar(self, trading_config):
-        """Test _on_quote schedules bar processing."""
+        """Test _on_quote adds completed bar to queue (10.5 backpressure)."""
         trader = LiveTrader(trading_config)
         trader._session_metrics = SessionMetrics()
 
@@ -739,10 +739,13 @@ class TestLiveTraderOnQuote:
 
         quote = MagicMock()
 
-        with patch('asyncio.create_task') as mock_create_task:
-            trader._on_quote(quote)
+        # 10.5: Now uses queue instead of create_task for backpressure
+        trader._on_quote(quote)
 
-            mock_create_task.assert_called_once()
+        # Verify bar was added to queue
+        assert trader._bar_queue.qsize() == 1
+        queued_bar = trader._bar_queue.get_nowait()
+        assert queued_bar == completed_bar
 
 
 # =============================================================================
