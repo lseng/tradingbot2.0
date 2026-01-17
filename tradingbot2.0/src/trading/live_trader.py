@@ -184,6 +184,8 @@ class LiveTrader:
         # ML Model
         self._model = None
         self._scaler = None
+        self._requires_scaler: bool = False  # 10.22: Track if model was trained with scaler
+        self._scaler_validated: bool = False  # 10.22: Track if scaler validation done
 
         # Session state
         self._running: bool = False
@@ -569,6 +571,11 @@ class LiveTrader:
 
         try:
             with torch.no_grad():
+                # 10.22 fix: Validate scaler on first inference
+                if not self._scaler_validated:
+                    self._validate_scaler(feature_vector)
+                    self._scaler_validated = True
+
                 # Scale features if scaler available
                 if self._scaler:
                     features = self._scaler.transform(
@@ -604,6 +611,48 @@ class LiveTrader:
                 direction=0,
                 confidence=0.0,
                 timestamp=datetime.now(),
+            )
+
+    def _validate_scaler(self, feature_vector) -> None:
+        """
+        Validate scaler compatibility with features (10.22 fix).
+
+        This ensures:
+        1. If model requires scaler, scaler is loaded
+        2. Scaler's feature count matches feature vector dimensions
+
+        Raises:
+            RuntimeError: If scaler is missing but required
+            RuntimeError: If scaler dimensions don't match features
+        """
+        num_features = len(feature_vector.features)
+
+        # Check 1: Scaler required but missing
+        if self._requires_scaler and self._scaler is None:
+            raise RuntimeError(
+                f"Model requires scaler but none is loaded! "
+                f"Feature vector has {num_features} features but no scaler available. "
+                f"Model predictions will be INVALID without proper scaling."
+            )
+
+        # Check 2: Scaler dimensions match
+        if self._scaler is not None:
+            scaler_features = getattr(self._scaler, 'n_features_in_', len(self._scaler.mean_))
+            if scaler_features != num_features:
+                raise RuntimeError(
+                    f"Scaler feature count mismatch! "
+                    f"Scaler expects {scaler_features} features but feature vector has {num_features}. "
+                    f"Model cannot be used with these features."
+                )
+            logger.info(
+                f"Scaler validation PASSED - {num_features} features match scaler dimensions"
+            )
+
+        # Warning: No scaler but features look like they need scaling
+        if self._scaler is None:
+            logger.warning(
+                f"Running inference without scaler ({num_features} features). "
+                f"If model was trained with scaled features, predictions may be invalid!"
             )
 
     async def _execute_signal(self, signal: Signal, current_price: float) -> None:
@@ -683,7 +732,7 @@ class LiveTrader:
             logger.error(f"Position sync failed: {e}")
 
     async def _load_model(self) -> None:
-        """Load ML model and scaler."""
+        """Load ML model, scaler, and feature names from checkpoint."""
         model_path = Path(self.config.model_path)
 
         if not model_path.exists():
@@ -692,20 +741,98 @@ class LiveTrader:
             return
 
         try:
-            # Load PyTorch model
-            self._model = torch.load(model_path, map_location='cpu')
+            # Load checkpoint (contains model_state_dict, feature_names, scaler info, etc.)
+            checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
+
+            # Handle both full checkpoints (dict) and bare model objects
+            if isinstance(checkpoint, dict):
+                # Full checkpoint from training
+                from src.ml.models.neural_networks import FeedForwardNet, LSTMNet, HybridNet
+
+                model_config = checkpoint.get('model_config', checkpoint.get('config', {}))
+                model_type = model_config.get('type', model_config.get('model_type', 'feedforward'))
+                input_dim = checkpoint.get('input_dim', model_config.get('input_size', 50))
+                hidden_size = model_config.get('hidden_size', 128)
+                num_layers = model_config.get('num_layers', 2)
+                dropout = model_config.get('dropout', 0.2)
+                num_classes = checkpoint.get('num_classes', 3)
+
+                # Create model based on type
+                if model_type.lower() in ['lstm', 'rnn']:
+                    self._model = LSTMNet(
+                        input_size=input_dim,
+                        hidden_size=hidden_size,
+                        num_layers=num_layers,
+                        dropout=dropout,
+                        num_classes=num_classes,
+                    )
+                elif model_type.lower() == 'hybrid':
+                    self._model = HybridNet(
+                        input_size=input_dim,
+                        lstm_hidden=hidden_size // 2,
+                        fc_hidden=hidden_size,
+                        num_layers=num_layers,
+                        dropout=dropout,
+                        num_classes=num_classes,
+                    )
+                else:
+                    self._model = FeedForwardNet(
+                        input_size=input_dim,
+                        hidden_sizes=[hidden_size, hidden_size // 2],
+                        dropout=dropout,
+                        num_classes=num_classes,
+                    )
+
+                self._model.load_state_dict(checkpoint['model_state_dict'])
+                logger.info(f"Model loaded from checkpoint: type={model_type}, input_dim={input_dim}")
+
+                # Extract and set feature names for validation (10.21 fix)
+                feature_names = checkpoint.get('feature_names')
+                if feature_names and self._feature_engine:
+                    self._feature_engine.set_expected_feature_names(feature_names)
+                    logger.info(f"Feature names loaded from checkpoint ({len(feature_names)} features)")
+                elif not feature_names:
+                    logger.warning(
+                        "No feature_names in checkpoint - feature order validation disabled. "
+                        "Model may receive features in wrong order!"
+                    )
+
+                # Load scaler from checkpoint if available (10.22 fix)
+                if 'scaler_mean' in checkpoint and 'scaler_scale' in checkpoint:
+                    from sklearn.preprocessing import StandardScaler
+                    import numpy as np
+                    self._scaler = StandardScaler()
+                    self._scaler.mean_ = np.array(checkpoint['scaler_mean'])
+                    self._scaler.scale_ = np.array(checkpoint['scaler_scale'])
+                    self._scaler.var_ = self._scaler.scale_ ** 2
+                    self._scaler.n_features_in_ = len(self._scaler.mean_)
+                    self._requires_scaler = True  # 10.22: Model was trained with scaler
+                    logger.info(f"Scaler loaded from checkpoint ({len(self._scaler.mean_)} features)")
+
+            else:
+                # Bare model object (legacy format)
+                self._model = checkpoint
+                logger.warning(
+                    "Model loaded in legacy format (bare model object). "
+                    "Feature order validation disabled - retrain with full checkpoint format."
+                )
+
             self._model.eval()
             logger.info(f"Model loaded from {model_path}")
 
-            # Load scaler if available
-            scaler_path = Path(self.config.scaler_path)
-            if scaler_path.exists():
-                import joblib
-                self._scaler = joblib.load(scaler_path)
-                logger.info(f"Scaler loaded from {scaler_path}")
+            # Load external scaler if checkpoint didn't have one
+            if self._scaler is None:
+                scaler_path = Path(self.config.scaler_path)
+                if scaler_path.exists():
+                    import joblib
+                    self._scaler = joblib.load(scaler_path)
+                    self._requires_scaler = True  # 10.22: External scaler implies model needs scaling
+                    logger.info(f"Scaler loaded from {scaler_path}")
 
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             self._model = None
 
     async def _shutdown(self) -> None:

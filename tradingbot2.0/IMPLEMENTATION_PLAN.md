@@ -1,24 +1,26 @@
 # Implementation Plan - MES Futures Scalping Bot
 
-> **Last Updated**: 2026-01-17 23:15 UTC
-> **Status**: **4 P0 BUGS BLOCKING ALL TRADING** - 10.17 (original) + 10.21-10.23 (NEW)
+> **Last Updated**: 2026-01-18 00:00 UTC
+> **Status**: **2 P0 BUGS BLOCKING ALL TRADING** - 10.17, 10.23
 > **Verified**: All bugs confirmed via direct code inspection at specific file:line references
 > **BUGS_FOUND.md**: 9 historical deployment bugs - ALL FIXED (verified)
 > **Test Coverage**: 2,508 test functions across 61 test files, 91% coverage
 > **10.15 FIXED**: walk_forward.py attribute mismatch - fixed 2026-01-17
+> **10.21 FIXED**: Feature ordering validation - fixed 2026-01-17
+> **10.22 FIXED**: Scaler mismatch validation - fixed 2026-01-17
 
 ---
 
 ## Executive Summary
 
-The codebase is substantially complete (Phases 1-9 done). However, **4 critical P0 bugs must be fixed before ANY trading can begin**:
+The codebase is substantially complete (Phases 1-9 done). However, **2 critical P0 bugs must be fixed before ANY trading can begin**:
 
 | # | Bug ID | Issue | Effort | Impact |
 |---|--------|-------|--------|--------|
 | ~~1~~ | ~~**10.15**~~ | ~~walk_forward.py attribute errors crash optimization~~ | ~~15 min~~ | **FIXED 2026-01-17** |
 | 2 | **10.17** | 8 of 10 features wrong + 5 HTF features have LOOKAHEAD BIAS | 4-6h | Model predictions INVALID |
-| 3 | **10.21** | Feature ordering not validated between training/inference | 2h | Model receives scrambled inputs |
-| 4 | **10.22** | Scaler mismatch in inference (silent failure) | 1h | Unscaled features → wrong predictions |
+| ~~3~~ | ~~**10.21**~~ | ~~Feature ordering not validated between training/inference~~ | ~~2h~~ | **FIXED 2026-01-17** |
+| ~~4~~ | ~~**10.22**~~ | ~~Scaler mismatch in inference (silent failure)~~ | ~~1h~~ | **FIXED 2026-01-17** |
 | 5 | **10.23** | OCO double-fill race condition | 3h | Position doubled or 2x losses |
 
 Additionally, **9 P1 bugs** affect extended trading sessions (>90 min), and **4 P2 items** need attention during paper trading.
@@ -69,62 +71,33 @@ Additionally, **9 P1 bugs** affect extended trading sessions (>90 min), and **4 
 
 ---
 
-### 10.21 Feature Ordering Not Validated (CRITICAL - 2h) [NEW]
+### ~~10.21 Feature Ordering Not Validated~~ ✅ FIXED (2026-01-17)
 
 | Attribute | Value |
 |-----------|-------|
-| **Location** | `src/trading/rt_features.py:310-546` vs `src/ml/data/scalping_features.py` |
-| **Effort** | 2 hours |
-| **Impact** | Model receives features in wrong order = completely scrambled inputs = random predictions |
-
-**Problem**: Feature names are generated dynamically in `_calculate_features()` method. The order depends on execution sequence through:
-1. Return periods (lines 319-327)
-2. EMA periods (lines 330-345)
-3. VWAP (lines 347-358)
-4. Minutes to close (lines 360-364)
-5. Time features (lines 366-383)
-6. Volatility (lines 385-426)
-7. Momentum (lines 428-473)
-8. Microstructure (lines 475-507)
-9. Volume (lines 509-524)
-10. Multi-timeframe (lines 526-535)
-
-**Critical Issue**: If this order differs from how `scalping_features.py` generates features during training, the model will receive completely scrambled inputs. Line 541: `self._feature_names = names` is set AFTER all features calculated.
-
-**Required Fix**:
-1. Extract feature names list from trained model checkpoint
-2. Add validation in `RealTimeFeatureEngine.__init__()` that compares generated feature order against expected order
-3. Raise error if mismatch detected
+| **Location** | `src/trading/rt_features.py:217-358` |
+| **Status** | **FIXED** |
+| **Changes** | 1. Added `expected_feature_names` parameter to `RealTimeFeatureEngine.__init__()` |
+| | 2. Added `set_expected_feature_names()` for late binding |
+| | 3. Added `_validate_feature_order()` that compares generated vs expected features |
+| | 4. Validation runs on first feature generation, raises `RuntimeError` on mismatch |
+| | 5. Updated `live_trader.py:_load_model()` to extract and pass feature names from checkpoint |
+| **Tests** | 11/11 RealTimeFeatureEngine tests pass, 176/176 related tests pass |
 
 ---
 
-### 10.22 Scaler Mismatch in Inference (CRITICAL - 1h) [NEW]
+### ~~10.22 Scaler Mismatch in Inference~~ ✅ FIXED (2026-01-17)
 
 | Attribute | Value |
 |-----------|-------|
-| **Location** | `src/trading/live_trader.py:573-576` |
-| **Effort** | 1 hour |
-| **Impact** | Silent failure - model receives unscaled features if scaler missing |
-
-**Problem**: Feature scaling depends on scaler availability:
-```python
-if self._scaler:
-    features = self._scaler.transform(feature_vector.features.reshape(1, -1))
-    tensor = torch.tensor(features, dtype=torch.float32)
-else:
-    tensor = feature_vector.as_tensor()  # UNSCALED - SILENT FAILURE
-```
-
-**Issues**:
-1. If model was trained with scaling but scaler is not loaded → model receives unscaled features
-2. No validation that scaler's expected feature count matches feature_vector dimensions
-3. No logging or error when scaler is missing but should be present
-
-**Required Fix**:
-1. Add `requires_scaler` flag to model config (saved during training)
-2. Validate scaler exists during model loading if `requires_scaler=True`
-3. Validate scaler feature count matches feature vector dimensions
-4. Log warning if scaler is None but features appear to need scaling
+| **Location** | `src/trading/live_trader.py:184-188, 573-656, 753-783` |
+| **Status** | **FIXED** |
+| **Changes** | 1. Added `_requires_scaler` and `_scaler_validated` flags to track scaler requirements |
+| | 2. `_load_model()` now sets `_requires_scaler=True` when scaler is loaded from checkpoint |
+| | 3. Added `_validate_scaler()` method that validates on first inference |
+| | 4. Raises `RuntimeError` if scaler required but missing, or dimensions mismatch |
+| | 5. Logs warning if running without scaler |
+| **Tests** | 134/134 live_trader tests pass (tests updated to use proper mock scalers) |
 
 ---
 

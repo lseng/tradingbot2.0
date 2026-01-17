@@ -24,6 +24,7 @@ from dataclasses import asdict
 import json
 
 import torch
+import numpy as np
 
 from src.trading.live_trader import (
     LiveTrader,
@@ -792,8 +793,10 @@ class TestLiveTraderInference:
         mock_model.return_value = torch.tensor([[0.1, 0.2, 0.7]])
         trader._model = mock_model
         trader._scaler = None
+        trader._scaler_validated = True  # Skip validation for this test
 
         mock_features = Mock()
+        mock_features.features = np.array([0.5] * 50)  # 10.22: Add features for validation
         mock_features.as_tensor.return_value = torch.tensor([[0.5] * 50])
         mock_features.atr = 1.5
 
@@ -817,6 +820,8 @@ class TestLiveTraderInference:
 
         mock_scaler = Mock()
         mock_scaler.transform.return_value = np.array([[0.1] * 50])
+        mock_scaler.n_features_in_ = 50  # 10.22: Match feature count for validation
+        mock_scaler.mean_ = np.zeros(50)  # 10.22: Provide scaler attributes
         trader._scaler = mock_scaler
 
         mock_features = Mock()

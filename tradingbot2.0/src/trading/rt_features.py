@@ -214,14 +214,25 @@ class RealTimeFeatureEngine:
                 prediction = model.predict(features.as_tensor())
     """
 
-    def __init__(self, config: Optional[RTFeaturesConfig] = None):
+    def __init__(
+        self,
+        config: Optional[RTFeaturesConfig] = None,
+        expected_feature_names: Optional[List[str]] = None,
+    ):
         """
         Initialize feature engine.
 
         Args:
             config: Feature configuration
+            expected_feature_names: Feature names from trained model checkpoint.
+                If provided, validates that generated features match expected order.
+                This prevents silent failures from feature order mismatches.
         """
         self.config = config or RTFeaturesConfig()
+
+        # Expected feature names for validation (10.21 fix)
+        self._expected_feature_names = expected_feature_names
+        self._feature_validation_done = False
 
         # Rolling buffers for OHLCV data
         self._bars: Deque[OHLCV] = deque(maxlen=self.config.max_bars)
@@ -267,7 +278,84 @@ class RealTimeFeatureEngine:
         # Open price for each bar (for volume delta calculation)
         self._opens: Deque[float] = deque(maxlen=self.config.max_bars)
 
-        logger.info(f"RealTimeFeatureEngine initialized with {self.config.max_bars} bar buffer")
+        validation_status = "enabled" if expected_feature_names else "disabled (no expected names provided)"
+        logger.info(
+            f"RealTimeFeatureEngine initialized with {self.config.max_bars} bar buffer, "
+            f"feature validation {validation_status}"
+        )
+
+    def set_expected_feature_names(self, feature_names: List[str]) -> None:
+        """
+        Set expected feature names for validation (late binding).
+
+        Use this when feature names are loaded from checkpoint after engine init.
+
+        Args:
+            feature_names: List of feature names in expected order from training.
+
+        Raises:
+            ValueError: If validation has already been performed (features generated).
+        """
+        if self._feature_validation_done:
+            raise ValueError(
+                "Cannot set expected feature names after features have been generated. "
+                "Set expected names before calling update()."
+            )
+        self._expected_feature_names = feature_names
+        logger.info(f"Expected feature names set ({len(feature_names)} features)")
+
+    def _validate_feature_order(self, generated_names: List[str]) -> None:
+        """
+        Validate that generated feature names match expected order.
+
+        This is critical for 10.21 fix - ensures model receives features
+        in the same order as training.
+
+        Args:
+            generated_names: Feature names generated at inference time.
+
+        Raises:
+            RuntimeError: If feature names don't match expected order.
+        """
+        if self._expected_feature_names is None:
+            logger.warning(
+                "Feature order validation skipped - no expected feature names provided. "
+                "Model may receive features in wrong order!"
+            )
+            return
+
+        expected = self._expected_feature_names
+        generated = generated_names
+
+        # Check length first
+        if len(expected) != len(generated):
+            raise RuntimeError(
+                f"Feature count mismatch! Expected {len(expected)} features but generated {len(generated)}. "
+                f"Model cannot be used with these features.\n"
+                f"Expected features: {expected[:5]}... (first 5)\n"
+                f"Generated features: {generated[:5]}... (first 5)"
+            )
+
+        # Check exact order match
+        mismatches = []
+        for i, (exp, gen) in enumerate(zip(expected, generated)):
+            if exp != gen:
+                mismatches.append((i, exp, gen))
+
+        if mismatches:
+            mismatch_str = "\n".join(
+                f"  [{i}] expected '{exp}' but got '{gen}'"
+                for i, exp, gen in mismatches[:10]  # Show first 10
+            )
+            raise RuntimeError(
+                f"Feature order mismatch! {len(mismatches)} features in wrong position.\n"
+                f"First mismatches:\n{mismatch_str}\n"
+                f"Model predictions will be INVALID with scrambled features!"
+            )
+
+        logger.info(
+            f"Feature order validation PASSED - {len(generated)} features match expected order"
+        )
 
     def update(self, bar: OHLCV) -> Optional[FeatureVector]:
         """
@@ -536,6 +624,11 @@ class RealTimeFeatureEngine:
 
         # Store feature names
         self._feature_names = names
+
+        # Validate feature order on first generation (10.21 fix)
+        if not self._feature_validation_done:
+            self._validate_feature_order(names)
+            self._feature_validation_done = True
 
         return FeatureVector(
             features=np.array(features, dtype=np.float32),

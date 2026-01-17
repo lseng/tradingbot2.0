@@ -398,6 +398,8 @@ class TestLiveTraderRunInference:
     @pytest.mark.asyncio
     async def test_run_inference_with_scaler(self, trading_config):
         """Test _run_inference with scaler."""
+        import numpy as np
+
         trader = LiveTrader(trading_config)
 
         # Create mock model
@@ -405,14 +407,16 @@ class TestLiveTraderRunInference:
         mock_model.return_value = torch.tensor([[0.7, 0.2, 0.1]])  # DOWN predicted
         trader._model = mock_model
 
-        # Create mock scaler
+        # Create mock scaler with proper attributes (10.22 fix)
         mock_scaler = MagicMock()
-        mock_scaler.transform = MagicMock(return_value=[[0.1, 0.2, 0.3]])
+        mock_scaler.transform = MagicMock(return_value=np.array([[0.1, 0.2, 0.3]]))
+        mock_scaler.n_features_in_ = 3  # Match feature count for validation
+        mock_scaler.mean_ = np.zeros(3)
         trader._scaler = mock_scaler
 
+        # Feature vector with real numpy array for len() to work
         feature_vector = MagicMock()
-        feature_vector.features = MagicMock()
-        feature_vector.features.reshape = MagicMock(return_value=[[0.1, 0.2, 0.3]])
+        feature_vector.features = np.array([0.1, 0.2, 0.3])
         feature_vector.atr = 2.0
 
         result = await trader._run_inference(feature_vector)
@@ -423,13 +427,17 @@ class TestLiveTraderRunInference:
     @pytest.mark.asyncio
     async def test_run_inference_error(self, trading_config):
         """Test _run_inference handles errors gracefully."""
+        import numpy as np
+
         trader = LiveTrader(trading_config)
 
         mock_model = MagicMock(side_effect=RuntimeError("Model error"))
         trader._model = mock_model
         trader._scaler = None
+        trader._scaler_validated = True  # Skip validation for error test
 
         feature_vector = MagicMock()
+        feature_vector.features = np.array([0.1, 0.2, 0.3])  # 10.22: Add features
         feature_vector.as_tensor = MagicMock(return_value=torch.tensor([[0.1, 0.2, 0.3]]))
 
         result = await trader._run_inference(feature_vector)

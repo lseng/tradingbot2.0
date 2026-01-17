@@ -746,6 +746,69 @@ class TestRealTimeFeatureEngine:
         assert len(engine._bars) == 0
         assert engine._current_atr == 0.0
 
+    def test_init_with_expected_feature_names(self):
+        """Engine can be initialized with expected feature names."""
+        expected_names = ['feature_1', 'feature_2', 'feature_3']
+        engine = RealTimeFeatureEngine(expected_feature_names=expected_names)
+
+        assert engine._expected_feature_names == expected_names
+        assert not engine._feature_validation_done
+
+    def test_set_expected_feature_names(self):
+        """Can set expected feature names after init."""
+        engine = RealTimeFeatureEngine()
+        assert engine._expected_feature_names is None
+
+        expected_names = ['feature_1', 'feature_2', 'feature_3']
+        engine.set_expected_feature_names(expected_names)
+
+        assert engine._expected_feature_names == expected_names
+
+    def test_set_expected_feature_names_after_validation_raises(self):
+        """Cannot set expected feature names after validation done."""
+        engine = RealTimeFeatureEngine()
+        # Simulate validation already done
+        engine._feature_validation_done = True
+
+        with pytest.raises(ValueError, match="after features have been generated"):
+            engine.set_expected_feature_names(['feature_1'])
+
+    def test_validate_feature_order_matching(self):
+        """Validation passes when features match exactly."""
+        expected = ['atr_pct', 'rsi_norm', 'volume_ratio_10s']
+        engine = RealTimeFeatureEngine(expected_feature_names=expected)
+
+        # This should not raise
+        engine._validate_feature_order(expected)
+
+    def test_validate_feature_order_mismatch_raises(self):
+        """Validation raises when feature order differs."""
+        expected = ['atr_pct', 'rsi_norm', 'volume_ratio_10s']
+        generated = ['rsi_norm', 'atr_pct', 'volume_ratio_10s']  # Swapped order
+        engine = RealTimeFeatureEngine(expected_feature_names=expected)
+
+        with pytest.raises(RuntimeError, match="Feature order mismatch"):
+            engine._validate_feature_order(generated)
+
+    def test_validate_feature_order_count_mismatch_raises(self):
+        """Validation raises when feature count differs."""
+        expected = ['atr_pct', 'rsi_norm', 'volume_ratio_10s']
+        generated = ['atr_pct', 'rsi_norm']  # Missing one
+        engine = RealTimeFeatureEngine(expected_feature_names=expected)
+
+        with pytest.raises(RuntimeError, match="Feature count mismatch"):
+            engine._validate_feature_order(generated)
+
+    def test_validate_feature_order_no_expected_logs_warning(self, caplog):
+        """Validation logs warning when no expected names."""
+        engine = RealTimeFeatureEngine()  # No expected names
+
+        import logging
+        with caplog.at_level(logging.WARNING):
+            engine._validate_feature_order(['feature_1', 'feature_2'])
+
+        assert "validation skipped" in caplog.text.lower()
+
 
 # =============================================================================
 # Recovery Handler Tests
