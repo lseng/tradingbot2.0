@@ -18,6 +18,7 @@ Reference: specs/live-trading-execution.md
 
 import asyncio
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -34,11 +35,9 @@ from src.api import (
 )
 from src.trading.signal_generator import Signal, SignalType
 from src.trading.position_manager import PositionManager, Fill
+from src.lib.constants import MES_TICK_SIZE
 
 logger = logging.getLogger(__name__)
-
-# MES Contract Constants
-MES_TICK_SIZE = 0.25  # Minimum price movement
 
 
 class ExecutionStatus(Enum):
@@ -200,7 +199,9 @@ class OrderExecutor:
         self._pending_oco_cancellations: set[asyncio.Task] = set()
 
         # 10.23 FIX: Add lock and tracking for OCO race condition prevention
-        self._order_lock = asyncio.Lock()  # Protects _open_orders modifications
+        # Using threading.Lock because _handle_fill is a synchronous callback
+        # and asyncio.Lock cannot be used in sync context
+        self._order_lock = threading.Lock()  # Protects _open_orders and tracking set modifications
         self._orders_being_cancelled: set[str] = set()  # Prevent duplicate cancellations
         self._filled_oco_orders: set[str] = set()  # Track filled OCO orders to detect dual fills
 
@@ -643,7 +644,9 @@ class OrderExecutor:
                 stop_price=stop_price,
                 custom_tag=self.config.stop_tag,
             )
-            self._open_orders[order.order_id] = order
+            # 10.23 FIX: Use lock for thread-safe access to _open_orders
+            with self._order_lock:
+                self._open_orders[order.order_id] = order
             logger.debug(f"Stop order placed: {order.order_id} @ {stop_price}")
             return order
         except Exception as e:
@@ -667,7 +670,9 @@ class OrderExecutor:
                 price=target_price,
                 custom_tag=self.config.target_tag,
             )
-            self._open_orders[order.order_id] = order
+            # 10.23 FIX: Use lock for thread-safe access to _open_orders
+            with self._order_lock:
+                self._open_orders[order.order_id] = order
             logger.debug(f"Target order placed: {order.order_id} @ {target_price}")
             return order
         except Exception as e:
@@ -714,43 +719,68 @@ class OrderExecutor:
 
         This is called by the WebSocket client when an order is filled.
 
-        10.23 FIX: Added dual fill detection and proper OCO tracking.
+        10.23 FIX: Added dual fill detection, proper OCO tracking, and thread-safe
+        access using threading.Lock (asyncio.Lock can't be used in sync callbacks).
         """
         order_id = fill.order_id
         logger.debug(f"Fill received: {order_id} @ {fill.fill_price}")
 
-        # Resolve pending fill future
+        # Resolve pending fill future (outside lock - futures are thread-safe)
         if order_id in self._pending_fills:
             future = self._pending_fills[order_id]
             if not future.done():
                 future.set_result(fill.fill_price)
 
-        # 10.23 FIX: Check for dual fill (both OCO orders filled - CRITICAL ERROR)
-        if order_id in self._open_orders:
+        # 10.23 FIX: Use thread lock for safe access to shared state
+        with self._order_lock:
+            # 10.23 FIX: Check if this order was already processed (prevent duplicate processing)
+            if order_id in self._filled_oco_orders:
+                logger.warning(
+                    f"Fill for order {order_id} already processed - ignoring duplicate. "
+                    f"This may indicate duplicate fill notifications from WebSocket."
+                )
+                return
+
+            if order_id not in self._open_orders:
+                # Order not tracked (might be entry order or already removed)
+                logger.debug(f"Fill for untracked order {order_id}")
+                return
+
             order = self._open_orders[order_id]
-            if order.custom_tag in (self.config.stop_tag, self.config.target_tag):
-                # Track that this OCO order was filled
+            is_oco_order = order.custom_tag in (self.config.stop_tag, self.config.target_tag)
+
+            if is_oco_order:
+                # 10.23 FIX: Check for dual fill BEFORE adding to filled set
+                # If there's any other order in _filled_oco_orders, we have a dual fill
+                # because we only track stop/target orders in this set
+                other_filled_orders = self._filled_oco_orders - {order_id}
+                dual_fill_detected = len(other_filled_orders) > 0
+
+                if dual_fill_detected:
+                    other_id = next(iter(other_filled_orders))
+                    logger.critical(
+                        f"DUAL FILL DETECTED! Both OCO orders filled: "
+                        f"{order_id} and {other_id}. "
+                        f"Position may be doubled. MANUAL INTERVENTION REQUIRED."
+                    )
+                    # 10.23 FIX: Remove from open orders but DON'T update position manager
+                    # to prevent double-processing. First fill already updated position.
+                    self._open_orders.pop(order_id, None)
+                    logger.warning(
+                        f"Skipping position update for duplicate fill {order_id} - "
+                        f"position already updated by first OCO fill"
+                    )
+                    return
+
+                # Mark as filled AFTER dual fill check
                 self._filled_oco_orders.add(order_id)
 
-                # Check if the OTHER OCO order already filled (dual fill race condition)
-                other_tag = self.config.target_tag if order.custom_tag == self.config.stop_tag else self.config.stop_tag
-                for other_id, other_order in list(self._open_orders.items()):
-                    if other_order.custom_tag == other_tag and other_id in self._filled_oco_orders:
-                        logger.critical(
-                            f"DUAL FILL DETECTED! Both OCO orders filled: "
-                            f"stop={order_id if order.custom_tag == self.config.stop_tag else other_id}, "
-                            f"target={order_id if order.custom_tag == self.config.target_tag else other_id}. "
-                            f"Position may be doubled. MANUAL INTERVENTION REQUIRED."
-                        )
-                        # Don't return - still need to process this fill
+            # Handle OCO cancellation (schedule cancellation of other order)
+            # Must be done inside lock to prevent race with checking _orders_being_cancelled
+            self._handle_oco_fill(order_id)
 
-        # Handle OCO cancellation (schedule cancellation of other order)
-        self._handle_oco_fill(order_id)
-
-        # Update position manager if this is a stop/target fill
-        if order_id in self._open_orders:
-            order = self._open_orders[order_id]
-            if order.custom_tag in (self.config.stop_tag, self.config.target_tag):
+            # Update position manager if this is a stop/target fill
+            if is_oco_order:
                 # This is a stop or target being hit - position closed
                 fill_obj = Fill(
                     order_id=order_id,
@@ -763,7 +793,7 @@ class OrderExecutor:
                 )
                 self._position_manager.update_from_fill(fill_obj)
 
-            # Remove from open orders (don't await lock in sync callback)
+            # Remove from open orders (now safe within lock)
             self._open_orders.pop(order_id, None)
 
     def _track_oco_orders(
@@ -775,15 +805,18 @@ class OrderExecutor:
         Track stop and target orders for OCO management.
 
         10.23 FIX: Clears filled orders tracking for new positions.
+        Uses lock for thread-safe access to shared state.
         """
-        # 10.23 FIX: Clear previous OCO tracking state for new position
-        self._filled_oco_orders.clear()
-        self._orders_being_cancelled.clear()
+        # 10.23 FIX: Use lock for thread-safe modification
+        with self._order_lock:
+            # Clear previous OCO tracking state for new position
+            self._filled_oco_orders.clear()
+            self._orders_being_cancelled.clear()
 
-        if stop_order:
-            self._open_orders[stop_order.order_id] = stop_order
-        if target_order:
-            self._open_orders[target_order.order_id] = target_order
+            if stop_order:
+                self._open_orders[stop_order.order_id] = stop_order
+            if target_order:
+                self._open_orders[target_order.order_id] = target_order
 
         logger.debug(
             f"OCO tracking: stop={stop_order.order_id if stop_order else None}, "
@@ -799,6 +832,9 @@ class OrderExecutor:
 
         10.23 FIX: Uses tracking set to prevent duplicate cancellations and
         marks orders as being cancelled BEFORE scheduling async task.
+
+        NOTE: This method is called from _handle_fill which already holds
+        the _order_lock, so we don't acquire it here (would cause deadlock).
         """
         if filled_order_id not in self._open_orders:
             return
@@ -816,6 +852,7 @@ class OrderExecutor:
             return
 
         # 10.23 FIX: Find orders to cancel, excluding already being cancelled
+        # (lock already held by caller)
         to_cancel = [
             oid for oid, order in self._open_orders.items()
             if order.custom_tag == cancel_tag
@@ -838,11 +875,13 @@ class OrderExecutor:
             # Track the task for potential cleanup
             self._pending_oco_cancellations.add(task)
 
+            # 10.23 FIX: Cleanup callback needs to acquire lock for thread-safe access
             def cleanup_task(t: asyncio.Task) -> None:
                 self._pending_oco_cancellations.discard(t)
-                # 10.23 FIX: Clear tracking after task completes
-                for oid in to_cancel:
-                    self._orders_being_cancelled.discard(oid)
+                # Acquire lock to safely modify _orders_being_cancelled
+                with self._order_lock:
+                    for oid in to_cancel:
+                        self._orders_being_cancelled.discard(oid)
 
             task.add_done_callback(cleanup_task)
 
@@ -921,6 +960,7 @@ class OrderExecutor:
         Cancel order with error handling and verification.
 
         10.23 FIX: Verifies cancellation was successful before removing from tracking.
+        Uses lock for thread-safe access to shared state.
         10C.9 FIX: Only remove from tracking after confirmed terminal state (CANCELLED or FILLED).
 
         Args:
@@ -945,7 +985,9 @@ class OrderExecutor:
                     if order is None:
                         # Order not found - likely already cancelled/removed
                         logger.debug(f"Order {order_id} not found (likely cancelled)")
-                        self._open_orders.pop(order_id, None)
+                        # 10.23 FIX: Use lock for thread-safe access
+                        with self._order_lock:
+                            self._open_orders.pop(order_id, None)
                         return True
 
                     if order.is_filled:
@@ -954,13 +996,17 @@ class OrderExecutor:
                             f"Order {order_id} filled before cancellation could complete - "
                             "checking for dual fill"
                         )
-                        self._filled_oco_orders.add(order_id)
-                        self._open_orders.pop(order_id, None)
+                        # 10.23 FIX: Use lock for thread-safe access
+                        with self._order_lock:
+                            self._filled_oco_orders.add(order_id)
+                            self._open_orders.pop(order_id, None)
                         return False  # Return False because cancel wasn't successful
 
                     if order.is_cancelled:
                         logger.debug(f"Order {order_id} confirmed cancelled")
-                        self._open_orders.pop(order_id, None)
+                        # 10.23 FIX: Use lock for thread-safe access
+                        with self._order_lock:
+                            self._open_orders.pop(order_id, None)
                         return True
 
                     # Order still pending - wait and retry verification
@@ -1008,10 +1054,12 @@ class OrderExecutor:
 
     async def _cancel_oco_orders(self) -> None:
         """Cancel all open stop/target orders."""
-        to_cancel = [
-            oid for oid, order in self._open_orders.items()
-            if order.custom_tag in (self.config.stop_tag, self.config.target_tag)
-        ]
+        # 10.23 FIX: Use lock for thread-safe access
+        with self._order_lock:
+            to_cancel = [
+                oid for oid, order in self._open_orders.items()
+                if order.custom_tag in (self.config.stop_tag, self.config.target_tag)
+            ]
 
         for order_id in to_cancel:
             await self._cancel_order_safe(order_id)
@@ -1021,14 +1069,22 @@ class OrderExecutor:
         try:
             count = await self._rest.cancel_all_orders(contract_id)
             logger.info(f"Cancelled {count} orders for {contract_id}")
-            self._open_orders.clear()
+            # 10.23 FIX: Use lock for thread-safe access
+            with self._order_lock:
+                self._open_orders.clear()
+                self._filled_oco_orders.clear()
+                self._orders_being_cancelled.clear()
         except Exception as e:
             logger.error(f"Failed to cancel all orders: {e}")
 
     def get_open_orders(self) -> Dict[str, OrderResponse]:
         """Get all tracked open orders."""
-        return dict(self._open_orders)
+        # 10.23 FIX: Use lock for thread-safe access
+        with self._order_lock:
+            return dict(self._open_orders)
 
     def has_open_orders(self) -> bool:
         """Check if there are open orders."""
-        return len(self._open_orders) > 0
+        # 10.23 FIX: Use lock for thread-safe access
+        with self._order_lock:
+            return len(self._open_orders) > 0

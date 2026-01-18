@@ -47,7 +47,7 @@ try:
 except ImportError:
     from backports.zoneinfo import ZoneInfo
 
-NY_TZ = ZoneInfo("America/New_York")
+from src.lib.constants import NY_TIMEZONE
 
 
 # ============================================================================
@@ -566,7 +566,7 @@ class TestEODFlattenDST:
         manager = EODManager()
 
         # Test at 4:30 PM EDT on March 10, 2024 (DST transition day)
-        test_time = datetime(2024, 3, 10, 16, 30, 0, tzinfo=NY_TZ)
+        test_time = datetime(2024, 3, 10, 16, 30, 0, tzinfo=NY_TIMEZONE)
         status = manager.get_status(test_time)
 
         assert status.phase == EODPhase.MUST_BE_FLAT, \
@@ -583,7 +583,7 @@ class TestEODFlattenDST:
         manager = EODManager()
 
         # Test at 4:30 PM EST on November 3, 2024 (DST end day)
-        test_time = datetime(2024, 11, 3, 16, 30, 0, tzinfo=NY_TZ)
+        test_time = datetime(2024, 11, 3, 16, 30, 0, tzinfo=NY_TIMEZONE)
         status = manager.get_status(test_time)
 
         assert status.phase == EODPhase.MUST_BE_FLAT, \
@@ -608,7 +608,7 @@ class TestEODFlattenDST:
         ]
 
         for test_time, expected_phase in phases_to_test:
-            dt = datetime.combine(base_date, test_time).replace(tzinfo=NY_TZ)
+            dt = datetime.combine(base_date, test_time).replace(tzinfo=NY_TIMEZONE)
             status = manager.get_status(dt)
             assert status.phase == expected_phase, \
                 f"At {test_time}: Expected {expected_phase}, got {status.phase}"
@@ -631,7 +631,7 @@ class TestEODFlattenDST:
         ]
 
         for test_time, expected_phase in phases_to_test:
-            dt = datetime.combine(base_date, test_time).replace(tzinfo=NY_TZ)
+            dt = datetime.combine(base_date, test_time).replace(tzinfo=NY_TIMEZONE)
             status = manager.get_status(dt)
             assert status.phase == expected_phase, \
                 f"At {test_time}: Expected {expected_phase}, got {status.phase}"
@@ -654,7 +654,7 @@ class TestEODFlattenDST:
         ]
 
         for test_time, expected_phase in phases_to_test:
-            dt = datetime.combine(base_date, test_time).replace(tzinfo=NY_TZ)
+            dt = datetime.combine(base_date, test_time).replace(tzinfo=NY_TIMEZONE)
             status = manager.get_status(dt)
             assert status.phase == expected_phase, \
                 f"At {test_time}: Expected {expected_phase}, got {status.phase}"
@@ -677,7 +677,7 @@ class TestEODFlattenDST:
         ]
 
         for test_time, expected_phase in phases_to_test:
-            dt = datetime.combine(base_date, test_time).replace(tzinfo=NY_TZ)
+            dt = datetime.combine(base_date, test_time).replace(tzinfo=NY_TIMEZONE)
             status = manager.get_status(dt)
             assert status.phase == expected_phase, \
                 f"At {test_time}: Expected {expected_phase}, got {status.phase}"
@@ -710,12 +710,12 @@ class TestEODFlattenDST:
         # At 4:00 PM, should have 30 minutes to close in both EST and EDT
 
         # During EDT (summer)
-        summer = datetime(2024, 7, 15, 16, 0, 0, tzinfo=NY_TZ)
+        summer = datetime(2024, 7, 15, 16, 0, 0, tzinfo=NY_TIMEZONE)
         status_summer = manager.get_status(summer)
         assert status_summer.minutes_to_close == 30
 
         # During EST (winter)
-        winter = datetime(2024, 1, 15, 16, 0, 0, tzinfo=NY_TZ)
+        winter = datetime(2024, 1, 15, 16, 0, 0, tzinfo=NY_TIMEZONE)
         status_winter = manager.get_status(winter)
         assert status_winter.minutes_to_close == 30
 

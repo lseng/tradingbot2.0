@@ -27,8 +27,8 @@ from datetime import datetime, date, time, timedelta
 from zoneinfo import ZoneInfo
 from unittest.mock import patch
 
+from src.risk.eod_manager import EODPhase
 from src.lib.time_utils import (
-    EODPhase,
     get_ny_now,
     to_ny_time,
     to_utc,

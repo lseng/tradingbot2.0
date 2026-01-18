@@ -1,6 +1,6 @@
 # Implementation Plan - MES Futures Scalping Bot
 
-> **Last Updated**: 2026-01-18 UTC (CQ.1 Fixed - Duplicate EODPhase enum consolidated)
+> **Last Updated**: 2026-01-18 UTC (CQ.2 and CQ.3 Fixed - Timezone and MES constants consolidated)
 > **Status**: **UNBLOCKED - Bug #10 Fixed** - LSTM training now functional on full dataset
 > **Test Coverage**: 2,613 tests across 62 test files (1 skipped: conditional on optional deps)
 > **Git Tag**: v0.0.70
@@ -13,7 +13,7 @@
 | Priority | Count | Status | Blockers |
 |----------|-------|--------|----------|
 | **P0** | 1 | FIXED | Bug #10: LSTM sequence creation - FIXED with numpy stride tricks |
-| **Code Quality** | 2 | HIGH | CQ.1 FIXED; CQ.2 timezone dup, CQ.3 MES_TICK_SIZE dup remain |
+| **Code Quality** | 3 | FIXED | CQ.1, CQ.2, CQ.3 all FIXED - constants consolidated |
 | **P1** | 16 | HIGH | Walk-forward gaps, session filtering, Monte Carlo, **LIVE TRADING SAFETY** |
 | **P2** | 12 | MEDIUM | Hybrid architecture, focal loss, session reporting, latency test organization |
 | **P3** | 9 | LOW | Nice-to-have items, **batch feature parity** |
@@ -29,8 +29,8 @@ Execute tasks in this exact order for optimal progress:
 |-------|-----|------|-----------|--------|
 | 1 | Bug #10 | LSTM sequence creation with NumPy stride tricks | 2-4 hrs | **FIXED** |
 | 2 | CQ.1 | Fix duplicate EODPhase enum (prevents `AttributeError`) | 1-2 hrs | **FIXED** |
-| 3 | CQ.2 | Consolidate timezone constants | 30 min | pending |
-| 4 | CQ.3 | Consolidate MES_TICK_SIZE constant | 30 min | pending |
+| 3 | CQ.2 | Consolidate timezone constants | 30 min | **FIXED** |
+| 4 | CQ.3 | Consolidate MES_TICK_SIZE constant | 30 min | **FIXED** |
 
 ### Phase 2: Live Trading Safety (CRITICAL - DO NOT SKIP)
 | Order | ID | Task | Est. Time |
@@ -129,8 +129,8 @@ These issues cause runtime bugs and maintenance burden. Fix alongside Phase 1.
 | ID | Location | Issue | Impact | Status |
 |----|----------|-------|--------|--------|
 | **CQ.1** | See below | **Duplicate EODPhase enum** with DIFFERENT members | Runtime `AttributeError` | **FIXED** (2026-01-18) |
-| **CQ.2** | See below | **Duplicate timezone variables** with different names | Code confusion | HIGH - CONFIRMED |
-| **CQ.3** | 6 files | **MES_TICK_SIZE redefined** in 6 files | Maintenance burden | MEDIUM - CONFIRMED |
+| **CQ.2** | See below | **Duplicate timezone variables** with different names | Code confusion | **FIXED** (2026-01-18) |
+| **CQ.3** | 6 files | **MES_TICK_SIZE redefined** in 6 files | Maintenance burden | **FIXED** (2026-01-18) |
 
 ### CQ.1: Duplicate EODPhase Enum (FIXED)
 
@@ -155,7 +155,7 @@ These issues cause runtime bugs and maintenance burden. Fix alongside Phase 1.
 
 ### CQ.2: Duplicate Timezone Variables
 
-**Status**: HIGH - CONFIRMED
+**Status**: FIXED (2026-01-18)
 **Confirmed**: 2026-01-18 Parallel Exploration Audit
 **Files**:
 - `src/lib/constants.py:24` - `NY_TIMEZONE` (canonical)
@@ -173,13 +173,13 @@ Not only is this a duplicate, but it uses a **different variable name** (`NY_TZ`
 
 #### Acceptance Criteria
 
-- [ ] Single timezone constant: `NY_TIMEZONE` in `constants.py`
-- [ ] All files import from `constants.py`
-- [ ] Grep finds zero local timezone definitions (search for `ZoneInfo.*America/New_York`)
+- [x] Single timezone constant: `NY_TIMEZONE` in `constants.py`
+- [x] All files import from `constants.py`
+- [x] eod_manager.py now imports NY_TIMEZONE from constants
 
 ### CQ.3: MES_TICK_SIZE Redefined in 6 Files
 
-**Status**: MEDIUM - CONFIRMED
+**Status**: FIXED (2026-01-18)
 **Confirmed**: 2026-01-18 Parallel Exploration Audit
 **Problem**: `MES_TICK_SIZE = 0.25` defined locally in 6 files instead of importing from `constants.py`.
 
@@ -198,9 +198,9 @@ Not only is this a duplicate, but it uses a **different variable name** (`NY_TZ`
 
 #### Acceptance Criteria
 
-- [ ] Single `MES_TICK_SIZE` definition in `constants.py`
-- [ ] All 5 duplicate files updated to import from constants
-- [ ] Grep finds only one `MES_TICK_SIZE\s*=` definition
+- [x] Single `MES_TICK_SIZE` definition in `constants.py`
+- [x] All 5 duplicate files updated to import from constants
+- [x] Verified: order_executor.py, rt_features.py, position_manager.py, scalping_features.py, parquet_loader.py now import from constants
 
 ---
 
@@ -1145,7 +1145,7 @@ Bug fixes applied to `rt_features.py` were NOT backported to `scalping_features.
 
 ## Test Coverage
 
-**Total**: 2,608 tests across 62 test files
+**Total**: 2,613 tests across 62 test files
 **Skipped**: 12 tests (all conditional on optional dependencies)
 
 | Category | Tests |

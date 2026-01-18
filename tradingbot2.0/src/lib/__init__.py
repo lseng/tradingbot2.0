@@ -40,8 +40,11 @@ from src.lib.time_utils import (
     is_trading_day,
     get_next_trading_day,
     get_eod_phase,
-    EODPhase,
 )
+
+# EODPhase is imported lazily via __getattr__ to avoid circular dependency
+# The canonical version is in src/risk/eod_manager.py
+# Users can import directly: from src.risk.eod_manager import EODPhase
 
 from src.lib.config import (
     TradingConfig,
@@ -94,6 +97,14 @@ from src.lib.alerts import (
     create_error_event_handler,
     create_alert_manager_from_env,
 )
+
+def __getattr__(name):
+    """Lazy import for EODPhase to avoid circular dependency."""
+    if name == "EODPhase":
+        from src.risk.eod_manager import EODPhase
+        return EODPhase
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     # Constants

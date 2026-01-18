@@ -27,6 +27,7 @@ from src.risk.circuit_breakers import (
     check_market_conditions,
 )
 from src.risk.eod_manager import EODManager, EODPhase
+from src.lib.constants import NY_TIMEZONE
 
 
 # =============================================================================
@@ -451,11 +452,8 @@ class TestEODCircuitBreakerInteraction:
 
     def test_circuit_breaker_pause_during_reduce_size_phase(self, breakers, eod_manager):
         """Test circuit breaker pause during EOD reduce size phase."""
-        from zoneinfo import ZoneInfo
-        NY_TZ = ZoneInfo("America/New_York")
-
         # 4:05 PM NY - reduce size phase
-        test_time = datetime(2025, 1, 15, 16, 5, 0, tzinfo=NY_TZ)
+        test_time = datetime(2025, 1, 15, 16, 5, 0, tzinfo=NY_TIMEZONE)
         eod_status = eod_manager.get_status(test_time)
 
         assert eod_status.phase == EODPhase.REDUCED_SIZE
@@ -476,11 +474,8 @@ class TestEODCircuitBreakerInteraction:
 
     def test_circuit_breaker_pause_during_close_only_phase(self, breakers, eod_manager):
         """Test circuit breaker pause during close-only phase."""
-        from zoneinfo import ZoneInfo
-        NY_TZ = ZoneInfo("America/New_York")
-
         # 4:20 PM NY - close only phase
-        test_time = datetime(2025, 1, 15, 16, 20, 0, tzinfo=NY_TZ)
+        test_time = datetime(2025, 1, 15, 16, 20, 0, tzinfo=NY_TIMEZONE)
         eod_status = eod_manager.get_status(test_time)
 
         assert eod_status.phase == EODPhase.CLOSE_ONLY
@@ -501,11 +496,8 @@ class TestEODCircuitBreakerInteraction:
 
     def test_eod_flatten_takes_priority_over_circuit_breaker_pause(self, breakers, eod_manager):
         """Test that EOD flatten should take priority - must flatten even if paused."""
-        from zoneinfo import ZoneInfo
-        NY_TZ = ZoneInfo("America/New_York")
-
         # 4:26 PM NY - aggressive exit phase
-        test_time = datetime(2025, 1, 15, 16, 26, 0, tzinfo=NY_TZ)
+        test_time = datetime(2025, 1, 15, 16, 26, 0, tzinfo=NY_TIMEZONE)
         eod_status = eod_manager.get_status(test_time)
 
         assert eod_status.phase == EODPhase.AGGRESSIVE_EXIT

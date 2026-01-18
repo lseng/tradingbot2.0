@@ -27,11 +27,9 @@ try:
 except ImportError:
     from backports.zoneinfo import ZoneInfo  # Python < 3.9
 
+from src.lib.constants import NY_TIMEZONE
+
 logger = logging.getLogger(__name__)
-
-
-# New York timezone for all trading time calculations
-NY_TZ = ZoneInfo("America/New_York")
 
 
 class EODPhase(Enum):
@@ -121,19 +119,19 @@ class EODManager:
         """
         # Get current NY time
         if current_time is None:
-            now_ny = datetime.now(NY_TZ)
+            now_ny = datetime.now(NY_TIMEZONE)
         else:
             # Convert to NY if needed
             if current_time.tzinfo is None:
-                now_ny = current_time.replace(tzinfo=NY_TZ)
+                now_ny = current_time.replace(tzinfo=NY_TIMEZONE)
             else:
-                now_ny = current_time.astimezone(NY_TZ)
+                now_ny = current_time.astimezone(NY_TIMEZONE)
 
         current_time_only = now_ny.time()
 
         # Calculate minutes to close
         close_dt = datetime.combine(now_ny.date(), self.config.must_be_flat_time)
-        close_dt = close_dt.replace(tzinfo=NY_TZ)
+        close_dt = close_dt.replace(tzinfo=NY_TIMEZONE)
         minutes_to_close = int((close_dt - now_ny).total_seconds() / 60)
 
         # Determine phase and restrictions
@@ -307,18 +305,18 @@ class EODManager:
             Datetime of next 9:30 AM NY
         """
         if current_time is None:
-            now_ny = datetime.now(NY_TZ)
+            now_ny = datetime.now(NY_TIMEZONE)
         else:
             if current_time.tzinfo is None:
-                now_ny = current_time.replace(tzinfo=NY_TZ)
+                now_ny = current_time.replace(tzinfo=NY_TIMEZONE)
             else:
-                now_ny = current_time.astimezone(NY_TZ)
+                now_ny = current_time.astimezone(NY_TIMEZONE)
 
         # Today's session start
         today_start = datetime.combine(
             now_ny.date(),
             self.config.session_start
-        ).replace(tzinfo=NY_TZ)
+        ).replace(tzinfo=NY_TIMEZONE)
 
         # If before today's start, return today
         if now_ny < today_start:
@@ -335,7 +333,7 @@ class EODManager:
         return datetime.combine(
             tomorrow,
             self.config.session_start
-        ).replace(tzinfo=NY_TZ)
+        ).replace(tzinfo=NY_TIMEZONE)
 
 
 def time_to_ny(dt: datetime) -> datetime:
@@ -353,12 +351,12 @@ def time_to_ny(dt: datetime) -> datetime:
         from datetime import timezone
         dt = dt.replace(tzinfo=timezone.utc)
 
-    return dt.astimezone(NY_TZ)
+    return dt.astimezone(NY_TIMEZONE)
 
 
 def get_ny_time() -> datetime:
     """Get current time in New York timezone."""
-    return datetime.now(NY_TZ)
+    return datetime.now(NY_TIMEZONE)
 
 
 def is_market_open(current_time: Optional[datetime] = None) -> bool:

@@ -39,10 +39,7 @@ from .memory_utils import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# MES contract constants (from spec)
-MES_TICK_SIZE = 0.25  # Minimum price movement
-MES_TICK_VALUE = 1.25  # Dollar value per tick ($5 per point / 4 ticks)
-MES_POINT_VALUE = 5.00  # Dollar value per point
+from src.lib.constants import MES_TICK_SIZE, MES_TICK_VALUE, MES_POINT_VALUE
 
 # Trading session times (New York timezone)
 RTH_START = time(9, 30)   # Regular Trading Hours start

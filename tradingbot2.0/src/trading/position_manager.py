@@ -21,10 +21,7 @@ from enum import Enum
 import logging
 import threading
 
-# MES Contract Constants
-MES_TICK_SIZE = 0.25  # Minimum price movement
-MES_TICK_VALUE = 1.25  # Dollar value per tick
-MES_POINT_VALUE = 5.00  # Dollar value per point (4 ticks)
+from src.lib.constants import MES_TICK_SIZE, MES_TICK_VALUE, MES_POINT_VALUE
 
 logger = logging.getLogger(__name__)
 

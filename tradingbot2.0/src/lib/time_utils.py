@@ -27,9 +27,10 @@ from src.lib.constants import (
     RTH_DURATION_MINUTES,
 )
 
-# Import canonical EODPhase from risk module to avoid duplicate definitions
+# EODPhase is imported lazily in functions that need it to avoid circular import
 # The canonical version is in src/risk/eod_manager.py with string values and 6 phases
-from src.risk.eod_manager import EODPhase
+# Lazy import pattern: Import inside functions to break the circular dependency between
+# eod_manager.py -> src.lib.constants -> src.lib.__init__ -> time_utils.py -> eod_manager.py
 
 
 def get_ny_now() -> datetime:
@@ -264,7 +265,7 @@ def minutes_to_eod_flatten(dt: Optional[datetime] = None) -> float:
     return delta.total_seconds() / 60.0
 
 
-def get_eod_phase(dt: Optional[datetime] = None) -> EODPhase:
+def get_eod_phase(dt: Optional[datetime] = None):
     """
     Determine the current EOD management phase.
 
@@ -281,6 +282,9 @@ def get_eod_phase(dt: Optional[datetime] = None) -> EODPhase:
     Returns:
         Current EODPhase
     """
+    # Lazy import to avoid circular dependency
+    from src.risk.eod_manager import EODPhase
+
     if dt is None:
         dt = get_ny_now()
     else:
@@ -310,6 +314,9 @@ def get_eod_size_multiplier(dt: Optional[datetime] = None) -> float:
     Returns:
         Multiplier for position sizing (0.0 to 1.0)
     """
+    # Lazy import to avoid circular dependency
+    from src.risk.eod_manager import EODPhase
+
     phase = get_eod_phase(dt)
 
     if phase == EODPhase.NORMAL:
@@ -333,6 +340,9 @@ def can_open_new_position(dt: Optional[datetime] = None) -> bool:
     Returns:
         True if new positions are allowed
     """
+    # Lazy import to avoid circular dependency
+    from src.risk.eod_manager import EODPhase
+
     phase = get_eod_phase(dt)
     return phase in (EODPhase.NORMAL, EODPhase.REDUCED_SIZE)
 
@@ -347,6 +357,9 @@ def should_flatten(dt: Optional[datetime] = None) -> bool:
     Returns:
         True if in AGGRESSIVE_EXIT or MUST_BE_FLAT phase
     """
+    # Lazy import to avoid circular dependency
+    from src.risk.eod_manager import EODPhase
+
     phase = get_eod_phase(dt)
     return phase in (EODPhase.AGGRESSIVE_EXIT, EODPhase.MUST_BE_FLAT)
 
@@ -559,3 +572,11 @@ def get_normalized_session_time(dt: Optional[datetime] = None) -> float:
     """
     minutes_in = get_minutes_since_rth_open(dt)
     return minutes_in / RTH_DURATION_MINUTES
+
+
+def __getattr__(name):
+    """Lazy import for EODPhase to avoid circular dependency."""
+    if name == "EODPhase":
+        from src.risk.eod_manager import EODPhase
+        return EODPhase
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

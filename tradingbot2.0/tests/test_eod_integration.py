@@ -29,11 +29,11 @@ from risk.eod_manager import (
     EODConfig,
     EODPhase,
     EODStatus,
-    NY_TZ,
     time_to_ny,
     get_ny_time,
     is_market_open,
 )
+from src.lib.constants import NY_TIMEZONE
 from trading.live_trader import (
     LiveTrader,
     TradingConfig,
@@ -89,10 +89,10 @@ class TestEODPhaseTransitions:
         """Test NORMAL phase is active before 4:00 PM NY."""
         # Test at various times during normal trading hours
         test_times = [
-            datetime(2025, 1, 15, 9, 35, 0, tzinfo=NY_TZ),  # 9:35 AM
-            datetime(2025, 1, 15, 12, 0, 0, tzinfo=NY_TZ),  # 12:00 PM
-            datetime(2025, 1, 15, 15, 59, 0, tzinfo=NY_TZ),  # 3:59 PM
-            datetime(2025, 1, 15, 15, 59, 59, tzinfo=NY_TZ),  # 3:59:59 PM
+            datetime(2025, 1, 15, 9, 35, 0, tzinfo=NY_TIMEZONE),  # 9:35 AM
+            datetime(2025, 1, 15, 12, 0, 0, tzinfo=NY_TIMEZONE),  # 12:00 PM
+            datetime(2025, 1, 15, 15, 59, 0, tzinfo=NY_TIMEZONE),  # 3:59 PM
+            datetime(2025, 1, 15, 15, 59, 59, tzinfo=NY_TIMEZONE),  # 3:59:59 PM
         ]
 
         for test_time in test_times:
@@ -104,7 +104,7 @@ class TestEODPhaseTransitions:
 
     def test_reduced_size_phase_at_4pm(self, eod_manager):
         """Test REDUCED_SIZE phase starts exactly at 4:00 PM NY."""
-        test_time = datetime(2025, 1, 15, 16, 0, 0, tzinfo=NY_TZ)
+        test_time = datetime(2025, 1, 15, 16, 0, 0, tzinfo=NY_TIMEZONE)
         status = eod_manager.get_status(test_time)
 
         assert status.phase == EODPhase.REDUCED_SIZE
@@ -116,10 +116,10 @@ class TestEODPhaseTransitions:
     def test_reduced_size_phase_between_4pm_and_415pm(self, eod_manager):
         """Test REDUCED_SIZE phase continues between 4:00-4:15 PM NY."""
         test_times = [
-            datetime(2025, 1, 15, 16, 1, 0, tzinfo=NY_TZ),   # 4:01 PM
-            datetime(2025, 1, 15, 16, 5, 0, tzinfo=NY_TZ),   # 4:05 PM
-            datetime(2025, 1, 15, 16, 10, 0, tzinfo=NY_TZ),  # 4:10 PM
-            datetime(2025, 1, 15, 16, 14, 59, tzinfo=NY_TZ), # 4:14:59 PM
+            datetime(2025, 1, 15, 16, 1, 0, tzinfo=NY_TIMEZONE),   # 4:01 PM
+            datetime(2025, 1, 15, 16, 5, 0, tzinfo=NY_TIMEZONE),   # 4:05 PM
+            datetime(2025, 1, 15, 16, 10, 0, tzinfo=NY_TIMEZONE),  # 4:10 PM
+            datetime(2025, 1, 15, 16, 14, 59, tzinfo=NY_TIMEZONE), # 4:14:59 PM
         ]
 
         for test_time in test_times:
@@ -130,7 +130,7 @@ class TestEODPhaseTransitions:
 
     def test_close_only_phase_at_415pm(self, eod_manager):
         """Test CLOSE_ONLY phase (NO_NEW_POSITIONS) starts exactly at 4:15 PM NY."""
-        test_time = datetime(2025, 1, 15, 16, 15, 0, tzinfo=NY_TZ)
+        test_time = datetime(2025, 1, 15, 16, 15, 0, tzinfo=NY_TIMEZONE)
         status = eod_manager.get_status(test_time)
 
         assert status.phase == EODPhase.CLOSE_ONLY
@@ -142,9 +142,9 @@ class TestEODPhaseTransitions:
     def test_close_only_phase_between_415pm_and_425pm(self, eod_manager):
         """Test CLOSE_ONLY phase continues between 4:15-4:25 PM NY."""
         test_times = [
-            datetime(2025, 1, 15, 16, 16, 0, tzinfo=NY_TZ),  # 4:16 PM
-            datetime(2025, 1, 15, 16, 20, 0, tzinfo=NY_TZ),  # 4:20 PM
-            datetime(2025, 1, 15, 16, 24, 59, tzinfo=NY_TZ), # 4:24:59 PM
+            datetime(2025, 1, 15, 16, 16, 0, tzinfo=NY_TIMEZONE),  # 4:16 PM
+            datetime(2025, 1, 15, 16, 20, 0, tzinfo=NY_TIMEZONE),  # 4:20 PM
+            datetime(2025, 1, 15, 16, 24, 59, tzinfo=NY_TIMEZONE), # 4:24:59 PM
         ]
 
         for test_time in test_times:
@@ -154,7 +154,7 @@ class TestEODPhaseTransitions:
 
     def test_aggressive_exit_phase_at_425pm(self, eod_manager):
         """Test AGGRESSIVE_EXIT (EXIT_ONLY) phase starts exactly at 4:25 PM NY."""
-        test_time = datetime(2025, 1, 15, 16, 25, 0, tzinfo=NY_TZ)
+        test_time = datetime(2025, 1, 15, 16, 25, 0, tzinfo=NY_TIMEZONE)
         status = eod_manager.get_status(test_time)
 
         assert status.phase == EODPhase.AGGRESSIVE_EXIT
@@ -166,9 +166,9 @@ class TestEODPhaseTransitions:
     def test_aggressive_exit_phase_between_425pm_and_430pm(self, eod_manager):
         """Test AGGRESSIVE_EXIT phase continues between 4:25-4:30 PM NY."""
         test_times = [
-            datetime(2025, 1, 15, 16, 26, 0, tzinfo=NY_TZ),  # 4:26 PM
-            datetime(2025, 1, 15, 16, 28, 0, tzinfo=NY_TZ),  # 4:28 PM
-            datetime(2025, 1, 15, 16, 29, 59, tzinfo=NY_TZ), # 4:29:59 PM
+            datetime(2025, 1, 15, 16, 26, 0, tzinfo=NY_TIMEZONE),  # 4:26 PM
+            datetime(2025, 1, 15, 16, 28, 0, tzinfo=NY_TIMEZONE),  # 4:28 PM
+            datetime(2025, 1, 15, 16, 29, 59, tzinfo=NY_TIMEZONE), # 4:29:59 PM
         ]
 
         for test_time in test_times:
@@ -178,7 +178,7 @@ class TestEODPhaseTransitions:
 
     def test_must_be_flat_phase_at_430pm(self, eod_manager):
         """Test MUST_BE_FLAT (FLATTEN_IMMEDIATE) phase starts exactly at 4:30 PM NY."""
-        test_time = datetime(2025, 1, 15, 16, 30, 0, tzinfo=NY_TZ)
+        test_time = datetime(2025, 1, 15, 16, 30, 0, tzinfo=NY_TIMEZONE)
         status = eod_manager.get_status(test_time)
 
         assert status.phase == EODPhase.MUST_BE_FLAT
@@ -190,9 +190,9 @@ class TestEODPhaseTransitions:
     def test_must_be_flat_phase_after_430pm(self, eod_manager):
         """Test MUST_BE_FLAT phase continues after 4:30 PM NY."""
         test_times = [
-            datetime(2025, 1, 15, 16, 31, 0, tzinfo=NY_TZ),  # 4:31 PM
-            datetime(2025, 1, 15, 17, 0, 0, tzinfo=NY_TZ),   # 5:00 PM
-            datetime(2025, 1, 15, 18, 0, 0, tzinfo=NY_TZ),   # 6:00 PM
+            datetime(2025, 1, 15, 16, 31, 0, tzinfo=NY_TIMEZONE),  # 4:31 PM
+            datetime(2025, 1, 15, 17, 0, 0, tzinfo=NY_TIMEZONE),   # 5:00 PM
+            datetime(2025, 1, 15, 18, 0, 0, tzinfo=NY_TIMEZONE),   # 6:00 PM
         ]
 
         for test_time in test_times:
@@ -211,37 +211,37 @@ class TestEODPhaseTransitionBoundaries:
     def test_transition_normal_to_reduced_boundary(self, eod_manager):
         """Test exact transition from NORMAL to REDUCED_SIZE at 4:00:00 PM."""
         # One second before
-        before = datetime(2025, 1, 15, 15, 59, 59, tzinfo=NY_TZ)
+        before = datetime(2025, 1, 15, 15, 59, 59, tzinfo=NY_TIMEZONE)
         status_before = eod_manager.get_status(before)
         assert status_before.phase == EODPhase.NORMAL
 
         # Exactly at 4:00:00
-        at = datetime(2025, 1, 15, 16, 0, 0, tzinfo=NY_TZ)
+        at = datetime(2025, 1, 15, 16, 0, 0, tzinfo=NY_TIMEZONE)
         status_at = eod_manager.get_status(at)
         assert status_at.phase == EODPhase.REDUCED_SIZE
 
     def test_transition_reduced_to_close_only_boundary(self, eod_manager):
         """Test exact transition from REDUCED_SIZE to CLOSE_ONLY at 4:15:00 PM."""
         # One second before
-        before = datetime(2025, 1, 15, 16, 14, 59, tzinfo=NY_TZ)
+        before = datetime(2025, 1, 15, 16, 14, 59, tzinfo=NY_TIMEZONE)
         status_before = eod_manager.get_status(before)
         assert status_before.phase == EODPhase.REDUCED_SIZE
 
         # Exactly at 4:15:00
-        at = datetime(2025, 1, 15, 16, 15, 0, tzinfo=NY_TZ)
+        at = datetime(2025, 1, 15, 16, 15, 0, tzinfo=NY_TIMEZONE)
         status_at = eod_manager.get_status(at)
         assert status_at.phase == EODPhase.CLOSE_ONLY
 
     def test_transition_close_only_to_aggressive_exit_boundary(self, eod_manager):
         """Test exact transition from CLOSE_ONLY to AGGRESSIVE_EXIT at 4:25:00 PM."""
         # One second before
-        before = datetime(2025, 1, 15, 16, 24, 59, tzinfo=NY_TZ)
+        before = datetime(2025, 1, 15, 16, 24, 59, tzinfo=NY_TIMEZONE)
         status_before = eod_manager.get_status(before)
         assert status_before.phase == EODPhase.CLOSE_ONLY
         assert status_before.should_flatten is False
 
         # Exactly at 4:25:00
-        at = datetime(2025, 1, 15, 16, 25, 0, tzinfo=NY_TZ)
+        at = datetime(2025, 1, 15, 16, 25, 0, tzinfo=NY_TIMEZONE)
         status_at = eod_manager.get_status(at)
         assert status_at.phase == EODPhase.AGGRESSIVE_EXIT
         assert status_at.should_flatten is True
@@ -249,12 +249,12 @@ class TestEODPhaseTransitionBoundaries:
     def test_transition_aggressive_exit_to_must_be_flat_boundary(self, eod_manager):
         """Test exact transition from AGGRESSIVE_EXIT to MUST_BE_FLAT at 4:30:00 PM."""
         # One second before
-        before = datetime(2025, 1, 15, 16, 29, 59, tzinfo=NY_TZ)
+        before = datetime(2025, 1, 15, 16, 29, 59, tzinfo=NY_TIMEZONE)
         status_before = eod_manager.get_status(before)
         assert status_before.phase == EODPhase.AGGRESSIVE_EXIT
 
         # Exactly at 4:30:00
-        at = datetime(2025, 1, 15, 16, 30, 0, tzinfo=NY_TZ)
+        at = datetime(2025, 1, 15, 16, 30, 0, tzinfo=NY_TIMEZONE)
         status_at = eod_manager.get_status(at)
         assert status_at.phase == EODPhase.MUST_BE_FLAT
 
@@ -266,25 +266,25 @@ class TestEODPositionSizing:
 
     def test_full_size_during_normal(self, eod_manager):
         """Test 100% position sizing during normal trading hours."""
-        test_time = datetime(2025, 1, 15, 14, 0, 0, tzinfo=NY_TZ)  # 2 PM
+        test_time = datetime(2025, 1, 15, 14, 0, 0, tzinfo=NY_TIMEZONE)  # 2 PM
         status = eod_manager.get_status(test_time)
         assert status.position_size_multiplier == 1.0
 
     def test_half_size_during_reduced_size(self, eod_manager):
         """Test 50% position sizing during REDUCED_SIZE phase."""
-        test_time = datetime(2025, 1, 15, 16, 5, 0, tzinfo=NY_TZ)  # 4:05 PM
+        test_time = datetime(2025, 1, 15, 16, 5, 0, tzinfo=NY_TIMEZONE)  # 4:05 PM
         status = eod_manager.get_status(test_time)
         assert status.position_size_multiplier == 0.5
 
     def test_zero_size_during_close_only(self, eod_manager):
         """Test 0% position sizing during CLOSE_ONLY phase."""
-        test_time = datetime(2025, 1, 15, 16, 20, 0, tzinfo=NY_TZ)  # 4:20 PM
+        test_time = datetime(2025, 1, 15, 16, 20, 0, tzinfo=NY_TIMEZONE)  # 4:20 PM
         status = eod_manager.get_status(test_time)
         assert status.position_size_multiplier == 0.0
 
     def test_zero_size_during_aggressive_exit(self, eod_manager):
         """Test 0% position sizing during AGGRESSIVE_EXIT phase."""
-        test_time = datetime(2025, 1, 15, 16, 27, 0, tzinfo=NY_TZ)  # 4:27 PM
+        test_time = datetime(2025, 1, 15, 16, 27, 0, tzinfo=NY_TIMEZONE)  # 4:27 PM
         status = eod_manager.get_status(test_time)
         assert status.position_size_multiplier == 0.0
 
@@ -293,7 +293,7 @@ class TestEODPositionSizing:
         config = EODConfig(reduced_size_factor=0.75)  # 75% instead of 50%
         manager = EODManager(config)
 
-        test_time = datetime(2025, 1, 15, 16, 5, 0, tzinfo=NY_TZ)
+        test_time = datetime(2025, 1, 15, 16, 5, 0, tzinfo=NY_TIMEZONE)
         status = manager.get_status(test_time)
         assert status.position_size_multiplier == 0.75
 
@@ -374,7 +374,7 @@ class TestLiveTraderEODIntegration:
 
         This tests the EOD status values that LiveTrader would check.
         """
-        test_time = datetime(2025, 1, 15, 16, 20, 0, tzinfo=NY_TZ)
+        test_time = datetime(2025, 1, 15, 16, 20, 0, tzinfo=NY_TIMEZONE)
         status = eod_manager.get_status(test_time)
 
         assert status.phase == EODPhase.CLOSE_ONLY
@@ -391,7 +391,7 @@ class TestLiveTraderEODIntegration:
 
         At 4:30 PM NY, should_flatten must be True.
         """
-        test_time = datetime(2025, 1, 15, 16, 30, 0, tzinfo=NY_TZ)
+        test_time = datetime(2025, 1, 15, 16, 30, 0, tzinfo=NY_TIMEZONE)
         status = eod_manager.get_status(test_time)
 
         assert status.phase == EODPhase.MUST_BE_FLAT
@@ -442,7 +442,7 @@ class TestDSTHandling:
     - DST spring forward (March - clocks skip 2 AM to 3 AM)
     - DST fall back (November - clocks repeat 1 AM to 2 AM)
 
-    Key insight: NY_TZ (America/New_York) handles DST automatically.
+    Key insight: NY_TIMEZONE (America/New_York) handles DST automatically.
     EOD times are always in NY local time, so 4:00 PM is 4:00 PM NY
     regardless of whether DST is active.
     """
@@ -461,23 +461,23 @@ class TestDSTHandling:
 
         # Test day after DST change - March 10, 2025 (Monday)
         # 4:00 PM EDT should be REDUCED_SIZE
-        test_time = datetime(2025, 3, 10, 16, 0, 0, tzinfo=NY_TZ)
+        test_time = datetime(2025, 3, 10, 16, 0, 0, tzinfo=NY_TIMEZONE)
         status = eod_manager.get_status(test_time)
         assert status.phase == EODPhase.REDUCED_SIZE
         assert status.position_size_multiplier == 0.5
 
         # 4:15 PM EDT should be CLOSE_ONLY
-        test_time = datetime(2025, 3, 10, 16, 15, 0, tzinfo=NY_TZ)
+        test_time = datetime(2025, 3, 10, 16, 15, 0, tzinfo=NY_TIMEZONE)
         status = eod_manager.get_status(test_time)
         assert status.phase == EODPhase.CLOSE_ONLY
 
         # 4:25 PM EDT should be AGGRESSIVE_EXIT
-        test_time = datetime(2025, 3, 10, 16, 25, 0, tzinfo=NY_TZ)
+        test_time = datetime(2025, 3, 10, 16, 25, 0, tzinfo=NY_TIMEZONE)
         status = eod_manager.get_status(test_time)
         assert status.phase == EODPhase.AGGRESSIVE_EXIT
 
         # 4:30 PM EDT should be MUST_BE_FLAT
-        test_time = datetime(2025, 3, 10, 16, 30, 0, tzinfo=NY_TZ)
+        test_time = datetime(2025, 3, 10, 16, 30, 0, tzinfo=NY_TIMEZONE)
         status = eod_manager.get_status(test_time)
         assert status.phase == EODPhase.MUST_BE_FLAT
 
@@ -495,22 +495,22 @@ class TestDSTHandling:
 
         # Test day after DST change - November 3, 2025 (Monday)
         # 4:00 PM EST should be REDUCED_SIZE
-        test_time = datetime(2025, 11, 3, 16, 0, 0, tzinfo=NY_TZ)
+        test_time = datetime(2025, 11, 3, 16, 0, 0, tzinfo=NY_TIMEZONE)
         status = eod_manager.get_status(test_time)
         assert status.phase == EODPhase.REDUCED_SIZE
 
         # 4:15 PM EST should be CLOSE_ONLY
-        test_time = datetime(2025, 11, 3, 16, 15, 0, tzinfo=NY_TZ)
+        test_time = datetime(2025, 11, 3, 16, 15, 0, tzinfo=NY_TIMEZONE)
         status = eod_manager.get_status(test_time)
         assert status.phase == EODPhase.CLOSE_ONLY
 
         # 4:25 PM EST should be AGGRESSIVE_EXIT
-        test_time = datetime(2025, 11, 3, 16, 25, 0, tzinfo=NY_TZ)
+        test_time = datetime(2025, 11, 3, 16, 25, 0, tzinfo=NY_TIMEZONE)
         status = eod_manager.get_status(test_time)
         assert status.phase == EODPhase.AGGRESSIVE_EXIT
 
         # 4:30 PM EST should be MUST_BE_FLAT
-        test_time = datetime(2025, 11, 3, 16, 30, 0, tzinfo=NY_TZ)
+        test_time = datetime(2025, 11, 3, 16, 30, 0, tzinfo=NY_TIMEZONE)
         status = eod_manager.get_status(test_time)
         assert status.phase == EODPhase.MUST_BE_FLAT
 
@@ -521,11 +521,11 @@ class TestDSTHandling:
         4:00 PM NY should be REDUCED_SIZE regardless of DST.
         """
         # Summer time (EDT - daylight saving active)
-        summer_time = datetime(2025, 7, 15, 16, 0, 0, tzinfo=NY_TZ)
+        summer_time = datetime(2025, 7, 15, 16, 0, 0, tzinfo=NY_TIMEZONE)
         summer_status = eod_manager.get_status(summer_time)
 
         # Winter time (EST - standard time)
-        winter_time = datetime(2025, 1, 15, 16, 0, 0, tzinfo=NY_TZ)
+        winter_time = datetime(2025, 1, 15, 16, 0, 0, tzinfo=NY_TIMEZONE)
         winter_status = eod_manager.get_status(winter_time)
 
         # Both should be REDUCED_SIZE at 4:00 PM local time
@@ -561,12 +561,12 @@ class TestDSTHandling:
         """
         # Spring forward - March 9, 2025 (Sunday)
         # Even though market is closed, phases should still be correct
-        spring_forward_day = datetime(2025, 3, 9, 16, 0, 0, tzinfo=NY_TZ)
+        spring_forward_day = datetime(2025, 3, 9, 16, 0, 0, tzinfo=NY_TIMEZONE)
         status = eod_manager.get_status(spring_forward_day)
         assert status.phase == EODPhase.REDUCED_SIZE
 
         # Fall back - November 2, 2025 (Sunday)
-        fall_back_day = datetime(2025, 11, 2, 16, 0, 0, tzinfo=NY_TZ)
+        fall_back_day = datetime(2025, 11, 2, 16, 0, 0, tzinfo=NY_TIMEZONE)
         status = eod_manager.get_status(fall_back_day)
         assert status.phase == EODPhase.REDUCED_SIZE
 
@@ -618,11 +618,11 @@ class TestBug1002Regression:
 
         # Test at various times
         test_cases = [
-            (datetime(2025, 1, 15, 14, 0, 0, tzinfo=NY_TZ), EODPhase.NORMAL),
-            (datetime(2025, 1, 15, 16, 5, 0, tzinfo=NY_TZ), EODPhase.REDUCED_SIZE),
-            (datetime(2025, 1, 15, 16, 20, 0, tzinfo=NY_TZ), EODPhase.CLOSE_ONLY),
-            (datetime(2025, 1, 15, 16, 27, 0, tzinfo=NY_TZ), EODPhase.AGGRESSIVE_EXIT),
-            (datetime(2025, 1, 15, 16, 30, 0, tzinfo=NY_TZ), EODPhase.MUST_BE_FLAT),
+            (datetime(2025, 1, 15, 14, 0, 0, tzinfo=NY_TIMEZONE), EODPhase.NORMAL),
+            (datetime(2025, 1, 15, 16, 5, 0, tzinfo=NY_TIMEZONE), EODPhase.REDUCED_SIZE),
+            (datetime(2025, 1, 15, 16, 20, 0, tzinfo=NY_TIMEZONE), EODPhase.CLOSE_ONLY),
+            (datetime(2025, 1, 15, 16, 27, 0, tzinfo=NY_TIMEZONE), EODPhase.AGGRESSIVE_EXIT),
+            (datetime(2025, 1, 15, 16, 30, 0, tzinfo=NY_TIMEZONE), EODPhase.MUST_BE_FLAT),
         ]
 
         for test_time, expected_phase in test_cases:
@@ -640,7 +640,7 @@ class TestBug1002Regression:
         manager = EODManager()
 
         # This is the exact pattern used in live_trader.py after the fix
-        test_time = datetime(2025, 1, 15, 16, 0, 0, tzinfo=NY_TZ)
+        test_time = datetime(2025, 1, 15, 16, 0, 0, tzinfo=NY_TIMEZONE)
 
         # This should NOT raise AttributeError
         eod_status = manager.get_status(test_time)
@@ -688,7 +688,7 @@ class TestHelperFunctions:
         naive_dt = datetime(2025, 1, 15, 15, 0, 0)  # No timezone
         ny_dt = time_to_ny(naive_dt)
 
-        assert ny_dt.tzinfo == NY_TZ
+        assert ny_dt.tzinfo == NY_TIMEZONE
 
     def test_time_to_ny_utc_datetime(self):
         """Test time_to_ny converts UTC datetime to NY timezone."""
@@ -697,33 +697,33 @@ class TestHelperFunctions:
         utc_dt = datetime(2025, 1, 15, 21, 0, 0, tzinfo=timezone.utc)  # 9 PM UTC
         ny_dt = time_to_ny(utc_dt)
 
-        assert ny_dt.tzinfo == NY_TZ
+        assert ny_dt.tzinfo == NY_TIMEZONE
         assert ny_dt.hour == 16  # 4 PM NY in winter (EST = UTC-5)
 
     def test_get_ny_time_returns_ny_timezone(self):
         """Test get_ny_time returns datetime in NY timezone."""
         ny_time = get_ny_time()
-        assert ny_time.tzinfo == NY_TZ
+        assert ny_time.tzinfo == NY_TIMEZONE
 
     def test_is_market_open_during_session(self, eod_manager):
         """Test is_market_open returns True during trading session."""
         # Weekday during session
-        test_time = datetime(2025, 1, 15, 14, 0, 0, tzinfo=NY_TZ)  # Wednesday 2 PM
+        test_time = datetime(2025, 1, 15, 14, 0, 0, tzinfo=NY_TIMEZONE)  # Wednesday 2 PM
         assert is_market_open(test_time) is True
 
     def test_is_market_open_after_session(self, eod_manager):
         """Test is_market_open returns False after trading session."""
-        test_time = datetime(2025, 1, 15, 17, 0, 0, tzinfo=NY_TZ)  # 5 PM
+        test_time = datetime(2025, 1, 15, 17, 0, 0, tzinfo=NY_TIMEZONE)  # 5 PM
         assert is_market_open(test_time) is False
 
     def test_is_market_open_weekend(self, eod_manager):
         """Test is_market_open returns False on weekends."""
         # Saturday
-        saturday = datetime(2025, 1, 18, 14, 0, 0, tzinfo=NY_TZ)
+        saturday = datetime(2025, 1, 18, 14, 0, 0, tzinfo=NY_TIMEZONE)
         assert is_market_open(saturday) is False
 
         # Sunday
-        sunday = datetime(2025, 1, 19, 14, 0, 0, tzinfo=NY_TZ)
+        sunday = datetime(2025, 1, 19, 14, 0, 0, tzinfo=NY_TIMEZONE)
         assert is_market_open(sunday) is False
 
 
@@ -737,24 +737,24 @@ class TestEODStatusReasons:
     def test_reason_includes_phase_info(self, eod_manager):
         """Test that reason string includes relevant phase information."""
         # Normal phase
-        normal_time = datetime(2025, 1, 15, 14, 0, 0, tzinfo=NY_TZ)
+        normal_time = datetime(2025, 1, 15, 14, 0, 0, tzinfo=NY_TIMEZONE)
         status = eod_manager.get_status(normal_time)
         assert "normal" in status.reason.lower() or "mins to close" in status.reason.lower()
 
         # Reduced size phase
-        reduced_time = datetime(2025, 1, 15, 16, 5, 0, tzinfo=NY_TZ)
+        reduced_time = datetime(2025, 1, 15, 16, 5, 0, tzinfo=NY_TIMEZONE)
         status = eod_manager.get_status(reduced_time)
         assert "reduced" in status.reason.lower() or "50%" in status.reason
 
     def test_reason_includes_minutes_to_close(self, eod_manager):
         """Test that reason includes minutes to close countdown."""
-        test_time = datetime(2025, 1, 15, 16, 20, 0, tzinfo=NY_TZ)  # 10 mins to 4:30
+        test_time = datetime(2025, 1, 15, 16, 20, 0, tzinfo=NY_TIMEZONE)  # 10 mins to 4:30
         status = eod_manager.get_status(test_time)
         assert "10" in status.reason or "mins" in status.reason.lower()
 
     def test_must_be_flat_reason(self, eod_manager):
         """Test MUST_BE_FLAT has clear reason message."""
-        test_time = datetime(2025, 1, 15, 16, 30, 0, tzinfo=NY_TZ)
+        test_time = datetime(2025, 1, 15, 16, 30, 0, tzinfo=NY_TIMEZONE)
         status = eod_manager.get_status(test_time)
         assert "flat" in status.reason.lower() or "4:30" in status.reason
 
