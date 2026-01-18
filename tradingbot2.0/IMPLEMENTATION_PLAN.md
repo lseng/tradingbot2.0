@@ -3,7 +3,7 @@
 > **Last Updated**: 2026-01-18 UTC (Bug #10 Fixed - LSTM training now unblocked)
 > **Status**: **UNBLOCKED - Bug #10 Fixed** - LSTM training now functional on full dataset
 > **Test Coverage**: 2,608 tests across 62 test files (12 skipped: all conditional on optional deps)
-> **Git Tag**: v0.0.72 (pending)
+> **Git Tag**: v0.0.69
 > **Code Quality**: No TODO/FIXME comments found in src/; all abstract methods properly implemented
 
 ---
