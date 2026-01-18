@@ -3,7 +3,7 @@
 > **Last Updated**: 2026-01-18 UTC (CQ.2 and CQ.3 Fixed - Timezone and MES constants consolidated)
 > **Status**: **UNBLOCKED - Bug #10 Fixed** - LSTM training now functional on full dataset
 > **Test Coverage**: 2,613 tests across 62 test files (1 skipped: conditional on optional deps)
-> **Git Tag**: v0.0.70
+> **Git Tag**: v0.0.71
 > **Code Quality**: No TODO/FIXME comments found in src/; all abstract methods properly implemented; EODPhase consolidated
 
 ---
