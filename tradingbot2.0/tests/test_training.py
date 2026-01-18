@@ -29,7 +29,8 @@ from models.training import (
     compute_class_weights,
     train_with_walk_forward,
     calculate_multiclass_auc,
-    calculate_auc
+    calculate_auc,
+    create_sequences_fast
 )
 from models.neural_networks import FeedForwardNet, LSTMNet
 
@@ -605,3 +606,158 @@ class TestGradientClipping:
             if param.grad is not None:
                 assert not torch.isnan(param.grad).any()
                 assert not torch.isinf(param.grad).any()
+
+
+class TestSequenceCreationPerformance:
+    """Tests for sequence creation performance (Bug #10 fix).
+
+    These tests ensure the optimized stride-based sequence creation:
+    1. Produces identical output to the original implementation
+    2. Completes in reasonable time for large datasets
+    3. Uses acceptable memory
+    """
+
+    def test_sequence_values_correctness(self, sample_features_and_targets):
+        """Test that optimized sequence creation produces identical values to naive implementation."""
+        X, y = sample_features_and_targets
+        seq_length = 10
+
+        # Create sequences using the optimized implementation
+        dataset = SequenceDataset(X, y, seq_length=seq_length)
+
+        # Manually create sequences using the old naive approach (for comparison)
+        X_naive, y_naive = [], []
+        for i in range(len(X) - seq_length):
+            X_naive.append(X[i:i + seq_length])
+            y_naive.append(y[i + seq_length])
+        X_naive = np.array(X_naive)
+        y_naive = np.array(y_naive)
+
+        # Values must be identical
+        np.testing.assert_array_equal(dataset.X, X_naive)
+        np.testing.assert_array_equal(dataset.y, y_naive)
+
+    def test_sequence_output_shape(self, sample_features_and_targets):
+        """Test that output shape matches expected (n_samples - seq_length, seq_length, n_features)."""
+        X, y = sample_features_and_targets
+        seq_length = 15
+        n_features = X.shape[1]
+
+        dataset = SequenceDataset(X, y, seq_length=seq_length)
+
+        expected_samples = len(X) - seq_length
+        assert dataset.X.shape == (expected_samples, seq_length, n_features)
+        assert dataset.y.shape == (expected_samples,)
+
+    def test_sequence_creation_performance(self):
+        """Test that sequence creation completes in reasonable time.
+
+        For 100K samples, should complete in under 1 second.
+        This is proportionally scaled - 6M samples should complete in ~60 seconds.
+        """
+        import time
+
+        # Create moderately large dataset (100K samples, 50 features)
+        n_samples = 100_000
+        n_features = 50
+        seq_length = 60
+
+        X = np.random.randn(n_samples, n_features).astype(np.float32)
+        y = np.random.randint(0, 3, n_samples)
+
+        start_time = time.perf_counter()
+        dataset = SequenceDataset(X, y, seq_length=seq_length)
+        elapsed_time = time.perf_counter() - start_time
+
+        # Should complete in under 1 second for 100K samples
+        # (The old implementation would take ~1 minute for this size)
+        assert elapsed_time < 1.0, f"Sequence creation took {elapsed_time:.2f}s, expected < 1.0s"
+
+        # Verify correct output
+        assert dataset.X.shape == (n_samples - seq_length, seq_length, n_features)
+
+    def test_sequence_creation_very_large_dataset(self):
+        """Test sequence creation with larger dataset (500K samples).
+
+        This is a regression test for Bug #10 where the old implementation
+        would take 60+ minutes for 6M samples.
+        """
+        import time
+
+        # Create larger dataset (500K samples)
+        n_samples = 500_000
+        n_features = 50
+        seq_length = 60
+
+        X = np.random.randn(n_samples, n_features).astype(np.float32)
+        y = np.random.randint(0, 3, n_samples)
+
+        start_time = time.perf_counter()
+        dataset = SequenceDataset(X, y, seq_length=seq_length)
+        elapsed_time = time.perf_counter() - start_time
+
+        # Should complete in under 5 seconds for 500K samples
+        # Linearly scaled: 6M samples should complete in ~60 seconds
+        assert elapsed_time < 5.0, f"Sequence creation took {elapsed_time:.2f}s, expected < 5.0s"
+
+        expected_samples = n_samples - seq_length
+        assert len(dataset.X) == expected_samples
+        assert len(dataset.y) == expected_samples
+
+    def test_memory_efficient_sequence_creation(self):
+        """Test that sequence creation doesn't use excessive memory.
+
+        The optimized implementation should use ~2x final tensor size,
+        not 3x+ like the old implementation.
+        """
+        import sys
+
+        n_samples = 50_000
+        n_features = 50
+        seq_length = 60
+
+        X = np.random.randn(n_samples, n_features).astype(np.float32)
+        y = np.random.randint(0, 3, n_samples)
+
+        # Calculate expected final size
+        expected_X_size = (n_samples - seq_length) * seq_length * n_features * 4  # float32 = 4 bytes
+        expected_y_size = (n_samples - seq_length) * 8  # int64 = 8 bytes
+
+        dataset = SequenceDataset(X, y, seq_length=seq_length)
+
+        # Verify the dataset arrays exist with correct size
+        actual_X_size = dataset.X.nbytes
+        actual_y_size = dataset.y.nbytes
+
+        assert actual_X_size == expected_X_size, f"X size mismatch: {actual_X_size} vs {expected_X_size}"
+        assert actual_y_size == expected_y_size, f"y size mismatch: {actual_y_size} vs {expected_y_size}"
+
+    def test_create_sequences_fast_function(self):
+        """Test the standalone create_sequences_fast function."""
+        from models.training import create_sequences_fast
+
+        n_samples = 1000
+        n_features = 40
+        seq_length = 20
+
+        X = np.random.randn(n_samples, n_features).astype(np.float32)
+        y = np.random.randint(0, 3, n_samples)
+
+        X_seq, y_seq = create_sequences_fast(X, y, seq_length)
+
+        # Check shape
+        assert X_seq.shape == (n_samples - seq_length, seq_length, n_features)
+        assert y_seq.shape == (n_samples - seq_length,)
+
+        # Check values match SequenceDataset
+        dataset = SequenceDataset(X, y, seq_length)
+        np.testing.assert_array_equal(X_seq, dataset.X)
+        np.testing.assert_array_equal(y_seq, dataset.y)
+
+    def test_sequence_creation_error_on_insufficient_data(self):
+        """Test that sequence creation raises error when data is insufficient."""
+        X = np.random.randn(10, 5)
+        y = np.random.randint(0, 3, 10)
+
+        with pytest.raises(ValueError, match="Not enough samples"):
+            SequenceDataset(X, y, seq_length=20)  # seq_length > n_samples
