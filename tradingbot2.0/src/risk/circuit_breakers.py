@@ -229,6 +229,27 @@ class CircuitBreakers:
 
             logger.critical(f"CIRCUIT BREAKER - MANUAL REVIEW REQUIRED: {self.state.halt_reason}")
 
+    def trigger_halt(self, reason: str) -> None:
+        """
+        Trigger immediate trading halt - requires manual intervention.
+
+        1.16 FIX: Added for unprotected position scenario where stop order
+        fails AND emergency exit fails, leaving position without protection.
+
+        Args:
+            reason: Reason for the halt
+        """
+        with self._lock:
+            self.state.active_breakers[BreakerType.MANUAL] = {
+                "triggered_at": datetime.now(),
+                "reason": reason,
+            }
+            self.state.is_halted = True
+            self.state.halt_reason = reason
+            self.state.requires_manual_review = True
+
+            logger.critical(f"CIRCUIT BREAKER - TRADING HALTED: {reason}")
+
     def update_market_conditions(
         self,
         current_atr: Optional[float] = None,

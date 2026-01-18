@@ -1,8 +1,8 @@
 # Implementation Plan - MES Futures Scalping Bot
 
-> **Last Updated**: 2026-01-18 UTC (CQ.2 and CQ.3 Fixed - Timezone and MES constants consolidated)
+> **Last Updated**: 2026-01-18 UTC (1.16 Fixed - Stop order failure now halts trading)
 > **Status**: **UNBLOCKED - Bug #10 Fixed** - LSTM training now functional on full dataset
-> **Test Coverage**: 2,613 tests across 62 test files (1 skipped: conditional on optional deps)
+> **Test Coverage**: 2,625 tests across 62 test files (1 skipped: conditional on optional deps)
 > **Git Tag**: v0.0.71
 > **Code Quality**: No TODO/FIXME comments found in src/; all abstract methods properly implemented; EODPhase consolidated
 
@@ -33,12 +33,12 @@ Execute tasks in this exact order for optimal progress:
 | 4 | CQ.3 | Consolidate MES_TICK_SIZE constant | 30 min | **FIXED** |
 
 ### Phase 2: Live Trading Safety (CRITICAL - DO NOT SKIP)
-| Order | ID | Task | Est. Time |
-|-------|-----|------|-----------|
-| 5 | 1.16 | **Stop order failure must HALT trading** (unprotected position) | 2 hrs |
-| 6 | 1.17 | **EOD flatten with retry/verification** (orphan order cleanup) | 2 hrs |
-| 7 | 1.14 | Track commission/slippage in live P&L (constants unused) | 3 hrs |
-| 8 | 1.15 | Populate session metrics (wins/losses/gross_pnl never set) | 2 hrs |
+| Order | ID | Task | Est. Time | Status |
+|-------|-----|------|-----------|--------|
+| 5 | 1.16 | **Stop order failure must HALT trading** (unprotected position) | 2 hrs | **FIXED** |
+| 6 | 1.17 | **EOD flatten with retry/verification** (orphan order cleanup) | 2 hrs | |
+| 7 | 1.14 | Track commission/slippage in live P&L (constants unused) | 3 hrs | |
+| 8 | 1.15 | Populate session metrics (wins/losses/gross_pnl never set) | 2 hrs | |
 
 ### Phase 3: Enable Profitability Validation (SHORT-TERM)
 | Order | ID | Task | Est. Time |
@@ -212,7 +212,7 @@ Issues affecting profitability validation and **LIVE TRADING SAFETY**. Ordered b
 |----|----------|-------|--------|--------|
 | **1.14** | `src/trading/` | **Commission/slippage not tracked in live P&L** | `SessionMetrics.commissions` always 0.0 | CONFIRMED NOT IMPLEMENTED |
 | **1.15** | `src/trading/live_trader.py` | **Session metrics incomplete** | wins/losses/gross_pnl fields declared but NEVER populated | CONFIRMED NOT IMPLEMENTED |
-| **1.16** | `src/trading/order_executor.py:430-443` | **Stop order failure doesn't halt trading** | Trading loop CONTINUES after CRITICAL log | CONFIRMED INCOMPLETE |
+| **1.16** | `src/trading/order_executor.py:430-443` | **Stop order failure now halts trading** | Trading HALTS, circuit breaker engaged | **FIXED (2026-01-18)** |
 | **1.17** | `src/trading/live_trader.py:818-831` | **EOD flatten no verification** | Logs success regardless, no retry logic | CONFIRMED NOT IMPLEMENTED |
 | **1.1** | `train_scalping_model.py:662-686` | Walk-forward only calculates accuracy, NOT Sharpe | Cannot validate profitability | CONFIRMED NOT IMPLEMENTED |
 | **1.2** | `evaluation.py` | TradingSimulator.run_backtest() NEVER CALLED | Sharpe never calculated | CONFIRMED NOT IMPLEMENTED |
@@ -279,38 +279,32 @@ Session P&L is **OVERSTATED** because commissions aren't deducted. Trader sees p
 
 ---
 
-### 1.16: Stop Order Failure Doesn't Halt Trading (SAFETY CRITICAL)
+### 1.16: Stop Order Failure Halts Trading (FIXED)
 
-**File**: `src/trading/order_executor.py:430-443`
-**Confirmed**: 2026-01-18 - After emergency exit fails, returns EntryResult with FAILED but trading loop continues
+**File**: `src/trading/order_executor.py`, `src/trading/live_trader.py`, `src/risk/circuit_breakers.py`
+**Status**: **FIXED (2026-01-18)**
+**Tests**: 12 new tests added for `EntryResult.requires_halt` and `CircuitBreakers.trigger_halt()`
 
-#### Problem
+#### Problem (RESOLVED)
 
-When stop order placement fails:
-1. Emergency exit is attempted (correct)
-2. If emergency exit also fails, logs CRITICAL error
-3. **But trading loop CONTINUES** - bot may enter new positions with unprotected open position
+When stop order placement fails and emergency exit also fails, the trading loop previously continued with an unprotected position.
 
-#### Current Code (Lines 430-443)
+#### Fix Applied
 
-```python
-logger.critical("CRITICAL: Emergency exit also failed: {exit_err}. "
-               "UNPROTECTED POSITION EXISTS - MANUAL INTERVENTION REQUIRED!")
-# But trading loop continues...
-```
-
-#### Required Fix
-
-- Emit `HALT_TRADING` signal to live trader on unprotected position
-- Circuit breaker should engage automatically
-- Require manual restart after position sync
+1. Added `requires_halt: bool = False` field to `EntryResult` dataclass
+2. Set `requires_halt=True` when emergency exit fails (unprotected position)
+3. `LiveTrader._execute_signal()` checks `result.requires_halt` and calls `_on_halt()`
+4. Added `CircuitBreakers.trigger_halt(reason)` method that:
+   - Sets `is_halted = True`
+   - Sets `requires_manual_review = True`
+   - Blocks all trading until manual reset
 
 #### Acceptance Criteria
 
-- [ ] Stop order failure triggers trading halt
-- [ ] Circuit breaker engaged on unprotected position
-- [ ] Live trader stops processing signals until manual intervention
-- [ ] Alert/notification sent for manual review
+- [x] Stop order failure triggers trading halt
+- [x] Circuit breaker engaged on unprotected position
+- [x] Live trader stops processing signals until manual intervention
+- [x] Alert/notification sent for manual review (via CRITICAL log)
 
 ---
 

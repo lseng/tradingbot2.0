@@ -491,8 +491,9 @@ class TestLiveTraderExecuteSignal:
         trader._risk_manager.state = MagicMock(account_balance=1000.0)
 
         trader._order_executor = AsyncMock()
+        # 1.16 FIX: Mock success case must have requires_halt=False
         trader._order_executor.execute_signal = AsyncMock(
-            return_value=MagicMock(success=True, entry_fill_price=5000.0)
+            return_value=MagicMock(success=True, entry_fill_price=5000.0, requires_halt=False)
         )
 
         signal = Signal(

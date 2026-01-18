@@ -1238,3 +1238,543 @@ class TestWebSocketRegistration:
 
         # Should not raise exception
         assert executor._ws is None
+
+
+# ============================================================================
+# OCO Race Condition Tests (10.23 FIX)
+# ============================================================================
+
+class TestOCORaceConditionPrevention:
+    """
+    Tests for the OCO (one-cancels-other) race condition fix (10.23).
+
+    The race condition occurs when both stop and target orders fill before
+    our cancellation can complete. Without proper handling, this would cause:
+    1. Position doubling (both exits processed)
+    2. Duplicate position manager updates
+    3. Orphaned tracking state
+
+    The fix uses:
+    - threading.Lock for thread-safe access to shared state
+    - _filled_oco_orders set to track which OCO orders have filled
+    - _orders_being_cancelled set to prevent duplicate cancellation scheduling
+    - Early return when dual fill is detected to prevent double position updates
+    """
+
+    def test_filled_oco_orders_tracking_initialized(self, mock_rest_client, mock_position_manager):
+        """Test that _filled_oco_orders tracking set is initialized."""
+        executor = OrderExecutor(
+            rest_client=mock_rest_client,
+            ws_client=None,
+            position_manager=mock_position_manager,
+        )
+        assert hasattr(executor, '_filled_oco_orders')
+        assert isinstance(executor._filled_oco_orders, set)
+        assert len(executor._filled_oco_orders) == 0
+
+    def test_orders_being_cancelled_tracking_initialized(self, mock_rest_client, mock_position_manager):
+        """Test that _orders_being_cancelled tracking set is initialized."""
+        executor = OrderExecutor(
+            rest_client=mock_rest_client,
+            ws_client=None,
+            position_manager=mock_position_manager,
+        )
+        assert hasattr(executor, '_orders_being_cancelled')
+        assert isinstance(executor._orders_being_cancelled, set)
+        assert len(executor._orders_being_cancelled) == 0
+
+    def test_order_lock_is_threading_lock(self, mock_rest_client, mock_position_manager):
+        """Test that _order_lock is a threading.Lock (not asyncio.Lock).
+
+        This is important because _handle_fill is a synchronous callback
+        and asyncio.Lock cannot be used in sync context.
+        """
+        import threading
+
+        executor = OrderExecutor(
+            rest_client=mock_rest_client,
+            ws_client=None,
+            position_manager=mock_position_manager,
+        )
+        assert hasattr(executor, '_order_lock')
+        assert isinstance(executor._order_lock, type(threading.Lock()))
+
+    def test_handle_fill_marks_oco_order_as_filled(self, mock_rest_client, mock_position_manager):
+        """Test that _handle_fill marks OCO orders in _filled_oco_orders set."""
+        executor = OrderExecutor(
+            rest_client=mock_rest_client,
+            ws_client=None,
+            position_manager=mock_position_manager,
+        )
+
+        # Add a stop order to tracking
+        mock_stop = MagicMock()
+        mock_stop.order_id = "STOP001"
+        mock_stop.custom_tag = executor.config.stop_tag
+        mock_stop.contract_id = "CON.F.US.MES.H26"
+        mock_stop.side = OrderSide.SELL
+        executor._open_orders["STOP001"] = mock_stop
+
+        # Simulate fill notification
+        fill = OrderFill(
+            order_id="STOP001",
+            contract_id="CON.F.US.MES.H26",
+            side=2,  # SELL
+            fill_price=5000.25,
+            fill_size=1,
+            timestamp=datetime.now(),
+        )
+        executor._handle_fill(fill)
+
+        # Order should be marked as filled
+        assert "STOP001" in executor._filled_oco_orders
+
+    @pytest.mark.asyncio
+    async def test_handle_fill_detects_dual_fill(self, mock_rest_client, mock_position_manager):
+        """Test that dual fill is detected when both OCO orders fill.
+
+        This simulates the race condition where both stop and target fill
+        before the cancellation can complete.
+        """
+        executor = OrderExecutor(
+            rest_client=mock_rest_client,
+            ws_client=None,
+            position_manager=mock_position_manager,
+        )
+
+        # Add both stop and target orders
+        mock_stop = MagicMock()
+        mock_stop.order_id = "STOP001"
+        mock_stop.custom_tag = executor.config.stop_tag
+        mock_stop.contract_id = "CON.F.US.MES.H26"
+        mock_stop.side = OrderSide.SELL
+        executor._open_orders["STOP001"] = mock_stop
+
+        mock_target = MagicMock()
+        mock_target.order_id = "TARGET001"
+        mock_target.custom_tag = executor.config.target_tag
+        mock_target.contract_id = "CON.F.US.MES.H26"
+        mock_target.side = OrderSide.SELL
+        executor._open_orders["TARGET001"] = mock_target
+
+        # First fill: stop
+        fill1 = OrderFill(
+            order_id="STOP001",
+            contract_id="CON.F.US.MES.H26",
+            side=2,  # SELL
+            fill_price=5000.25,
+            fill_size=1,
+            timestamp=datetime.now(),
+        )
+        executor._handle_fill(fill1)
+        await asyncio.sleep(0.01)  # Let cancellation task start
+
+        # STOP001 should now be in _filled_oco_orders
+        assert "STOP001" in executor._filled_oco_orders
+
+        # Second fill: target (dual fill scenario - target fills before cancellation completes)
+        fill2 = OrderFill(
+            order_id="TARGET001",
+            contract_id="CON.F.US.MES.H26",
+            side=2,  # SELL
+            fill_price=5010.00,
+            fill_size=1,
+            timestamp=datetime.now(),
+        )
+
+        # Capture log output to verify CRITICAL log
+        with patch('src.trading.order_executor.logger') as mock_logger:
+            executor._handle_fill(fill2)
+            # Should log CRITICAL for dual fill because STOP001 is already filled
+            mock_logger.critical.assert_called()
+            call_args = str(mock_logger.critical.call_args)
+            assert "DUAL FILL DETECTED" in call_args
+
+        # Clean up pending tasks
+        for task in executor._pending_oco_cancellations:
+            task.cancel()
+        await asyncio.sleep(0.01)
+
+    @pytest.mark.asyncio
+    async def test_handle_fill_skips_position_update_on_dual_fill(self, mock_rest_client, mock_position_manager):
+        """Test that position manager is NOT updated twice on dual fill.
+
+        This is critical - without this fix, both fills would call
+        update_from_fill, causing position to be closed twice.
+        """
+        executor = OrderExecutor(
+            rest_client=mock_rest_client,
+            ws_client=None,
+            position_manager=mock_position_manager,
+        )
+
+        # Add both stop and target orders
+        mock_stop = MagicMock()
+        mock_stop.order_id = "STOP001"
+        mock_stop.custom_tag = executor.config.stop_tag
+        mock_stop.contract_id = "CON.F.US.MES.H26"
+        mock_stop.side = OrderSide.SELL
+        executor._open_orders["STOP001"] = mock_stop
+
+        mock_target = MagicMock()
+        mock_target.order_id = "TARGET001"
+        mock_target.custom_tag = executor.config.target_tag
+        mock_target.contract_id = "CON.F.US.MES.H26"
+        mock_target.side = OrderSide.SELL
+        executor._open_orders["TARGET001"] = mock_target
+
+        # First fill: stop
+        fill1 = OrderFill(
+            order_id="STOP001",
+            contract_id="CON.F.US.MES.H26",
+            side=2,  # SELL
+            fill_price=5000.25,
+            fill_size=1,
+            timestamp=datetime.now(),
+        )
+        executor._handle_fill(fill1)
+        await asyncio.sleep(0.01)  # Let cancellation task start
+
+        # Position manager should be called once
+        assert mock_position_manager.update_from_fill.call_count == 1
+
+        # Simulate second fill coming in before cancellation completes
+        # This is the race condition scenario
+        fill2 = OrderFill(
+            order_id="TARGET001",
+            contract_id="CON.F.US.MES.H26",
+            side=2,  # SELL
+            fill_price=5010.00,
+            fill_size=1,
+            timestamp=datetime.now(),
+        )
+        executor._handle_fill(fill2)
+
+        # Position manager should NOT be called again (dual fill prevention)
+        # Because target was detected as dual fill, it should skip update
+        assert mock_position_manager.update_from_fill.call_count == 1
+
+        # Clean up pending tasks
+        for task in executor._pending_oco_cancellations:
+            task.cancel()
+        await asyncio.sleep(0.01)
+
+    def test_handle_fill_ignores_duplicate_fill_notification(self, mock_rest_client, mock_position_manager):
+        """Test that duplicate fill notifications for same order are ignored."""
+        executor = OrderExecutor(
+            rest_client=mock_rest_client,
+            ws_client=None,
+            position_manager=mock_position_manager,
+        )
+
+        # Add stop order
+        mock_stop = MagicMock()
+        mock_stop.order_id = "STOP001"
+        mock_stop.custom_tag = executor.config.stop_tag
+        mock_stop.contract_id = "CON.F.US.MES.H26"
+        mock_stop.side = OrderSide.SELL
+        executor._open_orders["STOP001"] = mock_stop
+
+        # First fill
+        fill = OrderFill(
+            order_id="STOP001",
+            contract_id="CON.F.US.MES.H26",
+            side=2,  # SELL
+            fill_price=5000.25,
+            fill_size=1,
+            timestamp=datetime.now(),
+        )
+        executor._handle_fill(fill)
+        assert mock_position_manager.update_from_fill.call_count == 1
+
+        # Duplicate fill notification (same order ID)
+        executor._handle_fill(fill)
+
+        # Position manager should not be called again
+        assert mock_position_manager.update_from_fill.call_count == 1
+
+    def test_track_oco_orders_clears_tracking_state(self, mock_rest_client, mock_position_manager):
+        """Test that _track_oco_orders clears previous tracking state.
+
+        When entering a new position, old OCO tracking must be cleared
+        to prevent stale state from affecting new orders.
+        """
+        executor = OrderExecutor(
+            rest_client=mock_rest_client,
+            ws_client=None,
+            position_manager=mock_position_manager,
+        )
+
+        # Simulate state from previous position
+        executor._filled_oco_orders.add("OLD_STOP")
+        executor._orders_being_cancelled.add("OLD_TARGET")
+
+        # Track new OCO orders
+        mock_stop = MagicMock()
+        mock_stop.order_id = "NEW_STOP"
+        mock_target = MagicMock()
+        mock_target.order_id = "NEW_TARGET"
+
+        executor._track_oco_orders(mock_stop, mock_target)
+
+        # Old state should be cleared
+        assert "OLD_STOP" not in executor._filled_oco_orders
+        assert "OLD_TARGET" not in executor._orders_being_cancelled
+        assert len(executor._filled_oco_orders) == 0
+        assert len(executor._orders_being_cancelled) == 0
+
+    @pytest.mark.asyncio
+    async def test_handle_oco_fill_marks_order_being_cancelled(self, mock_rest_client, mock_position_manager):
+        """Test that _handle_oco_fill marks orders as being cancelled.
+
+        This prevents duplicate cancellation tasks from being scheduled
+        if multiple fills come in quickly.
+        """
+        executor = OrderExecutor(
+            rest_client=mock_rest_client,
+            ws_client=None,
+            position_manager=mock_position_manager,
+        )
+
+        # Add both stop and target orders
+        mock_stop = MagicMock()
+        mock_stop.order_id = "STOP001"
+        mock_stop.custom_tag = executor.config.stop_tag
+        executor._open_orders["STOP001"] = mock_stop
+
+        mock_target = MagicMock()
+        mock_target.order_id = "TARGET001"
+        mock_target.custom_tag = executor.config.target_tag
+        executor._open_orders["TARGET001"] = mock_target
+
+        # Call _handle_oco_fill as if stop was filled (needs event loop for create_task)
+        executor._handle_oco_fill("STOP001")
+
+        # Target should be marked as being cancelled
+        assert "TARGET001" in executor._orders_being_cancelled
+
+        # Clean up pending tasks
+        for task in executor._pending_oco_cancellations:
+            task.cancel()
+        await asyncio.sleep(0.01)
+
+    def test_handle_oco_fill_skips_already_being_cancelled(self, mock_rest_client, mock_position_manager):
+        """Test that _handle_oco_fill doesn't schedule duplicate cancellation."""
+        executor = OrderExecutor(
+            rest_client=mock_rest_client,
+            ws_client=None,
+            position_manager=mock_position_manager,
+        )
+
+        # Add both stop and target orders
+        mock_stop = MagicMock()
+        mock_stop.order_id = "STOP001"
+        mock_stop.custom_tag = executor.config.stop_tag
+        executor._open_orders["STOP001"] = mock_stop
+
+        mock_target = MagicMock()
+        mock_target.order_id = "TARGET001"
+        mock_target.custom_tag = executor.config.target_tag
+        executor._open_orders["TARGET001"] = mock_target
+
+        # Pre-mark target as being cancelled
+        executor._orders_being_cancelled.add("TARGET001")
+
+        # Count pending tasks before
+        tasks_before = len(executor._pending_oco_cancellations)
+
+        # Call _handle_oco_fill - should NOT schedule another cancellation
+        executor._handle_oco_fill("STOP001")
+
+        # No new tasks should have been scheduled
+        assert len(executor._pending_oco_cancellations) == tasks_before
+
+    def test_handle_oco_fill_skips_already_filled_orders(self, mock_rest_client, mock_position_manager):
+        """Test that _handle_oco_fill doesn't try to cancel already filled orders."""
+        executor = OrderExecutor(
+            rest_client=mock_rest_client,
+            ws_client=None,
+            position_manager=mock_position_manager,
+        )
+
+        # Add both stop and target orders
+        mock_stop = MagicMock()
+        mock_stop.order_id = "STOP001"
+        mock_stop.custom_tag = executor.config.stop_tag
+        executor._open_orders["STOP001"] = mock_stop
+
+        mock_target = MagicMock()
+        mock_target.order_id = "TARGET001"
+        mock_target.custom_tag = executor.config.target_tag
+        executor._open_orders["TARGET001"] = mock_target
+
+        # Pre-mark target as filled (simulating it already filled)
+        executor._filled_oco_orders.add("TARGET001")
+
+        # Count pending tasks before
+        tasks_before = len(executor._pending_oco_cancellations)
+
+        # Call _handle_oco_fill - should NOT schedule cancellation for filled order
+        executor._handle_oco_fill("STOP001")
+
+        # No new tasks should have been scheduled
+        assert len(executor._pending_oco_cancellations) == tasks_before
+
+    def test_get_open_orders_uses_lock(self, mock_rest_client, mock_position_manager):
+        """Test that get_open_orders acquires lock for thread-safe access."""
+        executor = OrderExecutor(
+            rest_client=mock_rest_client,
+            ws_client=None,
+            position_manager=mock_position_manager,
+        )
+
+        # Add an order
+        mock_order = MagicMock()
+        mock_order.order_id = "ORD001"
+        executor._open_orders["ORD001"] = mock_order
+
+        # Verify we get a copy (thread-safe snapshot)
+        result = executor.get_open_orders()
+        assert "ORD001" in result
+
+        # Verify it's a copy, not the original
+        result["NEW_ORDER"] = MagicMock()
+        assert "NEW_ORDER" not in executor._open_orders
+
+    def test_has_open_orders_uses_lock(self, mock_rest_client, mock_position_manager):
+        """Test that has_open_orders acquires lock for thread-safe access."""
+        executor = OrderExecutor(
+            rest_client=mock_rest_client,
+            ws_client=None,
+            position_manager=mock_position_manager,
+        )
+
+        # Initially no orders
+        assert executor.has_open_orders() is False
+
+        # Add an order
+        with executor._order_lock:
+            mock_order = MagicMock()
+            executor._open_orders["ORD001"] = mock_order
+
+        # Should see the order
+        assert executor.has_open_orders() is True
+
+    @pytest.mark.asyncio
+    async def test_cancel_all_orders_clears_tracking_state(self, mock_rest_client, mock_position_manager):
+        """Test that _cancel_all_orders clears all tracking state."""
+        mock_rest_client.cancel_all_orders = AsyncMock(return_value=2)
+
+        executor = OrderExecutor(
+            rest_client=mock_rest_client,
+            ws_client=None,
+            position_manager=mock_position_manager,
+        )
+
+        # Populate tracking state
+        executor._open_orders["ORD001"] = MagicMock()
+        executor._open_orders["ORD002"] = MagicMock()
+        executor._filled_oco_orders.add("FILLED001")
+        executor._orders_being_cancelled.add("CANCEL001")
+
+        await executor._cancel_all_orders("CON.F.US.MES.H26")
+
+        # All state should be cleared
+        assert len(executor._open_orders) == 0
+        assert len(executor._filled_oco_orders) == 0
+        assert len(executor._orders_being_cancelled) == 0
+
+    @pytest.mark.asyncio
+    async def test_cancel_order_safe_uses_lock(self, mock_rest_client, mock_position_manager):
+        """Test that _cancel_order_safe acquires lock when modifying state."""
+        mock_rest_client.cancel_order = AsyncMock()
+        mock_order = MagicMock()
+        mock_order.is_cancelled = True
+        mock_order.is_filled = False  # Important: must set both attributes
+        mock_rest_client.get_order = AsyncMock(return_value=mock_order)
+
+        executor = OrderExecutor(
+            rest_client=mock_rest_client,
+            ws_client=None,
+            position_manager=mock_position_manager,
+        )
+
+        # Add order
+        executor._open_orders["ORD001"] = MagicMock()
+
+        # Cancel should remove from tracking
+        result = await executor._cancel_order_safe("ORD001")
+
+        assert result is True
+        assert "ORD001" not in executor._open_orders
+
+    @pytest.mark.asyncio
+    async def test_cancel_order_safe_tracks_filled_orders(self, mock_rest_client, mock_position_manager):
+        """Test that _cancel_order_safe adds to _filled_oco_orders when order filled before cancel."""
+        mock_rest_client.cancel_order = AsyncMock()
+        mock_order = MagicMock()
+        mock_order.is_filled = True  # Order filled before cancel completed
+        mock_order.is_cancelled = False
+        mock_rest_client.get_order = AsyncMock(return_value=mock_order)
+
+        executor = OrderExecutor(
+            rest_client=mock_rest_client,
+            ws_client=None,
+            position_manager=mock_position_manager,
+        )
+
+        # Add order
+        executor._open_orders["ORD001"] = MagicMock()
+
+        # Cancel should detect the order was filled
+        result = await executor._cancel_order_safe("ORD001")
+
+        assert result is False  # Cancel wasn't successful (order filled instead)
+        assert "ORD001" in executor._filled_oco_orders
+        assert "ORD001" not in executor._open_orders
+
+
+# ============================================================================
+# EntryResult.requires_halt Tests (1.16 FIX)
+# ============================================================================
+
+class TestEntryResultRequiresHalt:
+    """Tests for EntryResult.requires_halt field (1.16 FIX)."""
+
+    def test_requires_halt_default_false(self):
+        """Test that requires_halt defaults to False."""
+        result = EntryResult(status=ExecutionStatus.FILLED)
+        assert result.requires_halt is False
+
+    def test_requires_halt_can_be_set_true(self):
+        """Test that requires_halt can be set to True."""
+        result = EntryResult(
+            status=ExecutionStatus.FAILED,
+            error_message="Unprotected position",
+            requires_halt=True,
+        )
+        assert result.requires_halt is True
+
+    def test_requires_halt_on_successful_entry(self):
+        """Test successful entry has requires_halt=False."""
+        result = EntryResult(
+            status=ExecutionStatus.FILLED,
+            entry_fill_price=5000.0,
+            entry_fill_size=1,
+            stop_order_id="STOP001",
+            target_order_id="TARGET001",
+        )
+        assert result.requires_halt is False
+        assert result.success is True
+
+    def test_requires_halt_unprotected_position(self):
+        """Test entry with unprotected position has requires_halt=True."""
+        result = EntryResult(
+            status=ExecutionStatus.FAILED,
+            entry_fill_price=5000.0,
+            entry_fill_size=1,
+            error_message="CRITICAL: Unprotected position - emergency exit failed",
+            requires_halt=True,
+        )
+        assert result.requires_halt is True
+        assert result.success is False

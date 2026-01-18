@@ -875,6 +875,7 @@ class TestLiveTraderSignalExecution:
         mock_result = Mock()
         mock_result.success = True
         mock_result.entry_fill_price = 6000.0
+        mock_result.requires_halt = False  # 1.16 FIX: Mock success case has no halt
         trader._order_executor = AsyncMock()
         trader._order_executor.execute_signal.return_value = mock_result
 

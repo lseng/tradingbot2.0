@@ -813,3 +813,92 @@ class TestCheckMarketConditionsFunction:
         assert result['spread_acceptable'] is True
         assert result['volume_adequate'] is True
         assert result['tradeable'] is True
+
+
+# ============================================================================
+# trigger_halt() Tests (1.16 FIX)
+# ============================================================================
+
+class TestTriggerHalt:
+    """Tests for CircuitBreakers.trigger_halt() method (1.16 FIX)."""
+
+    def test_trigger_halt_sets_halt_state(self):
+        """Test that trigger_halt sets is_halted to True."""
+        breakers = CircuitBreakers()
+
+        assert breakers.state.is_halted is False
+        breakers.trigger_halt("Unprotected position")
+        assert breakers.state.is_halted is True
+
+    def test_trigger_halt_sets_reason(self):
+        """Test that trigger_halt sets the halt reason."""
+        breakers = CircuitBreakers()
+
+        reason = "CRITICAL: Unprotected position - emergency exit failed"
+        breakers.trigger_halt(reason)
+
+        assert breakers.state.halt_reason == reason
+
+    def test_trigger_halt_requires_manual_review(self):
+        """Test that trigger_halt sets requires_manual_review to True."""
+        breakers = CircuitBreakers()
+
+        breakers.trigger_halt("Unprotected position")
+        assert breakers.state.requires_manual_review is True
+
+    def test_trigger_halt_adds_to_active_breakers(self):
+        """Test that trigger_halt adds MANUAL breaker to active breakers."""
+        breakers = CircuitBreakers()
+
+        breakers.trigger_halt("Unprotected position")
+
+        assert BreakerType.MANUAL in breakers.state.active_breakers
+        assert breakers.state.active_breakers[BreakerType.MANUAL]["reason"] == "Unprotected position"
+        assert "triggered_at" in breakers.state.active_breakers[BreakerType.MANUAL]
+
+    def test_trigger_halt_blocks_trading(self):
+        """Test that trigger_halt prevents trading."""
+        breakers = CircuitBreakers()
+
+        assert breakers.can_trade() is True
+        breakers.trigger_halt("Unprotected position")
+        assert breakers.can_trade() is False
+
+    def test_trigger_halt_persists_through_daily_reset(self):
+        """Test that manual halt persists through daily reset (requires manual review)."""
+        breakers = CircuitBreakers()
+
+        breakers.trigger_halt("Unprotected position")
+
+        # Daily reset should NOT clear manual halt that requires review
+        breakers.reset_daily()
+
+        assert breakers.state.is_halted is True
+        assert breakers.state.requires_manual_review is True
+
+    def test_trigger_halt_cleared_by_manual_reset(self):
+        """Test that manual halt is cleared by manual_reset()."""
+        breakers = CircuitBreakers()
+
+        breakers.trigger_halt("Unprotected position")
+
+        # Manual reset should clear everything
+        breakers.manual_reset()
+
+        assert breakers.state.is_halted is False
+        assert breakers.state.requires_manual_review is False
+        assert breakers.can_trade() is True
+
+    def test_trigger_halt_shows_in_status(self):
+        """Test that triggered halt shows in get_status()."""
+        breakers = CircuitBreakers()
+
+        reason = "Unprotected position - stop order failed"
+        breakers.trigger_halt(reason)
+
+        status = breakers.get_status()
+
+        assert status["is_halted"] is True
+        assert status["halt_reason"] == reason
+        assert status["requires_manual_review"] is True
+        assert BreakerType.MANUAL in status["active_breakers"]

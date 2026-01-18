@@ -110,6 +110,8 @@ class EntryResult:
     error_message: Optional[str] = None
     timestamp: datetime = field(default_factory=datetime.now)
     timing: Optional[ExecutionTiming] = None
+    # 1.16 FIX: Flag to indicate trading must halt (unprotected position exists)
+    requires_halt: bool = False
 
     @property
     def success(self) -> bool:
@@ -426,18 +428,31 @@ class OrderExecutor:
                         f"to close unprotected position"
                     )
                 except Exception as exit_err:
+                    # 1.16 FIX: UNPROTECTED POSITION - must halt trading
                     logger.critical(
                         f"CRITICAL: Emergency exit also failed: {exit_err}. "
-                        f"UNPROTECTED POSITION EXISTS - MANUAL INTERVENTION REQUIRED!"
+                        f"UNPROTECTED POSITION EXISTS - TRADING MUST HALT!"
+                    )
+                    # Return with requires_halt=True to trigger trading halt
+                    return EntryResult(
+                        status=ExecutionStatus.FAILED,
+                        entry_fill_price=fill_price,
+                        entry_fill_size=size,
+                        entry_order_id=entry_order.order_id,
+                        error_message="CRITICAL: Unprotected position - emergency exit failed",
+                        timing=timing,
+                        requires_halt=True,  # 1.16 FIX: Signal halt to live trader
                     )
 
+                # Emergency exit succeeded - position closed, no halt needed
                 return EntryResult(
                     status=ExecutionStatus.FAILED,
                     entry_fill_price=fill_price,
                     entry_fill_size=size,
                     entry_order_id=entry_order.order_id,
-                    error_message="Stop order placement failed - position closed or requires manual intervention",
+                    error_message="Stop order placement failed - position closed via emergency exit",
                     timing=timing,
+                    requires_halt=False,  # Emergency exit succeeded, safe to continue
                 )
 
             # 5. Place take profit order (non-critical - can proceed without target)

@@ -806,11 +806,25 @@ class LiveTrader:
                 current_price=current_price,
             )
 
-            if result and result.success:
-                self._session_metrics.trades_executed += 1
-                logger.info(
-                    f"Trade executed: {signal.signal_type.value} @ {result.entry_fill_price}"
-                )
+            if result:
+                # 1.16 FIX: Check for critical halt condition (unprotected position)
+                if result.requires_halt:
+                    logger.critical(
+                        f"TRADING HALT TRIGGERED: {result.error_message}. "
+                        f"Engaging circuit breaker and stopping trading loop."
+                    )
+                    # Engage circuit breaker to prevent any further trading
+                    if self._circuit_breaker:
+                        self._circuit_breaker.trigger_halt("Unprotected position - manual intervention required")
+                    # Trigger halt (will flatten positions and stop trading)
+                    await self._on_halt(result.error_message or "Unprotected position exists")
+                    return
+
+                if result.success:
+                    self._session_metrics.trades_executed += 1
+                    logger.info(
+                        f"Trade executed: {signal.signal_type.value} @ {result.entry_fill_price}"
+                    )
 
         except Exception as e:
             logger.error(f"Signal execution error: {e}")
