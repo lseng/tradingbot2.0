@@ -284,13 +284,13 @@ class TestEODManagement:
         close_only_time = datetime(2025, 1, 15, 16, 20, tzinfo=ZoneInfo("America/New_York"))
         assert get_eod_phase(close_only_time) == EODPhase.CLOSE_ONLY
 
-    def test_eod_phase_flatten(self):
-        """Test flatten phase at 4:25 PM."""
+    def test_eod_phase_aggressive_exit(self):
+        """Test aggressive exit phase at 4:25 PM."""
         from src.lib.time_utils import get_eod_phase, EODPhase
 
         # 4:27 PM
         flatten_time = datetime(2025, 1, 15, 16, 27, tzinfo=ZoneInfo("America/New_York"))
-        assert get_eod_phase(flatten_time) == EODPhase.FLATTEN
+        assert get_eod_phase(flatten_time) == EODPhase.AGGRESSIVE_EXIT
 
     def test_eod_phase_must_be_flat(self):
         """Test must be flat phase at 4:30 PM."""
@@ -904,7 +904,7 @@ class TestLibIntegration:
         from zoneinfo import ZoneInfo
 
         flatten_time = datetime(2025, 1, 15, 16, 27, tzinfo=ZoneInfo("America/New_York"))
-        assert get_eod_phase(flatten_time) == EODPhase.FLATTEN
+        assert get_eod_phase(flatten_time) == EODPhase.AGGRESSIVE_EXIT
 
     def test_full_import(self):
         """Test all imports from src.lib work."""

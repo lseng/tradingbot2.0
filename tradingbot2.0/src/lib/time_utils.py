@@ -11,7 +11,6 @@ All times default to New York timezone to match CME/TopstepX conventions.
 """
 
 from datetime import datetime, date, time, timedelta
-from enum import Enum, auto
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -28,19 +27,9 @@ from src.lib.constants import (
     RTH_DURATION_MINUTES,
 )
 
-
-class EODPhase(Enum):
-    """
-    End-of-day management phases.
-
-    The trading system progresses through these phases as market close approaches.
-    Each phase has specific rules for position sizing and order placement.
-    """
-    NORMAL = auto()         # Full trading allowed
-    REDUCED_SIZE = auto()   # 4:00 PM - reduce position sizing 50%
-    CLOSE_ONLY = auto()     # 4:15 PM - no new positions, only close existing
-    FLATTEN = auto()        # 4:25 PM - aggressive market order exits
-    MUST_BE_FLAT = auto()   # 4:30 PM - MUST be flat (hard requirement)
+# Import canonical EODPhase from risk module to avoid duplicate definitions
+# The canonical version is in src/risk/eod_manager.py with string values and 6 phases
+from src.risk.eod_manager import EODPhase
 
 
 def get_ny_now() -> datetime:
@@ -283,7 +272,7 @@ def get_eod_phase(dt: Optional[datetime] = None) -> EODPhase:
     - NORMAL: Before 4:00 PM
     - REDUCED_SIZE: 4:00 PM - 4:15 PM (reduce sizing 50%)
     - CLOSE_ONLY: 4:15 PM - 4:25 PM (no new positions)
-    - FLATTEN: 4:25 PM - 4:30 PM (aggressive exits)
+    - AGGRESSIVE_EXIT: 4:25 PM - 4:30 PM (aggressive exits)
     - MUST_BE_FLAT: 4:30 PM+ (must have no positions)
 
     Args:
@@ -302,7 +291,7 @@ def get_eod_phase(dt: Optional[datetime] = None) -> EODPhase:
     if current_time >= EOD_FLATTEN_TIME:
         return EODPhase.MUST_BE_FLAT
     elif current_time >= EOD_FLATTEN_START_TIME:
-        return EODPhase.FLATTEN
+        return EODPhase.AGGRESSIVE_EXIT
     elif current_time >= EOD_CLOSE_ONLY_TIME:
         return EODPhase.CLOSE_ONLY
     elif current_time >= EOD_REDUCED_SIZE_TIME:
@@ -356,10 +345,10 @@ def should_flatten(dt: Optional[datetime] = None) -> bool:
         dt: Datetime to check (default: current time)
 
     Returns:
-        True if in FLATTEN or MUST_BE_FLAT phase
+        True if in AGGRESSIVE_EXIT or MUST_BE_FLAT phase
     """
     phase = get_eod_phase(dt)
-    return phase in (EODPhase.FLATTEN, EODPhase.MUST_BE_FLAT)
+    return phase in (EODPhase.AGGRESSIVE_EXIT, EODPhase.MUST_BE_FLAT)
 
 
 # =============================================================================

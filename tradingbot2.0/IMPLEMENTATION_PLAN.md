@@ -1,10 +1,10 @@
 # Implementation Plan - MES Futures Scalping Bot
 
-> **Last Updated**: 2026-01-18 UTC (Bug #10 Fixed - LSTM training now unblocked)
+> **Last Updated**: 2026-01-18 UTC (CQ.1 Fixed - Duplicate EODPhase enum consolidated)
 > **Status**: **UNBLOCKED - Bug #10 Fixed** - LSTM training now functional on full dataset
-> **Test Coverage**: 2,608 tests across 62 test files (12 skipped: all conditional on optional deps)
+> **Test Coverage**: 2,613 tests across 62 test files (1 skipped: conditional on optional deps)
 > **Git Tag**: v0.0.69
-> **Code Quality**: No TODO/FIXME comments found in src/; all abstract methods properly implemented
+> **Code Quality**: No TODO/FIXME comments found in src/; all abstract methods properly implemented; EODPhase consolidated
 
 ---
 
@@ -13,7 +13,7 @@
 | Priority | Count | Status | Blockers |
 |----------|-------|--------|----------|
 | **P0** | 1 | FIXED | Bug #10: LSTM sequence creation - FIXED with numpy stride tricks |
-| **Code Quality** | 3 | CRITICAL | Duplicate EODPhase enum causes runtime `AttributeError` |
+| **Code Quality** | 2 | HIGH | CQ.1 FIXED; CQ.2 timezone dup, CQ.3 MES_TICK_SIZE dup remain |
 | **P1** | 16 | HIGH | Walk-forward gaps, session filtering, Monte Carlo, **LIVE TRADING SAFETY** |
 | **P2** | 12 | MEDIUM | Hybrid architecture, focal loss, session reporting, latency test organization |
 | **P3** | 9 | LOW | Nice-to-have items, **batch feature parity** |
@@ -24,13 +24,13 @@
 
 Execute tasks in this exact order for optimal progress:
 
-### Phase 1: Unblock LSTM Training (IMMEDIATE)
-| Order | ID | Task | Est. Time |
-|-------|-----|------|-----------|
-| 1 | Bug #10 | LSTM sequence creation with NumPy stride tricks | 2-4 hrs |
-| 2 | CQ.1 | Fix duplicate EODPhase enum (prevents `AttributeError`) | 1-2 hrs |
-| 3 | CQ.2 | Consolidate timezone constants | 30 min |
-| 4 | CQ.3 | Consolidate MES_TICK_SIZE constant | 30 min |
+### Phase 1: Unblock LSTM Training (COMPLETE)
+| Order | ID | Task | Est. Time | Status |
+|-------|-----|------|-----------|--------|
+| 1 | Bug #10 | LSTM sequence creation with NumPy stride tricks | 2-4 hrs | **FIXED** |
+| 2 | CQ.1 | Fix duplicate EODPhase enum (prevents `AttributeError`) | 1-2 hrs | **FIXED** |
+| 3 | CQ.2 | Consolidate timezone constants | 30 min | pending |
+| 4 | CQ.3 | Consolidate MES_TICK_SIZE constant | 30 min | pending |
 
 ### Phase 2: Live Trading Safety (CRITICAL - DO NOT SKIP)
 | Order | ID | Task | Est. Time |
@@ -128,45 +128,30 @@ These issues cause runtime bugs and maintenance burden. Fix alongside Phase 1.
 
 | ID | Location | Issue | Impact | Status |
 |----|----------|-------|--------|--------|
-| **CQ.1** | See below | **Duplicate EODPhase enum** with DIFFERENT members | Runtime `AttributeError` | CRITICAL - CONFIRMED |
+| **CQ.1** | See below | **Duplicate EODPhase enum** with DIFFERENT members | Runtime `AttributeError` | **FIXED** (2026-01-18) |
 | **CQ.2** | See below | **Duplicate timezone variables** with different names | Code confusion | HIGH - CONFIRMED |
 | **CQ.3** | 6 files | **MES_TICK_SIZE redefined** in 6 files | Maintenance burden | MEDIUM - CONFIRMED |
 
-### CQ.1: Duplicate EODPhase Enum (CRITICAL)
+### CQ.1: Duplicate EODPhase Enum (FIXED)
 
-**Status**: CRITICAL - Causes `AttributeError` at runtime
-**Confirmed**: 2026-01-18 Parallel Exploration Audit
-**Files**:
-- `src/risk/eod_manager.py:37-44` (ACTIVE - 6 phases, string values like "normal", "aggressive_exit")
-- `src/lib/time_utils.py:32-43` (INACTIVE but exported - 5 phases, `auto()` integers)
+**Status**: FIXED (2026-01-18)
+**Fix Applied**: Removed duplicate enum from `time_utils.py`, now imports from canonical `eod_manager.py`
 
-#### Problem
+#### Solution Implemented
 
-Two different enum definitions with **different members** AND **different value types**:
-
-| File | Members | Value Type | Status |
-|------|---------|------------|--------|
-| `eod_manager.py` | `NORMAL, REDUCED_SIZE, CLOSE_ONLY, AGGRESSIVE_EXIT, MUST_BE_FLAT, AFTER_HOURS` | strings ("normal", etc.) | **ACTIVE** |
-| `time_utils.py` | `NORMAL, REDUCED_SIZE, CLOSE_ONLY, FLATTEN, MUST_BE_FLAT` | `auto()` integers | INACTIVE |
-
-Code importing from one location will fail when passed to functions expecting the other:
-- `eod_manager.EODPhase.AGGRESSIVE_EXIT` vs `time_utils.EODPhase.FLATTEN` (different phases!)
-- `eod_manager.EODPhase.NORMAL.value = "normal"` vs `time_utils.EODPhase.NORMAL.value = 1`
-
-#### Fix
-
-1. Delete `EODPhase` from `src/lib/time_utils.py` (the INACTIVE version)
-2. Keep canonical version in `src/risk/eod_manager.py` (the ACTIVE version with strings)
-3. Add `FLATTEN` phase to canonical enum if needed for backward compatibility
-4. Update all imports to use `from src.risk.eod_manager import EODPhase`
+1. Removed `EODPhase` enum definition from `src/lib/time_utils.py`
+2. Added import: `from src.risk.eod_manager import EODPhase` in `time_utils.py`
+3. Updated `get_eod_phase()` and `should_flatten()` to use `AGGRESSIVE_EXIT` instead of `FLATTEN`
+4. Updated tests in `test_lib.py` to use the canonical enum
+5. All 2613 tests pass
 
 #### Acceptance Criteria
 
-- [ ] Single `EODPhase` enum definition in codebase
-- [ ] All imports reference `src/risk/eod_manager.py`
-- [ ] Grep finds zero occurrences of `class EODPhase` except in eod_manager.py
-- [ ] Unit tests verify all EOD phases are handled
-- [ ] No `AttributeError` when transitioning between phases
+- [x] Single `EODPhase` enum definition in codebase
+- [x] All imports reference `src/risk/eod_manager.py`
+- [x] Grep finds zero occurrences of `class EODPhase` except in eod_manager.py
+- [x] Unit tests verify all EOD phases are handled
+- [x] No `AttributeError` when transitioning between phases
 
 ### CQ.2: Duplicate Timezone Variables
 
