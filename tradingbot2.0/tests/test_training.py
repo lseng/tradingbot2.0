@@ -30,7 +30,9 @@ from models.training import (
     train_with_walk_forward,
     calculate_multiclass_auc,
     calculate_auc,
-    create_sequences_fast
+    create_sequences_fast,
+    _simulate_trading_for_fold,
+    _save_walk_forward_results,
 )
 from models.neural_networks import FeedForwardNet, LSTMNet
 
@@ -761,3 +763,366 @@ class TestSequenceCreationPerformance:
 
         with pytest.raises(ValueError, match="Not enough samples"):
             SequenceDataset(X, y, seq_length=20)  # seq_length > n_samples
+
+
+class TestSimulateTradingForFold:
+    """Tests for _simulate_trading_for_fold helper function.
+
+    This function converts 3-class predictions to trading positions
+    and calculates trading metrics for walk-forward validation.
+    """
+
+    def test_basic_trading_simulation(self):
+        """Test basic trading simulation with simple predictions."""
+        from models.training import _simulate_trading_for_fold
+
+        # Create simple price data with upward trend
+        np.random.seed(42)
+        prices = 5000.0 * (1 + np.arange(100) * 0.0001)
+
+        # All UP predictions should generate positive returns
+        predicted_classes = np.full(99, 2)  # All UP
+        predictions = np.zeros((99, 3))
+        predictions[:, 2] = 1.0  # 100% confidence for UP
+
+        metrics = _simulate_trading_for_fold(
+            predicted_classes=predicted_classes,
+            predictions=predictions,
+            prices=prices,
+            num_classes=3
+        )
+
+        assert 'sharpe_ratio' in metrics
+        assert 'max_drawdown' in metrics
+        assert 'win_rate' in metrics
+        assert 'total_trades' in metrics
+        assert metrics['total_trades'] > 0
+
+    def test_trading_with_down_predictions(self):
+        """Test trading simulation with DOWN predictions on downward trend."""
+        from models.training import _simulate_trading_for_fold
+
+        # Create price data with downward trend
+        prices = 5000.0 * (1 - np.arange(100) * 0.0001)
+
+        # All DOWN predictions should generate positive returns (short)
+        predicted_classes = np.full(99, 0)  # All DOWN
+        predictions = np.zeros((99, 3))
+        predictions[:, 0] = 1.0  # 100% confidence for DOWN
+
+        metrics = _simulate_trading_for_fold(
+            predicted_classes=predicted_classes,
+            predictions=predictions,
+            prices=prices,
+            num_classes=3
+        )
+
+        # Should have trades
+        assert metrics['total_trades'] > 0
+        # On downward trend with short positions, should be profitable
+        assert metrics['total_return'] > 0
+
+    def test_flat_predictions_no_trades(self):
+        """Test that FLAT predictions generate no trading activity."""
+        from models.training import _simulate_trading_for_fold
+
+        np.random.seed(42)
+        prices = 5000.0 + np.random.randn(100) * 10
+
+        # All FLAT predictions
+        predicted_classes = np.full(99, 1)  # All FLAT
+        predictions = np.zeros((99, 3))
+        predictions[:, 1] = 1.0  # 100% confidence for FLAT
+
+        metrics = _simulate_trading_for_fold(
+            predicted_classes=predicted_classes,
+            predictions=predictions,
+            prices=prices,
+            num_classes=3
+        )
+
+        # No trades since all FLAT
+        assert metrics['total_trades'] == 0
+        assert metrics['sharpe_ratio'] == 0.0
+
+    def test_mixed_predictions(self):
+        """Test trading with mixed UP/DOWN/FLAT predictions."""
+        from models.training import _simulate_trading_for_fold
+
+        np.random.seed(42)
+        prices = 5000.0 + np.cumsum(np.random.randn(100) * 5)
+
+        # Mixed predictions
+        predicted_classes = np.random.randint(0, 3, 99)
+        predictions = np.random.rand(99, 3)
+        predictions = predictions / predictions.sum(axis=1, keepdims=True)
+
+        metrics = _simulate_trading_for_fold(
+            predicted_classes=predicted_classes,
+            predictions=predictions,
+            prices=prices,
+            num_classes=3
+        )
+
+        # Should have metrics
+        assert isinstance(metrics['sharpe_ratio'], float)
+        assert 0 <= metrics['max_drawdown'] <= 1
+        assert 0 <= metrics['win_rate'] <= 1
+
+    def test_short_price_series(self):
+        """Test handling of very short price series."""
+        from models.training import _simulate_trading_for_fold
+
+        prices = np.array([5000.0])  # Single price
+
+        predicted_classes = np.array([])
+        predictions = np.zeros((0, 3))
+
+        metrics = _simulate_trading_for_fold(
+            predicted_classes=predicted_classes,
+            predictions=predictions,
+            prices=prices,
+            num_classes=3
+        )
+
+        # Should return zeros for metrics
+        assert metrics['total_trades'] == 0
+        assert metrics['sharpe_ratio'] == 0.0
+
+
+class TestWalkForwardWithTradingMetrics:
+    """Tests for walk-forward validation with TradingSimulator integration.
+
+    These tests verify that when prices are provided, trading metrics
+    (Sharpe ratio, max drawdown, win rate) are calculated for each fold.
+    """
+
+    def test_walk_forward_with_prices(self, sample_features_and_targets):
+        """Test walk-forward validation calculates trading metrics when prices provided."""
+        X, y = sample_features_and_targets
+
+        # Create synthetic prices aligned with features
+        np.random.seed(42)
+        prices = 5000.0 + np.cumsum(np.random.randn(len(X)) * 2)
+
+        model_config = {
+            'type': 'feedforward',
+            'params': {'hidden_dims': [16]},
+            'learning_rate': 0.01
+        }
+
+        results = train_with_walk_forward(
+            X, y,
+            model_config=model_config,
+            n_splits=2,
+            epochs=2,
+            batch_size=32,
+            num_classes=3,
+            prices=prices,
+            validate_sharpe=False  # Don't require Sharpe > 1.0 for test
+        )
+
+        # Should have trading metrics
+        assert results['trading_metrics_available'] == True
+        assert 'avg_sharpe_ratio' in results
+        assert 'avg_max_drawdown' in results
+        assert 'avg_win_rate' in results
+
+        # Each fold should have trading metrics
+        for fold in results['fold_metrics']:
+            assert 'sharpe_ratio' in fold
+            assert 'max_drawdown' in fold
+            assert 'win_rate' in fold
+            assert 'total_trades' in fold
+
+    def test_walk_forward_without_prices(self, sample_features_and_targets):
+        """Test walk-forward validation without trading metrics."""
+        X, y = sample_features_and_targets
+
+        model_config = {
+            'type': 'feedforward',
+            'params': {'hidden_dims': [16]}
+        }
+
+        results = train_with_walk_forward(
+            X, y,
+            model_config=model_config,
+            n_splits=2,
+            epochs=2,
+            num_classes=3
+        )
+
+        # Should NOT have trading metrics
+        assert results['trading_metrics_available'] == False
+        assert 'avg_sharpe_ratio' not in results
+
+        # Folds should NOT have trading metrics
+        for fold in results['fold_metrics']:
+            assert 'sharpe_ratio' not in fold
+
+    def test_sharpe_validation_passed(self, sample_features_and_targets):
+        """Test Sharpe validation result when training with good predictions."""
+        X, y = sample_features_and_targets
+
+        # Create trending prices that reward directional predictions
+        prices = 5000.0 + np.arange(len(X)) * 0.1
+
+        model_config = {
+            'type': 'feedforward',
+            'params': {'hidden_dims': [16]},
+            'learning_rate': 0.01
+        }
+
+        results = train_with_walk_forward(
+            X, y,
+            model_config=model_config,
+            n_splits=2,
+            epochs=2,
+            prices=prices,
+            min_sharpe_threshold=0.0,  # Very low threshold to pass
+            validate_sharpe=True
+        )
+
+        # Should have validation result
+        assert 'sharpe_validation_passed' in results
+        assert 'min_sharpe_threshold' in results
+
+    def test_sharpe_validation_failed(self, sample_features_and_targets):
+        """Test Sharpe validation fails with high threshold."""
+        X, y = sample_features_and_targets
+
+        # Random prices with no trend
+        np.random.seed(42)
+        prices = 5000.0 + np.random.randn(len(X)) * 10
+
+        model_config = {
+            'type': 'feedforward',
+            'params': {'hidden_dims': [16]}
+        }
+
+        results = train_with_walk_forward(
+            X, y,
+            model_config=model_config,
+            n_splits=2,
+            epochs=2,
+            prices=prices,
+            min_sharpe_threshold=10.0,  # Impossibly high threshold
+            validate_sharpe=True
+        )
+
+        # Sharpe validation should fail
+        assert results['sharpe_validation_passed'] == False
+
+    def test_prices_length_mismatch_raises_error(self, sample_features_and_targets):
+        """Test that mismatched prices length raises ValueError."""
+        X, y = sample_features_and_targets
+
+        # Wrong length prices
+        prices = np.array([5000.0, 5001.0, 5002.0])
+
+        model_config = {'type': 'feedforward', 'params': {'hidden_dims': [16]}}
+
+        with pytest.raises(ValueError, match="prices length"):
+            train_with_walk_forward(
+                X, y,
+                model_config=model_config,
+                n_splits=2,
+                epochs=2,
+                prices=prices
+            )
+
+    def test_aggregate_trading_metrics(self, sample_features_and_targets):
+        """Test that aggregate trading metrics are calculated correctly."""
+        X, y = sample_features_and_targets
+
+        prices = 5000.0 + np.cumsum(np.random.randn(len(X)) * 2)
+
+        model_config = {
+            'type': 'feedforward',
+            'params': {'hidden_dims': [16]}
+        }
+
+        results = train_with_walk_forward(
+            X, y,
+            model_config=model_config,
+            n_splits=3,
+            epochs=2,
+            prices=prices,
+            validate_sharpe=False
+        )
+
+        # Check aggregate metrics
+        assert 'std_sharpe_ratio' in results
+        assert 'min_sharpe_ratio' in results
+        assert 'max_sharpe_ratio' in results
+        assert 'profitable_folds_pct' in results
+        assert 'worst_max_drawdown' in results
+        assert 'total_trades_all_folds' in results
+        assert 'avg_trades_per_fold' in results
+
+        # Verify min <= avg <= max
+        assert results['min_sharpe_ratio'] <= results['avg_sharpe_ratio']
+        assert results['avg_sharpe_ratio'] <= results['max_sharpe_ratio']
+
+
+class TestWalkForwardResultsSaving:
+    """Tests for saving walk-forward results to JSON."""
+
+    def test_results_saved_to_json(self, sample_features_and_targets, tmp_path):
+        """Test that results are saved to JSON when path provided."""
+        from models.training import _save_walk_forward_results
+
+        X, y = sample_features_and_targets
+
+        prices = 5000.0 + np.cumsum(np.random.randn(len(X)) * 2)
+        results_path = str(tmp_path / "wf_results.json")
+
+        model_config = {
+            'type': 'feedforward',
+            'params': {'hidden_dims': [16]}
+        }
+
+        results = train_with_walk_forward(
+            X, y,
+            model_config=model_config,
+            n_splits=2,
+            epochs=2,
+            prices=prices,
+            results_path=results_path,
+            validate_sharpe=False
+        )
+
+        # File should exist
+        assert Path(results_path).exists()
+
+        # File should be valid JSON
+        import json
+        with open(results_path) as f:
+            saved = json.load(f)
+
+        assert 'fold_metrics' in saved
+        assert 'metadata' in saved
+        assert 'saved_at' in saved['metadata']
+
+    def test_save_function_handles_numpy_types(self, tmp_path):
+        """Test that _save_walk_forward_results converts numpy types."""
+        from models.training import _save_walk_forward_results
+        import json
+
+        results = {
+            'overall_accuracy': np.float64(0.75),
+            'total_trades': np.int64(100),
+            'fold_metrics': [
+                {'sharpe_ratio': np.float32(1.5), 'trades': np.int32(50)}
+            ]
+        }
+
+        path = str(tmp_path / "test_results.json")
+        _save_walk_forward_results(results, path)
+
+        # Should load without JSON errors
+        with open(path) as f:
+            loaded = json.load(f)
+
+        assert loaded['overall_accuracy'] == 0.75
+        assert loaded['total_trades'] == 100

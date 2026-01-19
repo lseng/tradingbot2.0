@@ -510,6 +510,215 @@ class WalkForwardValidator:
         return splits
 
 
+def _simulate_trading_for_fold(
+    predicted_classes: np.ndarray,
+    predictions: np.ndarray,
+    prices: np.ndarray,
+    returns: Optional[np.ndarray] = None,
+    num_classes: int = 3,
+    initial_capital: float = 100000.0,
+    position_size: float = 0.02,
+    commission: float = 5.0,
+    slippage: float = 0.0001,
+) -> Dict:
+    """
+    Simulate trading for a single fold using predicted classes.
+
+    Converts 3-class predictions to trading signals:
+    - DOWN (0): Go SHORT
+    - FLAT (1): Stay FLAT (no position)
+    - UP (2): Go LONG
+
+    Uses a simplified TradingSimulator approach that doesn't depend on
+    probability thresholds but directly uses predicted classes.
+
+    Args:
+        predicted_classes: Array of predicted class indices (0=DOWN, 1=FLAT, 2=UP)
+        predictions: Array of class probabilities (N, num_classes)
+        prices: Close prices for the test period
+        returns: Pre-calculated returns (optional)
+        num_classes: Number of classes (should be 3 for scalping)
+        initial_capital: Starting capital
+        position_size: Fraction of capital to risk per trade
+        commission: Commission per trade
+        slippage: Slippage as fraction of price
+
+    Returns:
+        Dictionary with trading metrics:
+        - sharpe_ratio: Annualized Sharpe ratio
+        - max_drawdown: Maximum drawdown (as decimal, e.g., 0.10 for 10%)
+        - win_rate: Win rate (as decimal, e.g., 0.55 for 55%)
+        - profit_factor: Profit factor
+        - total_trades: Number of trades executed
+        - total_return: Total return (as decimal)
+        - annualized_return: Annualized return
+        - avg_trade_pnl: Average P&L per trade
+    """
+    if len(prices) < 2:
+        return {
+            'sharpe_ratio': 0.0,
+            'max_drawdown': 0.0,
+            'win_rate': 0.0,
+            'profit_factor': 0.0,
+            'total_trades': 0,
+            'total_return': 0.0,
+            'annualized_return': 0.0,
+            'avg_trade_pnl': 0.0,
+        }
+
+    # Calculate returns if not provided
+    if returns is None:
+        returns = np.diff(prices) / prices[:-1]
+        # Align: prediction[i] is for returns[i], so truncate predictions
+        predicted_classes = predicted_classes[:-1]
+        predictions = predictions[:-1]
+
+    n_days = min(len(predicted_classes), len(returns))
+
+    capital = initial_capital
+    position = 0  # 1=long, -1=short, 0=flat
+    trades = []
+    equity_curve = [capital]
+
+    for i in range(n_days):
+        daily_return = returns[i] if i < len(returns) else 0
+
+        # Convert class prediction to position
+        # DOWN (0) = SHORT (-1), FLAT (1) = FLAT (0), UP (2) = LONG (1)
+        pred_class = predicted_classes[i]
+        if num_classes == 3:
+            if pred_class == 2:  # UP
+                new_position = 1
+            elif pred_class == 0:  # DOWN
+                new_position = -1
+            else:  # FLAT
+                new_position = 0
+        else:
+            # Binary case: 0=DOWN, 1=UP
+            new_position = 1 if pred_class == 1 else -1
+
+        # Execute trade if position changed
+        if new_position != position:
+            position = new_position
+            capital -= commission
+
+        # Calculate P&L for the day
+        if position != 0:
+            trade_capital = capital * position_size
+            trade_pnl = trade_capital * position * daily_return
+            # Apply slippage
+            trade_pnl -= abs(trade_pnl) * slippage
+            capital += trade_pnl
+
+            trades.append({
+                'day': i,
+                'position': position,
+                'return': daily_return,
+                'pnl': trade_pnl,
+                'capital': capital
+            })
+
+        equity_curve.append(capital)
+
+    # Calculate metrics
+    equity_curve = np.array(equity_curve)
+    daily_returns = np.diff(equity_curve) / np.maximum(equity_curve[:-1], 1e-10)
+
+    # Total return
+    total_return = (equity_curve[-1] - equity_curve[0]) / equity_curve[0] if equity_curve[0] > 0 else 0.0
+
+    # Annualized return (assuming 252 trading days)
+    n_periods = len(daily_returns)
+    annualized_return = ((1 + total_return) ** (252 / max(n_periods, 1))) - 1 if total_return > -1 else -1.0
+
+    # Sharpe ratio (assuming 0% risk-free rate)
+    if len(daily_returns) > 0 and np.std(daily_returns) > 0:
+        sharpe_ratio = np.sqrt(252) * np.mean(daily_returns) / np.std(daily_returns, ddof=1)
+    else:
+        sharpe_ratio = 0.0
+
+    # Max drawdown
+    cummax = np.maximum.accumulate(equity_curve)
+    drawdowns = (cummax - equity_curve) / np.maximum(cummax, 1e-10)
+    max_drawdown = float(np.max(drawdowns))
+
+    # Win rate and profit factor
+    if trades:
+        winning_trades = [t for t in trades if t['pnl'] > 0]
+        losing_trades = [t for t in trades if t['pnl'] < 0]
+
+        win_rate = len(winning_trades) / len(trades) if trades else 0.0
+
+        total_profit = sum(t['pnl'] for t in winning_trades) if winning_trades else 0
+        total_loss = abs(sum(t['pnl'] for t in losing_trades)) if losing_trades else 0
+
+        profit_factor = total_profit / total_loss if total_loss > 0 else (float('inf') if total_profit > 0 else 0.0)
+
+        avg_trade_pnl = np.mean([t['pnl'] for t in trades])
+    else:
+        win_rate = 0.0
+        profit_factor = 0.0
+        avg_trade_pnl = 0.0
+
+    return {
+        'sharpe_ratio': float(sharpe_ratio),
+        'max_drawdown': float(max_drawdown),
+        'win_rate': float(win_rate),
+        'profit_factor': float(profit_factor),
+        'total_trades': len(trades),
+        'total_return': float(total_return),
+        'annualized_return': float(annualized_return),
+        'avg_trade_pnl': float(avg_trade_pnl),
+    }
+
+
+def _save_walk_forward_results(results: Dict, path: str) -> None:
+    """
+    Save walk-forward validation results to JSON file.
+
+    Args:
+        results: Results dictionary from train_with_walk_forward
+        path: Path to save JSON file
+    """
+    import copy
+
+    # Create a serializable copy of results
+    serializable = copy.deepcopy(results)
+
+    # Convert numpy arrays to lists
+    for key, value in serializable.items():
+        if isinstance(value, np.ndarray):
+            serializable[key] = value.tolist()
+        elif isinstance(value, (np.float32, np.float64)):
+            serializable[key] = float(value)
+        elif isinstance(value, (np.int32, np.int64)):
+            serializable[key] = int(value)
+
+    # Ensure fold_metrics are serializable
+    if 'fold_metrics' in serializable:
+        for fm in serializable['fold_metrics']:
+            for k, v in fm.items():
+                if isinstance(v, (np.float32, np.float64)):
+                    fm[k] = float(v)
+                elif isinstance(v, (np.int32, np.int64)):
+                    fm[k] = int(v)
+
+    # Add metadata
+    serializable['metadata'] = {
+        'saved_at': datetime.now().isoformat(),
+        'version': '1.0',
+    }
+
+    # Save to file
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(output_path, 'w') as f:
+        json.dump(serializable, f, indent=2)
+
+    logger.info(f"Walk-forward results saved to {path}")
+
+
 def compute_class_weights(y: np.ndarray, num_classes: int = 3) -> torch.Tensor:
     """
     Compute class weights inversely proportional to class frequency.
@@ -538,10 +747,18 @@ def train_with_walk_forward(
     batch_size: int = 32,
     seq_length: int = 20,
     num_classes: int = 3,
-    use_class_weights: bool = True
+    use_class_weights: bool = True,
+    prices: Optional[np.ndarray] = None,
+    returns: Optional[np.ndarray] = None,
+    min_sharpe_threshold: float = 1.0,
+    validate_sharpe: bool = True,
+    results_path: Optional[str] = None,
 ) -> Dict:
     """
     Train model using walk-forward validation with 3-class classification.
+
+    Integrates TradingSimulator to calculate trading metrics (Sharpe ratio,
+    max drawdown, win rate) for each fold, enabling profitability validation.
 
     Args:
         X: Feature matrix
@@ -553,17 +770,59 @@ def train_with_walk_forward(
         seq_length: Sequence length for LSTM
         num_classes: Number of output classes (2=binary, 3=scalping)
         use_class_weights: Whether to use class weights for imbalanced data
+        prices: Optional price array for trading simulation (same length as X).
+                If provided, TradingSimulator will calculate Sharpe ratio,
+                max drawdown, win rate, and profit factor for each fold.
+        returns: Optional returns array for trading simulation. If not provided
+                 but prices is, returns will be calculated from prices.
+        min_sharpe_threshold: Minimum average Sharpe ratio required (default 1.0).
+                              If validate_sharpe=True and average Sharpe < threshold,
+                              a warning is logged.
+        validate_sharpe: If True and prices provided, validate average Sharpe
+                         against min_sharpe_threshold.
+        results_path: Optional path to save results JSON file.
 
     Returns:
-        Dictionary with results for each fold
+        Dictionary with results for each fold including:
+        - fold_metrics: List of per-fold metrics (accuracy, loss, trading metrics)
+        - predictions: All predictions across folds
+        - predicted_classes: Predicted class indices
+        - actuals: Actual class indices
+        - overall_accuracy: Macro accuracy across all folds
+        - overall_auc: Macro-averaged AUC score
+        - avg_sharpe_ratio: Average Sharpe ratio across folds (if prices provided)
+        - avg_max_drawdown: Average max drawdown across folds (if prices provided)
+        - avg_win_rate: Average win rate across folds (if prices provided)
+        - sharpe_validation_passed: Whether average Sharpe >= threshold
+
+    Raises:
+        ValueError: If prices length doesn't match X length.
     """
+    # Validate prices input if provided
+    if prices is not None:
+        if len(prices) != len(X):
+            raise ValueError(
+                f"prices length ({len(prices)}) must match X length ({len(X)})"
+            )
+        # Calculate returns if not provided
+        if returns is None:
+            returns = np.diff(prices) / prices[:-1]
+            # Pad with 0 at the end to maintain alignment
+            returns = np.append(returns, 0.0)
+        elif len(returns) != len(X):
+            raise ValueError(
+                f"returns length ({len(returns)}) must match X length ({len(X)})"
+            )
+
     results = {
         'fold_metrics': [],
         'predictions': [],  # Will be (N, num_classes) probabilities
         'predicted_classes': [],  # Will be class indices
         'actuals': [],
         'timestamps': [],
-        'num_classes': num_classes
+        'num_classes': num_classes,
+        # Trading metrics (populated if prices provided)
+        'trading_metrics_available': prices is not None,
     }
 
     validator = WalkForwardValidator(n_splits=n_splits, expanding=True)
@@ -637,7 +896,7 @@ def train_with_walk_forward(
         predictions = trainer.predict(X_test_t.numpy() if model_type != 'lstm' else X_test_t.numpy())
         predicted_classes = np.argmax(predictions, axis=1)
 
-        results['fold_metrics'].append({
+        fold_result = {
             'fold': fold + 1,
             'train_size': len(train_idx),
             'test_size': len(test_idx),
@@ -645,7 +904,26 @@ def train_with_walk_forward(
             'test_accuracy': test_acc,
             'final_train_loss': history['train_loss'][-1],
             'final_train_acc': history['train_acc'][-1]
-        })
+        }
+
+        # Run trading simulation if prices provided
+        if prices is not None:
+            trading_metrics = _simulate_trading_for_fold(
+                predicted_classes=predicted_classes,
+                predictions=predictions,
+                prices=prices[test_idx],
+                returns=returns[test_idx] if returns is not None else None,
+                num_classes=num_classes,
+            )
+            fold_result.update(trading_metrics)
+            logger.info(
+                f"Fold {fold + 1} Trading: Sharpe={trading_metrics['sharpe_ratio']:.3f}, "
+                f"MaxDD={trading_metrics['max_drawdown']*100:.2f}%, "
+                f"WinRate={trading_metrics['win_rate']*100:.1f}%, "
+                f"Trades={trading_metrics['total_trades']}"
+            )
+
+        results['fold_metrics'].append(fold_result)
 
         # Store probabilities and predicted classes
         results['predictions'].extend(predictions.tolist())
@@ -670,11 +948,73 @@ def train_with_walk_forward(
     all_probs = np.array(results['predictions'])
     results['overall_auc'] = calculate_multiclass_auc(all_actuals, all_probs, num_classes)
 
+    # Calculate aggregate trading metrics if prices were provided
+    if prices is not None:
+        sharpe_ratios = [fm['sharpe_ratio'] for fm in results['fold_metrics'] if 'sharpe_ratio' in fm]
+        max_drawdowns = [fm['max_drawdown'] for fm in results['fold_metrics'] if 'max_drawdown' in fm]
+        win_rates = [fm['win_rate'] for fm in results['fold_metrics'] if 'win_rate' in fm]
+        profit_factors = [fm['profit_factor'] for fm in results['fold_metrics'] if 'profit_factor' in fm]
+        total_trades_list = [fm['total_trades'] for fm in results['fold_metrics'] if 'total_trades' in fm]
+
+        if sharpe_ratios:
+            results['avg_sharpe_ratio'] = float(np.mean(sharpe_ratios))
+            results['std_sharpe_ratio'] = float(np.std(sharpe_ratios))
+            results['min_sharpe_ratio'] = float(np.min(sharpe_ratios))
+            results['max_sharpe_ratio'] = float(np.max(sharpe_ratios))
+
+            # Count profitable folds (Sharpe > 0)
+            profitable_folds = sum(1 for s in sharpe_ratios if s > 0)
+            results['profitable_folds_pct'] = profitable_folds / len(sharpe_ratios) * 100
+
+        if max_drawdowns:
+            results['avg_max_drawdown'] = float(np.mean(max_drawdowns))
+            results['worst_max_drawdown'] = float(np.max(max_drawdowns))
+
+        if win_rates:
+            results['avg_win_rate'] = float(np.mean(win_rates))
+
+        if profit_factors:
+            # Filter out inf values for mean calculation
+            valid_pf = [pf for pf in profit_factors if pf != float('inf')]
+            results['avg_profit_factor'] = float(np.mean(valid_pf)) if valid_pf else 0.0
+
+        if total_trades_list:
+            results['total_trades_all_folds'] = int(np.sum(total_trades_list))
+            results['avg_trades_per_fold'] = float(np.mean(total_trades_list))
+
+        # Validate Sharpe ratio against threshold
+        avg_sharpe = results.get('avg_sharpe_ratio', 0.0)
+        results['sharpe_validation_passed'] = avg_sharpe >= min_sharpe_threshold
+        results['min_sharpe_threshold'] = min_sharpe_threshold
+
+        if validate_sharpe and not results['sharpe_validation_passed']:
+            logger.warning(
+                f"SHARPE VALIDATION FAILED: Average Sharpe ({avg_sharpe:.3f}) "
+                f"< threshold ({min_sharpe_threshold:.3f})"
+            )
+        elif validate_sharpe:
+            logger.info(
+                f"SHARPE VALIDATION PASSED: Average Sharpe ({avg_sharpe:.3f}) "
+                f">= threshold ({min_sharpe_threshold:.3f})"
+            )
+
     logger.info(f"\n{'='*60}")
     logger.info("WALK-FORWARD VALIDATION COMPLETE")
     logger.info(f"Overall Accuracy: {results['overall_accuracy']:.4f}")
     logger.info(f"Overall AUC (macro): {results['overall_auc']:.4f}")
+
+    if prices is not None:
+        logger.info(f"Average Sharpe Ratio: {results.get('avg_sharpe_ratio', 0.0):.3f}")
+        logger.info(f"Average Max Drawdown: {results.get('avg_max_drawdown', 0.0)*100:.2f}%")
+        logger.info(f"Average Win Rate: {results.get('avg_win_rate', 0.0)*100:.1f}%")
+        logger.info(f"Total Trades (all folds): {results.get('total_trades_all_folds', 0)}")
+        logger.info(f"Sharpe Validation: {'PASSED' if results.get('sharpe_validation_passed', False) else 'FAILED'}")
+
     logger.info(f"{'='*60}")
+
+    # Save results to JSON if path provided
+    if results_path:
+        _save_walk_forward_results(results, results_path)
 
     return results
 
