@@ -36,6 +36,11 @@ from src.api import (
 from src.trading.signal_generator import Signal, SignalType
 from src.trading.position_manager import PositionManager, Fill
 from src.lib.constants import MES_TICK_SIZE, MES_ROUND_TRIP_COST
+from src.risk.stops import (
+    StopLossManager,
+    PartialProfitConfig,
+    PartialProfitResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +125,9 @@ class EntryResult:
     requires_halt: bool = False
     # 1.14 FIX: Track commission cost per trade for accurate P&L calculation
     commission_cost: float = 0.0
+    # 1.10 FIX: Multi-level partial profit order IDs
+    target_order_ids: List[str] = field(default_factory=list)
+    partial_profit_enabled: bool = False
 
     @property
     def success(self) -> bool:
@@ -517,6 +525,245 @@ class OrderExecutor:
                 timing=timing,
             )
 
+    async def execute_entry_with_partial_profit(
+        self,
+        contract_id: str,
+        direction: int,
+        size: int,
+        stop_ticks: float,
+        partial_profit_config: PartialProfitConfig,
+        current_price: Optional[float] = None,
+    ) -> EntryResult:
+        """
+        Execute an entry order with multi-level partial profit taking.
+
+        Workflow:
+        1. Place entry order (market or limit)
+        2. Wait for fill confirmation
+        3. Place stop loss order (CRITICAL)
+        4. Calculate partial profit levels using StopLossManager
+        5. Place multiple take profit orders (TP1, TP2, TP3)
+        6. Track all orders for OCO management
+
+        Per specs/risk-management.md:
+        - Position: 2 contracts
+        - TP1: Close 1 contract at 1:1 R:R, move stop to breakeven
+        - TP2: Close remaining at 1:2 R:R or trail
+
+        Args:
+            contract_id: Contract to trade
+            direction: 1 for long, -1 for short
+            size: Number of contracts
+            stop_ticks: Stop loss distance in ticks
+            partial_profit_config: Configuration for partial profit levels
+            current_price: Current price for limit orders
+
+        Returns:
+            EntryResult with fill details, order IDs, and timing metrics
+        """
+        # Start timing from signal receipt
+        timing = ExecutionTiming(signal_time=time.perf_counter())
+
+        side = OrderSide.BUY if direction == 1 else OrderSide.SELL
+
+        logger.info(
+            f"Executing entry with partial profit: {side.name} {size} {contract_id}, "
+            f"stop={stop_ticks} ticks, levels={len(partial_profit_config.levels)}"
+        )
+
+        try:
+            # 1. Place entry order
+            entry_order = await self._place_entry_order(
+                contract_id, side, size, current_price
+            )
+            timing.order_placed_time = time.perf_counter()
+
+            if entry_order.is_rejected:
+                logger.error(f"Entry order rejected: {entry_order.error_message}")
+                return EntryResult(
+                    status=ExecutionStatus.REJECTED,
+                    error_message=entry_order.error_message,
+                    timing=timing,
+                )
+
+            # 2. Wait for fill
+            fill_price = await self._wait_for_fill(entry_order.order_id)
+            timing.fill_received_time = time.perf_counter()
+
+            if fill_price is None:
+                logger.error(f"Entry order fill timeout: {entry_order.order_id}")
+                await self._rest.cancel_order(entry_order.order_id)
+                return EntryResult(
+                    status=ExecutionStatus.FAILED,
+                    entry_order_id=entry_order.order_id,
+                    error_message="Fill timeout",
+                    timing=timing,
+                )
+
+            logger.info(f"Entry filled: {fill_price}")
+
+            # 3. Calculate stop price
+            stop_distance = stop_ticks * MES_TICK_SIZE
+            if direction == 1:  # Long
+                stop_price = fill_price - stop_distance
+            else:  # Short
+                stop_price = fill_price + stop_distance
+
+            # 4. Place stop loss order - CRITICAL
+            stop_order = await self._place_stop_order(
+                contract_id=contract_id,
+                side=OrderSide.SELL if direction == 1 else OrderSide.BUY,
+                size=size,
+                stop_price=stop_price,
+            )
+
+            if stop_order is None:
+                logger.critical(
+                    f"STOP ORDER PLACEMENT FAILED - position without protection!"
+                )
+                # Attempt emergency exit
+                try:
+                    exit_order = await self._rest.place_order(
+                        contract_id=contract_id,
+                        side=OrderSide.SELL if direction == 1 else OrderSide.BUY,
+                        size=size,
+                        order_type=OrderType.MARKET,
+                        custom_tag="EMERGENCY_EXIT_NO_STOP",
+                    )
+                    logger.warning(f"Emergency exit placed: {exit_order.order_id}")
+                except Exception as exit_err:
+                    logger.critical(f"Emergency exit failed: {exit_err}")
+                    return EntryResult(
+                        status=ExecutionStatus.FAILED,
+                        entry_fill_price=fill_price,
+                        entry_fill_size=size,
+                        entry_order_id=entry_order.order_id,
+                        error_message="CRITICAL: Unprotected position - emergency exit failed",
+                        timing=timing,
+                        requires_halt=True,
+                    )
+
+                return EntryResult(
+                    status=ExecutionStatus.FAILED,
+                    entry_fill_price=fill_price,
+                    entry_fill_size=size,
+                    entry_order_id=entry_order.order_id,
+                    error_message="Stop order placement failed - position closed",
+                    timing=timing,
+                    requires_halt=False,
+                )
+
+            # 5. Calculate partial profit levels
+            stop_manager = StopLossManager()
+            partial_result = stop_manager.calculate_partial_profit_targets(
+                entry_price=fill_price,
+                stop_price=stop_price,
+                direction=direction,
+                total_contracts=size,
+                config=partial_profit_config,
+            )
+
+            # 6. Place multiple take profit orders
+            target_orders = await self._place_partial_profit_orders(
+                contract_id=contract_id,
+                side=OrderSide.SELL if direction == 1 else OrderSide.BUY,
+                partial_profit_result=partial_result,
+            )
+
+            # Collect successful order IDs
+            target_order_ids = [
+                order.order_id if order else None
+                for order in target_orders
+            ]
+
+            # Log partial profit setup
+            successful_targets = sum(1 for o in target_orders if o is not None)
+            if successful_targets < len(partial_profit_config.levels):
+                logger.warning(
+                    f"Only {successful_targets}/{len(partial_profit_config.levels)} "
+                    f"target orders placed successfully"
+                )
+
+            # 7. Update position manager with partial profit information
+            fill = Fill(
+                order_id=entry_order.order_id,
+                contract_id=contract_id,
+                side=side,
+                size=size,
+                price=fill_price,
+                timestamp=datetime.now(),
+                is_entry=True,
+            )
+            self._position_manager.update_from_fill(fill)
+            self._position_manager.set_stop_price(stop_price, stop_order.order_id)
+            self._position_manager.set_partial_profit_targets(
+                target_prices=partial_result.target_prices,
+                target_quantities=partial_result.target_quantities,
+                target_order_ids=target_order_ids,
+                move_stop_to_breakeven_at=partial_result.move_stop_indices,
+            )
+
+            # 8. Track all orders for OCO management
+            self._track_oco_orders_with_partial_profit(stop_order, target_orders)
+
+            # Calculate commission
+            commission_cost = MES_ROUND_TRIP_COST * size
+
+            return EntryResult(
+                status=ExecutionStatus.FILLED,
+                entry_fill_price=fill_price,
+                entry_fill_size=size,
+                entry_order_id=entry_order.order_id,
+                stop_order_id=stop_order.order_id,
+                target_order_id=target_order_ids[0] if target_order_ids else None,
+                target_order_ids=[oid for oid in target_order_ids if oid],
+                timing=timing,
+                commission_cost=commission_cost,
+                partial_profit_enabled=True,
+            )
+
+        except Exception as e:
+            logger.error(f"Entry execution with partial profit failed: {e}")
+            return EntryResult(
+                status=ExecutionStatus.FAILED,
+                error_message=str(e),
+                timing=timing,
+            )
+
+    def _track_oco_orders_with_partial_profit(
+        self,
+        stop_order: Optional[OrderResponse],
+        target_orders: List[Optional[OrderResponse]],
+    ) -> None:
+        """
+        Track stop and multiple target orders for OCO management.
+
+        For partial profit taking, all unfilled target orders should be
+        cancelled when stop is hit, and stop should be cancelled when
+        ALL targets are filled OR adjusted to breakeven when TP1 is hit.
+
+        Args:
+            stop_order: Stop loss order
+            target_orders: List of target orders for each level
+        """
+        with self._order_lock:
+            # Clear previous OCO tracking state
+            self._filled_oco_orders.clear()
+            self._orders_being_cancelled.clear()
+
+            if stop_order:
+                self._open_orders[stop_order.order_id] = stop_order
+
+            for order in target_orders:
+                if order:
+                    self._open_orders[order.order_id] = order
+
+        target_ids = [o.order_id if o else None for o in target_orders]
+        logger.debug(
+            f"Partial profit OCO tracking: stop={stop_order.order_id if stop_order else None}, "
+            f"targets={target_ids}"
+        )
+
     async def execute_exit(
         self,
         contract_id: str,
@@ -706,6 +953,60 @@ class OrderExecutor:
             logger.error(f"Failed to place target order: {e}")
             return None
 
+    async def _place_partial_profit_orders(
+        self,
+        contract_id: str,
+        side: OrderSide,
+        partial_profit_result: PartialProfitResult,
+    ) -> List[Optional[OrderResponse]]:
+        """
+        Place multiple take profit orders for partial profit taking.
+
+        Args:
+            contract_id: Contract to trade
+            side: Order side (opposite of position direction)
+            partial_profit_result: Calculated partial profit levels
+
+        Returns:
+            List of OrderResponse objects (may contain None for failed orders)
+        """
+        orders: List[Optional[OrderResponse]] = []
+
+        for i, (price, qty) in enumerate(zip(
+            partial_profit_result.target_prices,
+            partial_profit_result.target_quantities
+        )):
+            if qty <= 0:
+                logger.warning(f"Skipping TP{i+1} with zero quantity")
+                orders.append(None)
+                continue
+
+            # Use indexed tag for each level: SCALPER_TARGET_1, SCALPER_TARGET_2, etc.
+            target_tag = f"{self.config.target_tag}_{i+1}"
+
+            try:
+                order = await self._rest.place_order(
+                    contract_id=contract_id,
+                    side=side,
+                    size=qty,
+                    order_type=OrderType.LIMIT,
+                    price=price,
+                    custom_tag=target_tag,
+                )
+                # 10.23 FIX: Use lock for thread-safe access to _open_orders
+                with self._order_lock:
+                    self._open_orders[order.order_id] = order
+                logger.info(
+                    f"Partial profit TP{i+1} order placed: {order.order_id} "
+                    f"@ {price:.2f} for {qty} contracts"
+                )
+                orders.append(order)
+            except Exception as e:
+                logger.error(f"Failed to place TP{i+1} order: {e}")
+                orders.append(None)
+
+        return orders
+
     async def _wait_for_fill(self, order_id: str) -> Optional[float]:
         """
         Wait for order fill notification.
@@ -748,6 +1049,8 @@ class OrderExecutor:
 
         10.23 FIX: Added dual fill detection, proper OCO tracking, and thread-safe
         access using threading.Lock (asyncio.Lock can't be used in sync callbacks).
+
+        1.10 FIX: Added support for partial profit target fills (SCALPER_TARGET_1, etc.)
         """
         order_id = fill.order_id
         logger.debug(f"Fill received: {order_id} @ {fill.fill_price}")
@@ -774,12 +1077,23 @@ class OrderExecutor:
                 return
 
             order = self._open_orders[order_id]
-            is_oco_order = order.custom_tag in (self.config.stop_tag, self.config.target_tag)
 
-            if is_oco_order:
+            # 1.10 FIX: Check for partial profit target (SCALPER_TARGET_1, SCALPER_TARGET_2, etc.)
+            is_partial_profit_target = (
+                order.custom_tag and
+                order.custom_tag.startswith(self.config.target_tag + "_")
+            )
+            is_stop_order = order.custom_tag == self.config.stop_tag
+            is_single_target = order.custom_tag == self.config.target_tag
+            is_oco_order = is_stop_order or is_single_target
+
+            if is_partial_profit_target:
+                # Handle partial profit target fill
+                self._handle_partial_profit_fill(order_id, order, fill)
+
+            elif is_oco_order:
+                # Handle standard single-level OCO fill (existing logic)
                 # 10.23 FIX: Check for dual fill BEFORE adding to filled set
-                # If there's any other order in _filled_oco_orders, we have a dual fill
-                # because we only track stop/target orders in this set
                 other_filled_orders = self._filled_oco_orders - {order_id}
                 dual_fill_detected = len(other_filled_orders) > 0
 
@@ -790,8 +1104,6 @@ class OrderExecutor:
                         f"{order_id} and {other_id}. "
                         f"Position may be doubled. MANUAL INTERVENTION REQUIRED."
                     )
-                    # 10.23 FIX: Remove from open orders but DON'T update position manager
-                    # to prevent double-processing. First fill already updated position.
                     self._open_orders.pop(order_id, None)
                     logger.warning(
                         f"Skipping position update for duplicate fill {order_id} - "
@@ -802,13 +1114,10 @@ class OrderExecutor:
                 # Mark as filled AFTER dual fill check
                 self._filled_oco_orders.add(order_id)
 
-            # Handle OCO cancellation (schedule cancellation of other order)
-            # Must be done inside lock to prevent race with checking _orders_being_cancelled
-            self._handle_oco_fill(order_id)
+                # Handle OCO cancellation
+                self._handle_oco_fill(order_id)
 
-            # Update position manager if this is a stop/target fill
-            if is_oco_order:
-                # This is a stop or target being hit - position closed
+                # Update position manager
                 fill_obj = Fill(
                     order_id=order_id,
                     contract_id=order.contract_id,
@@ -822,6 +1131,187 @@ class OrderExecutor:
 
             # Remove from open orders (now safe within lock)
             self._open_orders.pop(order_id, None)
+
+    def _handle_partial_profit_fill(
+        self,
+        order_id: str,
+        order: OrderResponse,
+        fill: OrderFill,
+    ) -> None:
+        """
+        Handle a partial profit target fill.
+
+        1.10 FIX: This handles fills for SCALPER_TARGET_1, SCALPER_TARGET_2, etc.
+
+        Workflow:
+        1. Determine which target level was hit
+        2. Mark level as filled in position manager
+        3. Check if should move stop to breakeven
+        4. If all targets filled, cancel stop
+        5. If stop hit, cancel remaining targets
+
+        NOTE: This method is called from _handle_fill which already holds
+        the _order_lock, so we don't acquire it here.
+        """
+        # Extract target level index from tag (e.g., "SCALPER_TARGET_1" -> 0)
+        try:
+            level_str = order.custom_tag.split("_")[-1]
+            level_index = int(level_str) - 1  # Convert 1-indexed to 0-indexed
+        except (ValueError, IndexError):
+            logger.error(f"Could not parse target level from tag: {order.custom_tag}")
+            return
+
+        logger.info(
+            f"Partial profit TP{level_index + 1} filled: {order_id} @ {fill.fill_price}"
+        )
+
+        # Mark as filled in tracking set
+        self._filled_oco_orders.add(order_id)
+
+        # Update position manager and check if should move stop
+        should_move_stop = self._position_manager.mark_target_level_filled(
+            level_index, fill.fill_price
+        )
+
+        # Check position state
+        position = self._position_manager.position
+
+        if position.is_flat:
+            # All targets hit, position fully closed - cancel stop
+            logger.info("All partial profit targets filled - cancelling stop")
+            self._schedule_cancel_stop()
+        elif should_move_stop:
+            # Move stop to breakeven
+            logger.info(
+                f"TP{level_index + 1} hit with move_stop_to_breakeven - "
+                f"adjusting stop to entry price {position.entry_price}"
+            )
+            self._schedule_adjust_stop_to_breakeven(position.entry_price, position.direction)
+
+    def _schedule_cancel_stop(self) -> None:
+        """
+        Schedule cancellation of stop order after all targets filled.
+
+        NOTE: Called from _handle_fill which holds lock, so we schedule
+        async task instead of calling cancel directly.
+        """
+        # Find stop order to cancel
+        stop_orders = [
+            oid for oid, order in self._open_orders.items()
+            if order.custom_tag == self.config.stop_tag
+            and oid not in self._orders_being_cancelled
+        ]
+
+        if stop_orders:
+            for oid in stop_orders:
+                self._orders_being_cancelled.add(oid)
+
+            task = asyncio.create_task(
+                self._cancel_oco_orders_with_timeout(stop_orders, "all_targets_filled")
+            )
+            self._pending_oco_cancellations.add(task)
+
+            def cleanup(t: asyncio.Task) -> None:
+                self._pending_oco_cancellations.discard(t)
+                with self._order_lock:
+                    for oid in stop_orders:
+                        self._orders_being_cancelled.discard(oid)
+
+            task.add_done_callback(cleanup)
+
+    def _schedule_adjust_stop_to_breakeven(
+        self, entry_price: float, direction: int
+    ) -> None:
+        """
+        Schedule stop adjustment to breakeven after partial profit.
+
+        This cancels current stop and places new stop at entry price.
+
+        NOTE: Called from _handle_fill which holds lock, so we schedule
+        async task instead of modifying directly.
+        """
+        # Find current stop order
+        stop_orders = [
+            (oid, order) for oid, order in self._open_orders.items()
+            if order.custom_tag == self.config.stop_tag
+            and oid not in self._orders_being_cancelled
+        ]
+
+        if not stop_orders:
+            logger.warning("No stop order found to adjust to breakeven")
+            return
+
+        # Schedule async adjustment
+        task = asyncio.create_task(
+            self._adjust_stop_to_breakeven_async(
+                stop_orders[0][0],
+                stop_orders[0][1],
+                entry_price,
+                direction,
+            )
+        )
+        self._pending_oco_cancellations.add(task)
+
+        def cleanup(t: asyncio.Task) -> None:
+            self._pending_oco_cancellations.discard(t)
+
+        task.add_done_callback(cleanup)
+
+    async def _adjust_stop_to_breakeven_async(
+        self,
+        old_stop_id: str,
+        old_stop_order: OrderResponse,
+        entry_price: float,
+        direction: int,
+    ) -> None:
+        """
+        Cancel old stop and place new stop at breakeven (entry price).
+
+        Args:
+            old_stop_id: Current stop order ID to cancel
+            old_stop_order: Current stop order details
+            entry_price: Entry price (new stop price)
+            direction: Position direction (1=long, -1=short)
+        """
+        try:
+            # Cancel old stop
+            logger.info(f"Cancelling old stop {old_stop_id} for breakeven adjustment")
+            await self._cancel_order_safe(old_stop_id)
+
+            # Calculate breakeven stop price with 1 tick buffer
+            stop_manager = StopLossManager()
+            breakeven_price = stop_manager.get_breakeven_stop(
+                entry_price=entry_price,
+                direction=direction,
+                buffer_ticks=1,  # Small buffer to ensure we don't get stopped at exact entry
+            )
+
+            # Get remaining position size
+            position = self._position_manager.position
+            if position.is_flat:
+                logger.info("Position closed before breakeven stop could be placed")
+                return
+
+            # Place new stop at breakeven
+            side = OrderSide.SELL if direction == 1 else OrderSide.BUY
+            new_stop = await self._place_stop_order(
+                contract_id=old_stop_order.contract_id,
+                side=side,
+                size=position.size,
+                stop_price=breakeven_price,
+            )
+
+            if new_stop:
+                self._position_manager.set_stop_price(breakeven_price, new_stop.order_id)
+                logger.info(
+                    f"Breakeven stop placed: {new_stop.order_id} @ {breakeven_price} "
+                    f"for {position.size} contracts"
+                )
+            else:
+                logger.error("Failed to place breakeven stop - position unprotected!")
+
+        except Exception as e:
+            logger.error(f"Failed to adjust stop to breakeven: {e}")
 
     def _track_oco_orders(
         self,
@@ -860,6 +1350,9 @@ class OrderExecutor:
         10.23 FIX: Uses tracking set to prevent duplicate cancellations and
         marks orders as being cancelled BEFORE scheduling async task.
 
+        1.10 FIX: Also handles partial profit targets - when stop is hit,
+        cancel ALL unfilled target orders (including SCALPER_TARGET_1, _2, etc.)
+
         NOTE: This method is called from _handle_fill which already holds
         the _order_lock, so we don't acquire it here (would cause deadlock).
         """
@@ -868,25 +1361,35 @@ class OrderExecutor:
 
         filled_order = self._open_orders[filled_order_id]
 
-        # Find the other OCO order to cancel
-        if filled_order.custom_tag == self.config.stop_tag:
-            # Stop hit - cancel target
-            cancel_tag = self.config.target_tag
-        elif filled_order.custom_tag == self.config.target_tag:
-            # Target hit - cancel stop
-            cancel_tag = self.config.stop_tag
-        else:
-            return
+        # Find the other OCO order(s) to cancel
+        to_cancel = []
 
-        # 10.23 FIX: Find orders to cancel, excluding already being cancelled
-        # (lock already held by caller)
-        to_cancel = [
-            oid for oid, order in self._open_orders.items()
-            if order.custom_tag == cancel_tag
-            and oid != filled_order_id
-            and oid not in self._orders_being_cancelled  # Skip if already being cancelled
-            and oid not in self._filled_oco_orders  # Skip if already filled
-        ]
+        if filled_order.custom_tag == self.config.stop_tag:
+            # Stop hit - cancel ALL target orders (single and partial profit)
+            # 1.10 FIX: Include partial profit targets (SCALPER_TARGET_1, _2, etc.)
+            for oid, order in self._open_orders.items():
+                if oid == filled_order_id:
+                    continue
+                if oid in self._orders_being_cancelled:
+                    continue
+                if oid in self._filled_oco_orders:
+                    continue
+                # Cancel if it's the single target OR a partial profit target
+                if (order.custom_tag == self.config.target_tag or
+                    (order.custom_tag and order.custom_tag.startswith(self.config.target_tag + "_"))):
+                    to_cancel.append(oid)
+
+        elif filled_order.custom_tag == self.config.target_tag:
+            # Single target hit - cancel stop
+            for oid, order in self._open_orders.items():
+                if (order.custom_tag == self.config.stop_tag and
+                    oid != filled_order_id and
+                    oid not in self._orders_being_cancelled and
+                    oid not in self._filled_oco_orders):
+                    to_cancel.append(oid)
+        else:
+            # Not a standard OCO order (could be partial profit, handled elsewhere)
+            return
 
         if to_cancel:
             # 10.23 FIX: Mark orders as being cancelled BEFORE scheduling task

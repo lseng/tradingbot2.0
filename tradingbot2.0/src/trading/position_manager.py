@@ -45,11 +45,19 @@ class Position:
         entry_price: Average entry price
         entry_time: Time position was opened
         stop_price: Stop loss price
-        target_price: Take profit price
+        target_price: Take profit price (legacy single target)
         stop_order_id: ID of the stop loss order
-        target_order_id: ID of the take profit order
+        target_order_id: ID of the take profit order (legacy single target)
         unrealized_pnl: Current unrealized P&L in dollars
         realized_pnl: P&L from partial closes (if any)
+
+    Multi-level partial profit attributes:
+        target_prices: List of take profit prices for each level (TP1, TP2, TP3)
+        target_quantities: List of contract quantities for each level
+        target_order_ids: List of order IDs for each take profit level
+        filled_target_levels: Boolean list tracking which levels are filled
+        original_size: Original position size before any partial closes
+        move_stop_to_breakeven_at: Index of first TP level that triggers breakeven stop
     """
     contract_id: str
     direction: int = 0  # 1=long, -1=short, 0=flat
@@ -62,6 +70,14 @@ class Position:
     target_order_id: Optional[str] = None
     unrealized_pnl: float = 0.0
     realized_pnl: float = 0.0
+
+    # Multi-level partial profit fields
+    target_prices: List[float] = field(default_factory=list)
+    target_quantities: List[int] = field(default_factory=list)
+    target_order_ids: List[Optional[str]] = field(default_factory=list)
+    filled_target_levels: List[bool] = field(default_factory=list)
+    original_size: int = 0
+    move_stop_to_breakeven_at: List[int] = field(default_factory=list)
 
     @property
     def is_flat(self) -> bool:
@@ -115,6 +131,25 @@ class Position:
         tick_diff = (current_price - self.entry_price) / MES_TICK_SIZE
         return self.direction * tick_diff * self.size
 
+    @property
+    def has_partial_profit_levels(self) -> bool:
+        """Check if position has multi-level partial profit targets."""
+        return len(self.target_prices) > 1
+
+    @property
+    def remaining_unfilled_levels(self) -> int:
+        """Get count of unfilled target levels."""
+        if not self.filled_target_levels:
+            return 0
+        return sum(1 for filled in self.filled_target_levels if not filled)
+
+    def get_next_unfilled_level(self) -> Optional[int]:
+        """Get index of next unfilled target level."""
+        for i, filled in enumerate(self.filled_target_levels):
+            if not filled:
+                return i
+        return None
+
     def to_dict(self) -> dict:
         """Convert to dictionary for logging/persistence."""
         return {
@@ -129,6 +164,13 @@ class Position:
             "target_order_id": self.target_order_id,
             "unrealized_pnl": self.unrealized_pnl,
             "realized_pnl": self.realized_pnl,
+            # Partial profit fields
+            "target_prices": self.target_prices,
+            "target_quantities": self.target_quantities,
+            "target_order_ids": self.target_order_ids,
+            "filled_target_levels": self.filled_target_levels,
+            "original_size": self.original_size,
+            "has_partial_profit_levels": self.has_partial_profit_levels,
         }
 
 
@@ -208,6 +250,13 @@ class PositionManager:
                 target_order_id=self._position.target_order_id,
                 unrealized_pnl=self._position.unrealized_pnl,
                 realized_pnl=self._position.realized_pnl,
+                # Multi-level partial profit fields
+                target_prices=list(self._position.target_prices),
+                target_quantities=list(self._position.target_quantities),
+                target_order_ids=list(self._position.target_order_ids),
+                filled_target_levels=list(self._position.filled_target_levels),
+                original_size=self._position.original_size,
+                move_stop_to_breakeven_at=list(self._position.move_stop_to_breakeven_at),
             )
 
     def is_flat(self) -> bool:
@@ -332,6 +381,13 @@ class PositionManager:
         self._position.realized_pnl = 0.0
         self._position.stop_order_id = None
         self._position.target_order_id = None
+        # Reset partial profit tracking
+        self._position.target_prices = []
+        self._position.target_quantities = []
+        self._position.target_order_ids = []
+        self._position.filled_target_levels = []
+        self._position.original_size = fill.size
+        self._position.move_stop_to_breakeven_at = []
 
     def _add_to_position(self, fill: Fill) -> None:
         """Add to existing position (average in)."""
@@ -361,6 +417,13 @@ class PositionManager:
         self._position.target_price = 0.0
         self._position.stop_order_id = None
         self._position.target_order_id = None
+        # Reset partial profit tracking
+        self._position.target_prices = []
+        self._position.target_quantities = []
+        self._position.target_order_ids = []
+        self._position.filled_target_levels = []
+        self._position.original_size = 0
+        self._position.move_stop_to_breakeven_at = []
 
     def _partial_close(self, fill: Fill) -> None:
         """Partially close position."""
@@ -418,6 +481,112 @@ class PositionManager:
             if order_id:
                 self._position.target_order_id = order_id
             logger.debug(f"Target price set: {price}, order_id={order_id}")
+
+    def set_partial_profit_targets(
+        self,
+        target_prices: List[float],
+        target_quantities: List[int],
+        target_order_ids: List[Optional[str]],
+        move_stop_to_breakeven_at: List[int],
+    ) -> None:
+        """
+        Set multi-level partial profit targets.
+
+        Args:
+            target_prices: List of target prices (TP1, TP2, TP3)
+            target_quantities: List of quantities for each level
+            target_order_ids: List of order IDs for each level
+            move_stop_to_breakeven_at: List of level indices that trigger breakeven stop
+        """
+        with self._lock:
+            self._position.target_prices = list(target_prices)
+            self._position.target_quantities = list(target_quantities)
+            self._position.target_order_ids = list(target_order_ids)
+            self._position.filled_target_levels = [False] * len(target_prices)
+            self._position.move_stop_to_breakeven_at = list(move_stop_to_breakeven_at)
+
+            # Also set legacy single target to first level for compatibility
+            if target_prices:
+                self._position.target_price = target_prices[0]
+            if target_order_ids and target_order_ids[0]:
+                self._position.target_order_id = target_order_ids[0]
+
+            logger.info(
+                f"Partial profit targets set: {len(target_prices)} levels, "
+                f"prices={target_prices}, quantities={target_quantities}"
+            )
+
+    def mark_target_level_filled(self, level_index: int, fill_price: float) -> bool:
+        """
+        Mark a specific target level as filled.
+
+        Called when a partial profit order fills.
+
+        Args:
+            level_index: Index of the filled level (0=TP1, 1=TP2, etc.)
+            fill_price: Actual fill price
+
+        Returns:
+            True if should move stop to breakeven after this fill
+        """
+        with self._lock:
+            if level_index >= len(self._position.filled_target_levels):
+                logger.warning(f"Invalid target level index: {level_index}")
+                return False
+
+            if self._position.filled_target_levels[level_index]:
+                logger.warning(f"Target level {level_index} already filled")
+                return False
+
+            # Mark as filled
+            self._position.filled_target_levels[level_index] = True
+
+            # Calculate realized P&L for this partial close
+            qty = self._position.target_quantities[level_index]
+            price_diff = fill_price - self._position.entry_price
+            pnl = self._position.direction * price_diff * qty * MES_POINT_VALUE
+            self._position.realized_pnl += pnl
+
+            # Reduce position size
+            self._position.size -= qty
+
+            logger.info(
+                f"Target level TP{level_index + 1} filled: "
+                f"price={fill_price:.2f}, qty={qty}, pnl=${pnl:.2f}, "
+                f"remaining_size={self._position.size}"
+            )
+
+            # Check if we should move stop to breakeven
+            should_move_stop = level_index in self._position.move_stop_to_breakeven_at
+
+            # If position fully closed, reset
+            if self._position.size <= 0:
+                self._position.direction = 0
+                self._position.size = 0
+                self._position.entry_price = 0.0
+                self._position.entry_time = None
+                self._position.unrealized_pnl = 0.0
+                logger.info("Position fully closed via partial profit taking")
+
+            return should_move_stop
+
+    def get_unfilled_target_order_ids(self) -> List[str]:
+        """
+        Get order IDs for unfilled target levels.
+
+        Used for OCO cancellation when stop is hit.
+
+        Returns:
+            List of order IDs for unfilled target levels
+        """
+        with self._lock:
+            order_ids = []
+            for i, filled in enumerate(self._position.filled_target_levels):
+                if not filled and i < len(self._position.target_order_ids):
+                    order_id = self._position.target_order_ids[i]
+                    if order_id:
+                        order_ids.append(order_id)
+            return order_ids
 
     def sync_from_api(self, api_position: 'PositionData') -> bool:
         """
@@ -502,6 +671,13 @@ class PositionManager:
             self._position.target_price = 0.0
             self._position.stop_order_id = None
             self._position.target_order_id = None
+            # Reset partial profit tracking
+            self._position.target_prices = []
+            self._position.target_quantities = []
+            self._position.target_order_ids = []
+            self._position.filled_target_levels = []
+            self._position.original_size = 0
+            self._position.move_stop_to_breakeven_at = []
 
             logger.info("Position flattened (local state)")
 

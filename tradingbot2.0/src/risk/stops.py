@@ -14,7 +14,7 @@ Key Parameters (from spec):
 - EOD tightening: Tighter stops near market close
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, List, Tuple
 import numpy as np
@@ -63,6 +63,104 @@ class StopResult:
     stop_dollars: float  # Dollar risk per contract
     stop_type: StopType
     reason: str
+
+
+@dataclass
+class PartialProfitLevel:
+    """
+    Defines a single partial profit level.
+
+    Attributes:
+        rr_ratio: Risk:reward ratio for this level (e.g., 1.0 for 1:1 R:R)
+        percentage: Portion of position to close at this level (0.0-1.0)
+        move_stop_to_breakeven: Whether to move stop to breakeven after this level hits
+    """
+    rr_ratio: float  # e.g., 1.0 for 1:1 R:R
+    percentage: float  # 0.0-1.0, e.g., 0.5 = close 50%
+    move_stop_to_breakeven: bool = False
+
+
+@dataclass
+class PartialProfitConfig:
+    """
+    Configuration for multi-level partial profit taking.
+
+    Per specs/risk-management.md:
+    - Take 50% at +4 ticks, remainder at +8 ticks (1:1 -> 1:2 R:R example)
+    - Move stop to breakeven after TP1
+
+    Usage:
+        config = PartialProfitConfig(
+            levels=[
+                PartialProfitLevel(rr_ratio=1.0, percentage=0.5, move_stop_to_breakeven=True),
+                PartialProfitLevel(rr_ratio=2.0, percentage=0.5),
+            ]
+        )
+    """
+    levels: List[PartialProfitLevel] = field(default_factory=list)
+    enabled: bool = True
+
+    def __post_init__(self):
+        """Validate configuration after initialization."""
+        if self.levels:
+            total_pct = sum(level.percentage for level in self.levels)
+            if not 0.99 <= total_pct <= 1.01:  # Allow small floating point tolerance
+                logger.warning(
+                    f"Partial profit percentages sum to {total_pct:.2%}, "
+                    f"expected 100%. Adjust levels for optimal results."
+                )
+
+    @classmethod
+    def default_two_level(cls) -> 'PartialProfitConfig':
+        """
+        Create default 2-level partial profit config.
+
+        Standard configuration:
+        - TP1: 50% at 1:1 R:R, move stop to breakeven
+        - TP2: 50% at 2:1 R:R
+        """
+        return cls(
+            levels=[
+                PartialProfitLevel(rr_ratio=1.0, percentage=0.5, move_stop_to_breakeven=True),
+                PartialProfitLevel(rr_ratio=2.0, percentage=0.5),
+            ]
+        )
+
+    @classmethod
+    def default_three_level(cls) -> 'PartialProfitConfig':
+        """
+        Create default 3-level partial profit config.
+
+        Standard configuration:
+        - TP1: 33% at 1:1 R:R, move stop to breakeven
+        - TP2: 33% at 1.5:1 R:R
+        - TP3: 34% at 2:1 R:R
+        """
+        return cls(
+            levels=[
+                PartialProfitLevel(rr_ratio=1.0, percentage=0.33, move_stop_to_breakeven=True),
+                PartialProfitLevel(rr_ratio=1.5, percentage=0.33),
+                PartialProfitLevel(rr_ratio=2.0, percentage=0.34),
+            ]
+        )
+
+
+@dataclass
+class PartialProfitResult:
+    """
+    Result of partial profit calculation.
+
+    Contains all information needed to place multiple take profit orders.
+    """
+    target_prices: List[float]  # Price levels for each TP
+    target_ticks: List[int]  # Tick distance for each TP
+    target_quantities: List[int]  # Number of contracts for each TP
+    target_dollars: List[float]  # Dollar profit at each level (per contract)
+    move_stop_indices: List[int]  # Indices of levels that trigger breakeven stop
+    total_contracts: int
+    entry_price: float
+    stop_price: float
+    direction: int  # 1=long, -1=short
 
 
 class StopLossManager:
@@ -403,6 +501,191 @@ class StopLossManager:
         target_dollars = target_ticks * self.config.tick_value
 
         return target_price, target_ticks, target_dollars
+
+    def calculate_partial_profit_targets(
+        self,
+        entry_price: float,
+        stop_price: float,
+        direction: int,
+        total_contracts: int,
+        config: Optional[PartialProfitConfig] = None,
+    ) -> PartialProfitResult:
+        """
+        Calculate multi-level take profit targets for partial profit taking.
+
+        Per specs/risk-management.md:
+        - Position: 2 contracts
+        - TP1: Close 1 contract at 1:1 R:R, move stop to breakeven
+        - TP2: Close remaining at 1:2 R:R or trail
+
+        Args:
+            entry_price: Entry price
+            stop_price: Stop loss price
+            direction: Trade direction (1=long, -1=short)
+            total_contracts: Total number of contracts in position
+            config: Partial profit configuration (uses default 2-level if None)
+
+        Returns:
+            PartialProfitResult with all target information
+        """
+        if config is None:
+            config = PartialProfitConfig.default_two_level()
+
+        if not config.enabled or not config.levels:
+            # Fall back to single target at 2:1 R:R
+            target_price, target_ticks, target_dollars = self.calculate_target_price(
+                entry_price, stop_price, direction, rr_ratio=2.0
+            )
+            return PartialProfitResult(
+                target_prices=[target_price],
+                target_ticks=[target_ticks],
+                target_quantities=[total_contracts],
+                target_dollars=[target_dollars],
+                move_stop_indices=[],
+                total_contracts=total_contracts,
+                entry_price=entry_price,
+                stop_price=stop_price,
+                direction=direction,
+            )
+
+        # Calculate stop distance (risk)
+        stop_distance = abs(entry_price - stop_price)
+
+        target_prices: List[float] = []
+        target_ticks_list: List[int] = []
+        target_quantities: List[int] = []
+        target_dollars: List[float] = []
+        move_stop_indices: List[int] = []
+
+        # Track remaining contracts to distribute
+        remaining_contracts = total_contracts
+        allocated_contracts = 0
+
+        for i, level in enumerate(config.levels):
+            # Calculate target price for this level
+            target_distance = stop_distance * level.rr_ratio
+
+            if direction > 0:  # Long
+                target_price = entry_price + target_distance
+            else:  # Short
+                target_price = entry_price - target_distance
+
+            # Round to tick size
+            target_price = round(target_price / self.config.tick_size) * self.config.tick_size
+
+            # Calculate quantity for this level
+            if i == len(config.levels) - 1:
+                # Last level gets remaining contracts
+                qty = remaining_contracts
+            else:
+                qty = max(1, int(total_contracts * level.percentage))
+                qty = min(qty, remaining_contracts)  # Don't exceed remaining
+
+            # Update tracking
+            remaining_contracts -= qty
+            allocated_contracts += qty
+
+            # Calculate metrics
+            ticks = int(target_distance / self.config.tick_size)
+            dollars = ticks * self.config.tick_value
+
+            target_prices.append(target_price)
+            target_ticks_list.append(ticks)
+            target_quantities.append(qty)
+            target_dollars.append(dollars)
+
+            if level.move_stop_to_breakeven:
+                move_stop_indices.append(i)
+
+            logger.debug(
+                f"TP{i+1}: price={target_price:.2f}, qty={qty}, "
+                f"R:R={level.rr_ratio}, move_stop_be={level.move_stop_to_breakeven}"
+            )
+
+        return PartialProfitResult(
+            target_prices=target_prices,
+            target_ticks=target_ticks_list,
+            target_quantities=target_quantities,
+            target_dollars=target_dollars,
+            move_stop_indices=move_stop_indices,
+            total_contracts=total_contracts,
+            entry_price=entry_price,
+            stop_price=stop_price,
+            direction=direction,
+        )
+
+    def check_partial_profit(
+        self,
+        current_price: float,
+        partial_profit_result: PartialProfitResult,
+        filled_levels: List[bool],
+    ) -> Tuple[Optional[int], bool]:
+        """
+        Check if any partial profit level has been reached.
+
+        Args:
+            current_price: Current market price
+            partial_profit_result: The partial profit targets
+            filled_levels: List tracking which levels have been filled
+
+        Returns:
+            Tuple of (level_index_hit, should_move_stop_to_breakeven)
+            Returns (None, False) if no level hit
+        """
+        direction = partial_profit_result.direction
+
+        for i, target_price in enumerate(partial_profit_result.target_prices):
+            if filled_levels[i]:
+                continue  # Already filled
+
+            # Check if target is hit
+            target_hit = False
+            if direction > 0:  # Long
+                target_hit = current_price >= target_price
+            else:  # Short
+                target_hit = current_price <= target_price
+
+            if target_hit:
+                should_move_stop = i in partial_profit_result.move_stop_indices
+                logger.info(
+                    f"Partial profit TP{i+1} hit: price={current_price:.2f}, "
+                    f"target={target_price:.2f}, move_stop_to_be={should_move_stop}"
+                )
+                return i, should_move_stop
+
+        return None, False
+
+    def get_breakeven_stop(
+        self,
+        entry_price: float,
+        direction: int,
+        buffer_ticks: int = 1,
+    ) -> float:
+        """
+        Calculate breakeven stop price with optional buffer.
+
+        After first partial profit is taken, stop should be moved to breakeven
+        (entry price) with a small buffer to account for spread/slippage.
+
+        Args:
+            entry_price: Original entry price
+            direction: Trade direction (1=long, -1=short)
+            buffer_ticks: Buffer ticks beyond breakeven (default 1)
+
+        Returns:
+            Breakeven stop price
+        """
+        buffer_points = buffer_ticks * self.config.tick_size
+
+        if direction > 0:  # Long - stop just below entry
+            stop_price = entry_price - buffer_points
+        else:  # Short - stop just above entry
+            stop_price = entry_price + buffer_points
+
+        # Round to tick size
+        stop_price = round(stop_price / self.config.tick_size) * self.config.tick_size
+
+        return stop_price
 
 
 def calculate_atr(

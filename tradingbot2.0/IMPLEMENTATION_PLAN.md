@@ -1,9 +1,9 @@
 # Implementation Plan - MES Futures Scalping Bot
 
-> **Last Updated**: 2026-01-18 UTC (2.6 Fixed - Time-decay stop tightening)
+> **Last Updated**: 2026-01-18 UTC (1.10 Fixed - Partial profit taking)
 > **Status**: **UNBLOCKED - Bug #10 Fixed** - LSTM training now functional on full dataset
-> **Test Coverage**: 2,735 tests across 62 test files (1 skipped: conditional on optional deps)
-> **Git Tag**: v0.0.80
+> **Test Coverage**: 2,766 tests across 62 test files (1 skipped: conditional on optional deps)
+> **Git Tag**: v0.0.81
 > **Code Quality**: No TODO/FIXME comments found in src/; all abstract methods properly implemented; EODPhase consolidated
 
 ---
@@ -58,7 +58,7 @@ Execute tasks in this exact order for optimal progress:
 ### Phase 5: Risk Management Enhancements
 | Order | ID | Task | Est. Time | Status |
 |-------|-----|------|-----------|--------|
-| 16 | 1.10 | Implement partial profit taking (TP1/TP2/TP3) | 4 hrs | |
+| 16 | 1.10 | Implement partial profit taking (TP1/TP2/TP3) | 4 hrs | **FIXED (2026-01-18)** |
 | 17 | 2.6 | Add time-decay stop tightening | 3 hrs | **FIXED (2026-01-18)** |
 | 18 | 2.8 | Add session summary persistence/export | 2 hrs | **FIXED (2026-01-18)** |
 
@@ -222,7 +222,7 @@ Issues affecting profitability validation and **LIVE TRADING SAFETY**. Ordered b
 | **1.6** | `src/backtest/` | Monte Carlo simulation - ZERO references | No robustness assessment | CONFIRMED NOT IMPLEMENTED |
 | **1.8** | `src/backtest/engine.py:680-684` | Fill modes ALL USE bar['close'] | NEXT_BAR_OPEN broken | **FIXED (2026-01-18)** |
 | **1.9** | `src/backtest/slippage.py` | ATR slippage params NOT PASSED from engine | ATR-based slippage unused | **FIXED (2026-01-18)** |
-| **1.10** | `src/risk/stops.py` | Partial profit taking - single level only | No multi-level TP (TP1/TP2/TP3) | PARTIAL |
+| **1.10** | `src/risk/stops.py` | Partial profit taking - single level only | No multi-level TP (TP1/TP2/TP3) | **FIXED (2026-01-18)** |
 | **1.11** | `tests/` | No `tests/acceptance/` directory exists | Go-Live criteria not organized | CONFIRMED NOT IMPLEMENTED |
 | **1.12** | `src/data/` | Parquet partitioning - flat files only | Not year/month partitioned | NOT IMPLEMENTED |
 | **1.13** | `src/trading/` | Trade log CSV - backtest only | No live trading export | NOT IMPLEMENTED |
@@ -557,41 +557,47 @@ Two fill modes (NEXT_BAR_OPEN and PRICE_TOUCH) were documented but both used ide
 
 ---
 
-### 1.10: Partial Profit Taking - Single Level Only
+### 1.10: Partial Profit Taking (FIXED)
 
-**File**: `src/risk/stops.py`
+**File**: `src/risk/stops.py`, `src/trading/position_manager.py`, `src/trading/order_executor.py`
 **Spec Reference**: `specs/risk-management.md`
+**Status**: **FIXED (2026-01-18)**
+**Tests**: 31 new tests added in `tests/test_partial_profit.py`
 
-#### Problem
+#### Problem (RESOLVED)
 
-Only single profit target implemented. Spec requires multi-level take profit.
+Only single profit target was implemented. Spec requires multi-level take profit.
 
 **Example**: Take 50% at +4 ticks, remainder at +8 ticks.
 
-**Current State**: Single `take_profit_price` field
-**Required**: Support for TP1, TP2, TP3 with configurable percentages
+#### Fix Applied
 
-#### Required Implementation
+1. **New dataclasses in `src/risk/stops.py`**:
+   - `PartialProfitLevel` - price and percentage for each TP level
+   - `PartialProfitConfig` - list of levels with breakeven trigger config
 
-```python
-@dataclass
-class PartialProfitLevel:
-    price: float
-    percentage: float  # 0.5 = take 50% off
+2. **New methods in `StopLossManager`**:
+   - `calculate_partial_profit_targets()` - computes TP levels from entry price
+   - `check_partial_profit()` - checks if current price hit a TP level
+   - `get_breakeven_stop()` - returns breakeven stop after TP1 hit
 
-@dataclass
-class PartialProfitConfig:
-    levels: List[PartialProfitLevel]
-    move_stop_to_breakeven_after: int = 1  # After TP1
-```
+3. **Position class updated**:
+   - New fields: `partial_profit_config`, `partial_profit_levels`, `partial_profits_taken`, `original_quantity`
+
+4. **PositionManager methods**:
+   - `reduce_position_partial()` - reduces position at TP level
+   - `update_stop_to_breakeven()` - moves stop to entry price
+
+5. **OrderExecutor**:
+   - `execute_entry_with_partial_profit()` - entry with multi-target setup
 
 #### Acceptance Criteria
 
-- [ ] `PartialProfitConfig` dataclass with levels
-- [ ] `StopManager.check_partial_profit()` method
-- [ ] Position size reduced at each TP level
-- [ ] Stop moved to breakeven after TP1
-- [ ] Unit tests for 2-level and 3-level scenarios
+- [x] `PartialProfitConfig` dataclass with levels
+- [x] `StopManager.check_partial_profit()` method
+- [x] Position size reduced at each TP level
+- [x] Stop moved to breakeven after TP1
+- [x] Unit tests for 2-level and 3-level scenarios
 
 ---
 
@@ -1044,6 +1050,35 @@ Bug fixes applied to `rt_features.py` were NOT backported to `scalping_features.
 ---
 
 ## Completed Items (Historical Reference)
+
+### Partial Profit Taking (2026-01-18)
+
+| Item | Issue | Fix |
+|------|-------|-----|
+| 1.10 | Partial profit taking - single level only, no multi-level TP | Implemented full multi-level partial profit taking system |
+
+**New dataclasses in `src/risk/stops.py`:**
+- `PartialProfitConfig` - configuration for partial profit levels
+- `PartialProfitLevel` - individual TP level with price and percentage
+
+**New methods in `StopLossManager`:**
+- `calculate_partial_profit_targets()` - computes TP levels from entry price
+- `check_partial_profit()` - checks if current price hit a TP level
+- `get_breakeven_stop()` - returns breakeven stop after TP1 hit
+
+**Position class updated:**
+- New fields: `partial_profit_config`, `partial_profit_levels`, `partial_profits_taken`, `original_quantity`
+
+**PositionManager methods:**
+- `reduce_position_partial()` - reduces position at TP level
+- `update_stop_to_breakeven()` - moves stop to entry price
+
+**OrderExecutor:**
+- `execute_entry_with_partial_profit()` - entry with multi-target setup
+
+**New tests added (31 tests in tests/test_partial_profit.py)**
+
+---
 
 ### Time-Decay Stop Tightening (2026-01-18)
 
