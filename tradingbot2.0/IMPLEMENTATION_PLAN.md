@@ -3,7 +3,7 @@
 > **Last Updated**: 2026-01-18 UTC (1.10 Fixed - Partial profit taking)
 > **Status**: **UNBLOCKED - Bug #10 Fixed** - LSTM training now functional on full dataset
 > **Test Coverage**: 2,766 tests across 62 test files (1 skipped: conditional on optional deps)
-> **Git Tag**: v0.0.81
+> **Git Tag**: v0.0.82
 > **Code Quality**: No TODO/FIXME comments found in src/; all abstract methods properly implemented; EODPhase consolidated
 
 ---
