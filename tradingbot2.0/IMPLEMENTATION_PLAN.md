@@ -1,9 +1,9 @@
 # Implementation Plan - MES Futures Scalping Bot
 
-> **Last Updated**: 2026-01-18 UTC (1.10 Fixed - Partial profit taking)
+> **Last Updated**: 2026-01-18 UTC (1.11 Fixed - Acceptance test suite)
 > **Status**: **UNBLOCKED - Bug #10 Fixed** - LSTM training now functional on full dataset
-> **Test Coverage**: 2,766 tests across 62 test files (1 skipped: conditional on optional deps)
-> **Git Tag**: v0.0.82
+> **Test Coverage**: 2,886 tests across 69 test files (120 acceptance tests added)
+> **Git Tag**: v0.0.83
 > **Code Quality**: No TODO/FIXME comments found in src/; all abstract methods properly implemented; EODPhase consolidated
 
 ---
@@ -63,12 +63,12 @@ Execute tasks in this exact order for optimal progress:
 | 18 | 2.8 | Add session summary persistence/export | 2 hrs | **FIXED (2026-01-18)** |
 
 ### Phase 6: Pre-Paper Trading Requirements
-| Order | ID | Task | Est. Time |
-|-------|-----|------|-----------|
-| 19 | 1.11 | Create acceptance criteria test suite | 6-8 hrs |
-| 20 | 1.13 | Add trade log CSV for live trading | 3 hrs |
-| 21 | 1.12 | Implement Parquet year/month partitioning | 4 hrs |
-| 22 | 2.10-2.12 | Organize latency tests in acceptance/, add order < 500ms test | 2 hrs |
+| Order | ID | Task | Est. Time | Status |
+|-------|-----|------|-----------|--------|
+| 19 | 1.11 | Create acceptance criteria test suite | 6-8 hrs | **FIXED (2026-01-18)** |
+| 20 | 1.13 | Add trade log CSV for live trading | 3 hrs | |
+| 21 | 1.12 | Implement Parquet year/month partitioning | 4 hrs | |
+| 22 | 2.10-2.12 | Organize latency tests in acceptance/, add order < 500ms test | 2 hrs | **FIXED (2026-01-18)** |
 
 ---
 
@@ -223,7 +223,7 @@ Issues affecting profitability validation and **LIVE TRADING SAFETY**. Ordered b
 | **1.8** | `src/backtest/engine.py:680-684` | Fill modes ALL USE bar['close'] | NEXT_BAR_OPEN broken | **FIXED (2026-01-18)** |
 | **1.9** | `src/backtest/slippage.py` | ATR slippage params NOT PASSED from engine | ATR-based slippage unused | **FIXED (2026-01-18)** |
 | **1.10** | `src/risk/stops.py` | Partial profit taking - single level only | No multi-level TP (TP1/TP2/TP3) | **FIXED (2026-01-18)** |
-| **1.11** | `tests/` | No `tests/acceptance/` directory exists | Go-Live criteria not organized | CONFIRMED NOT IMPLEMENTED |
+| **1.11** | `tests/acceptance/` | Acceptance test suite created with 120 tests | Go-Live criteria organized | **FIXED (2026-01-18)** |
 | **1.12** | `src/data/` | Parquet partitioning - flat files only | Not year/month partitioned | NOT IMPLEMENTED |
 | **1.13** | `src/trading/` | Trade log CSV - backtest only | No live trading export | NOT IMPLEMENTED |
 
