@@ -11,6 +11,8 @@ Key Features:
 - EOD flatten enforcement at 4:30 PM NY
 - Walk-forward optimization support
 - Comprehensive logging and metrics
+- Session filtering (RTH/ETH) with proper timezone handling
+- UTC to NY timezone conversion for all session checks
 
 The engine processes data chronologically, respecting time boundaries
 and avoiding lookahead bias. All risk limits are enforced identically
@@ -29,6 +31,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, date, timedelta
 from enum import Enum
 from typing import Optional, List, Dict, Any, Callable, Tuple
+import logging
 import numpy as np
 import pandas as pd
 import sys
@@ -36,6 +39,9 @@ import os
 
 # Add parent paths for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
+# Set up logger
+logger = logging.getLogger(__name__)
 
 from .costs import TransactionCostModel, MESCostConfig
 from .slippage import SlippageModel, SlippageConfig, OrderType, MarketCondition
@@ -58,6 +64,22 @@ except ImportError:
     RiskLimits = None
     TradingStatus = None
 
+# Import time utilities for timezone handling
+try:
+    from src.lib.time_utils import to_ny_time, is_rth, is_eth
+    from src.lib.constants import NY_TIMEZONE, RTH_START, RTH_END, ETH_START, ETH_END
+    TIME_UTILS_AVAILABLE = True
+except ImportError:
+    TIME_UTILS_AVAILABLE = False
+    to_ny_time = None
+    is_rth = None
+    is_eth = None
+    NY_TIMEZONE = None
+    RTH_START = None
+    RTH_END = None
+    ETH_START = None
+    ETH_END = None
+
 
 class SignalType(Enum):
     """Trading signal types."""
@@ -77,6 +99,20 @@ class OrderFillMode(Enum):
     SIGNAL_BAR_CLOSE = "signal_bar_close"
     # Fill only if price touches order price (conservative)
     PRICE_TOUCH = "price_touch"
+
+
+class SessionFilter(Enum):
+    """
+    Trading session filter modes.
+
+    Controls which market hours are included in the backtest:
+    - ALL: Include all data (no filtering)
+    - RTH_ONLY: Regular Trading Hours only (9:30 AM - 4:00 PM NY)
+    - ETH_ONLY: Extended Trading Hours only (6:00 PM - 5:00 PM NY)
+    """
+    ALL = "all"
+    RTH_ONLY = "rth_only"
+    ETH_ONLY = "eth_only"
 
 
 @dataclass
@@ -150,6 +186,8 @@ class BacktestConfig:
         eod_reduce_time: Time to reduce position sizing (NY)
         eod_close_only_time: Time to stop new positions (NY)
         log_frequency: How often to log equity (bars between logs)
+        session_filter: Which session to include (ALL, RTH_ONLY, ETH_ONLY)
+        convert_timestamps_to_ny: Whether to convert UTC timestamps to NY (default: True)
         enable_risk_manager: Enable full RiskManager integration (default: True)
         kill_switch_loss: Cumulative loss to trigger kill switch (default: $300)
         min_account_balance: Minimum balance to allow trading (default: $700)
@@ -176,6 +214,9 @@ class BacktestConfig:
     eod_reduce_time: time = time(16, 0)  # 4:00 PM
     eod_close_only_time: time = time(16, 15)  # 4:15 PM
     log_frequency: int = 60  # Log equity every 60 bars (1 min for 1-sec data)
+    # Session filtering parameters
+    session_filter: SessionFilter = SessionFilter.RTH_ONLY  # Filter to RTH by default (recommended)
+    convert_timestamps_to_ny: bool = True  # Convert UTC timestamps to NY timezone
     # Full RiskManager integration parameters
     enable_risk_manager: bool = True  # Enable RiskManager for full risk limit enforcement
     kill_switch_loss: float = 300.0  # Cumulative loss to halt permanently (30% of $1000)
@@ -207,6 +248,9 @@ class BacktestConfig:
             "rth_start": self.rth_start.isoformat(),
             "rth_end": self.rth_end.isoformat(),
             "eod_flatten_time": self.eod_flatten_time.isoformat(),
+            # Session filtering parameters
+            "session_filter": self.session_filter.value,
+            "convert_timestamps_to_ny": self.convert_timestamps_to_ny,
             # RiskManager integration parameters
             "enable_risk_manager": self.enable_risk_manager,
             "kill_switch_loss": self.kill_switch_loss,
@@ -333,6 +377,10 @@ class BacktestEngine:
         self._halted_by_risk_manager = False
         self._risk_halt_reason: Optional[str] = None
 
+        # Session filtering stats
+        self._bars_filtered = 0
+        self._bars_processed = 0
+
         # Reset cost/slippage tracking
         self._cost_model.reset()
         self._slippage_model.reset()
@@ -358,6 +406,122 @@ class BacktestEngine:
                 ),
                 auto_persist=False,
             )
+
+    def _to_ny_time(self, dt: datetime) -> datetime:
+        """
+        Convert a datetime to New York timezone.
+
+        Uses the time_utils module if available, otherwise performs
+        a basic conversion assuming UTC input.
+
+        Args:
+            dt: Datetime to convert
+
+        Returns:
+            Datetime in NY timezone
+        """
+        if not self.config.convert_timestamps_to_ny:
+            return dt
+
+        if TIME_UTILS_AVAILABLE and to_ny_time is not None:
+            return to_ny_time(dt)
+
+        # Fallback: assume naive datetime is UTC
+        from zoneinfo import ZoneInfo
+        ny_tz = ZoneInfo("America/New_York")
+
+        if dt.tzinfo is None:
+            # Assume naive datetime is UTC
+            dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+        return dt.astimezone(ny_tz)
+
+    def _is_in_session(self, timestamp: datetime) -> bool:
+        """
+        Check if a timestamp is within the configured trading session.
+
+        Respects the session_filter config setting (ALL, RTH_ONLY, ETH_ONLY).
+
+        Args:
+            timestamp: Datetime to check
+
+        Returns:
+            True if timestamp is within the configured session
+        """
+        if self.config.session_filter == SessionFilter.ALL:
+            return True
+
+        # Convert to NY timezone for session checks
+        ny_time = self._to_ny_time(timestamp)
+        current_time = ny_time.time()
+        weekday = ny_time.weekday()
+
+        if self.config.session_filter == SessionFilter.RTH_ONLY:
+            # RTH: 9:30 AM - 4:00 PM NY, weekdays only
+            if weekday >= 5:  # Saturday=5, Sunday=6
+                return False
+            return self.config.rth_start <= current_time < self.config.rth_end
+
+        elif self.config.session_filter == SessionFilter.ETH_ONLY:
+            # ETH: Outside RTH but market is open
+            # Saturday is always closed
+            if weekday == 5:
+                return False
+
+            # Sunday: ETH starts at 6:00 PM
+            if weekday == 6:
+                return current_time >= time(18, 0)
+
+            # Friday: Globex closes at 5:00 PM (no overnight session)
+            if weekday == 4:
+                if current_time < self.config.rth_start:
+                    return True  # Early morning before RTH
+                if current_time >= self.config.rth_end and current_time < time(17, 0):
+                    return True  # After RTH but before 5 PM close
+                return False
+
+            # Monday-Thursday: ETH is outside RTH
+            if current_time < self.config.rth_start or current_time >= self.config.rth_end:
+                # Exclude the 5:00 PM - 5:15 PM CME reset window
+                if time(17, 0) <= current_time < time(17, 15):
+                    return False
+                return True
+
+            return False
+
+        return True
+
+    def _filter_data_by_session(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Filter data to include only bars within the configured session.
+
+        This is a critical preprocessing step that ensures backtests
+        only include data from the intended trading hours.
+
+        Args:
+            data: DataFrame with datetime index
+
+        Returns:
+            Filtered DataFrame containing only session bars
+        """
+        if self.config.session_filter == SessionFilter.ALL:
+            return data
+
+        # Apply session filter
+        mask = data.index.map(self._is_in_session)
+        filtered_data = data[mask]
+
+        # Track filtering stats
+        original_count = len(data)
+        filtered_count = len(filtered_data)
+        self._bars_filtered = original_count - filtered_count
+
+        logger.info(
+            f"Session filter ({self.config.session_filter.value}): "
+            f"{filtered_count}/{original_count} bars retained "
+            f"({self._bars_filtered} filtered out)"
+        )
+
+        return filtered_data
 
     def run(
         self,
@@ -393,9 +557,42 @@ class BacktestEngine:
         # Initialize context
         context = context or {}
 
+        # Filter data by session (RTH/ETH)
+        original_bar_count = len(data)
+        data = self._filter_data_by_session(data)
+
+        if len(data) == 0:
+            logger.warning("No data remaining after session filtering")
+            # Return empty result
+            metrics = calculate_metrics(
+                trade_pnls=[],
+                equity_curve=[self.config.initial_capital],
+                initial_capital=self.config.initial_capital,
+                trading_days=0,
+                total_commission=0.0,
+                total_slippage=0.0,
+            )
+            report = BacktestReport(
+                trade_log=self._trade_log,
+                equity_curve=self._equity_curve,
+                metrics=metrics,
+                config=self.config.to_dict(),
+                start_date=None,
+                end_date=None,
+            )
+            return BacktestResult(
+                report=report,
+                config=self.config,
+                data_stats={"total_bars": 0, "bars_filtered": original_bar_count},
+                execution_time_seconds=0.0,
+            )
+
         # Data stats
         data_stats = {
             "total_bars": len(data),
+            "original_bars": original_bar_count,
+            "bars_filtered": self._bars_filtered,
+            "session_filter": self.config.session_filter.value,
             "start_date": data.index[0].isoformat() if len(data) > 0 else None,
             "end_date": data.index[-1].isoformat() if len(data) > 0 else None,
         }
@@ -542,18 +739,59 @@ class BacktestEngine:
         return self._daily_pnl > -self.config.max_daily_loss
 
     def _should_flatten_eod(self, timestamp: datetime) -> bool:
-        """Check if we need to flatten positions for EOD."""
-        current_time = timestamp.time()
+        """
+        Check if we need to flatten positions for EOD.
+
+        Converts timestamp to NY timezone before checking against
+        EOD flatten time to ensure correct behavior regardless
+        of input timezone.
+
+        Args:
+            timestamp: Current bar timestamp (any timezone)
+
+        Returns:
+            True if positions should be flattened
+        """
+        ny_time = self._to_ny_time(timestamp)
+        current_time = ny_time.time()
         return current_time >= self.config.eod_flatten_time
 
     def _can_open_new_position(self, timestamp: datetime) -> bool:
-        """Check if we can open a new position (EOD restrictions)."""
-        current_time = timestamp.time()
+        """
+        Check if we can open a new position (EOD restrictions).
+
+        After 4:15 PM NY, no new positions should be opened.
+        Converts timestamp to NY timezone for accurate check.
+
+        Args:
+            timestamp: Current bar timestamp (any timezone)
+
+        Returns:
+            True if new positions are allowed
+        """
+        ny_time = self._to_ny_time(timestamp)
+        current_time = ny_time.time()
         return current_time < self.config.eod_close_only_time
 
     def _get_eod_size_multiplier(self, timestamp: datetime) -> float:
-        """Get position size multiplier based on time of day."""
-        current_time = timestamp.time()
+        """
+        Get position size multiplier based on time of day.
+
+        Implements EOD position size reduction:
+        - Before 4:00 PM: Full size (1.0)
+        - 4:00 PM - 4:15 PM: Half size (0.5)
+        - After 4:15 PM: No new positions (0.0)
+
+        Converts timestamp to NY timezone for accurate check.
+
+        Args:
+            timestamp: Current bar timestamp (any timezone)
+
+        Returns:
+            Position size multiplier (0.0 to 1.0)
+        """
+        ny_time = self._to_ny_time(timestamp)
+        current_time = ny_time.time()
 
         if current_time >= self.config.eod_close_only_time:
             return 0.0  # No new positions

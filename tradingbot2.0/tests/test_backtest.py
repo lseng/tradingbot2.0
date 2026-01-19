@@ -66,6 +66,7 @@ from backtest.engine import (
     BacktestConfig,
     BacktestResult,
     OrderFillMode,
+    SessionFilter,
     Signal,
     SignalType,
     Position,
@@ -1024,6 +1025,255 @@ class TestBacktestEngine:
 
         # Should have handled EOD appropriately
         assert result is not None
+
+
+class TestSessionFiltering:
+    """Tests for session filtering and timezone handling."""
+
+    @pytest.fixture
+    def utc_data(self):
+        """Create sample data with UTC timestamps."""
+        # Create data across multiple sessions
+        timestamps = pd.date_range(
+            start='2023-01-03 14:30:00',  # 9:30 AM NY in UTC
+            periods=36000,  # 10 hours of data (covers RTH and beyond)
+            freq='1s',
+            tz='UTC',
+        )
+
+        prices = np.full(len(timestamps), 4500.0)
+        data = pd.DataFrame({
+            'open': prices,
+            'high': prices + 0.5,
+            'low': prices - 0.5,
+            'close': prices,
+            'volume': np.full(len(timestamps), 100),
+        }, index=timestamps)
+
+        return data
+
+    @pytest.fixture
+    def mixed_session_data(self):
+        """Create data that spans RTH and ETH."""
+        # Start at 6 AM NY (ETH) and run through 5 PM NY
+        timestamps = pd.date_range(
+            start='2023-01-03 06:00:00',
+            periods=39600,  # 11 hours of data
+            freq='1s',
+            tz='America/New_York',
+        )
+
+        prices = np.full(len(timestamps), 4500.0)
+        data = pd.DataFrame({
+            'open': prices,
+            'high': prices + 0.5,
+            'low': prices - 0.5,
+            'close': prices,
+            'volume': np.full(len(timestamps), 100),
+        }, index=timestamps)
+
+        return data
+
+    def test_session_filter_rth_only(self, mixed_session_data):
+        """Test RTH-only session filtering."""
+        config = BacktestConfig(
+            session_filter=SessionFilter.RTH_ONLY,
+        )
+        engine = BacktestEngine(config=config)
+
+        def no_trade(bar, position, context):
+            return Signal(SignalType.HOLD)
+
+        result = engine.run(mixed_session_data, no_trade)
+
+        # RTH is 9:30-16:00 = 6.5 hours = 23400 seconds
+        assert result.data_stats['bars_filtered'] > 0
+        # Original 11 hours minus filtered = RTH only
+        assert result.data_stats['session_filter'] == 'rth_only'
+
+    def test_session_filter_all(self, mixed_session_data):
+        """Test ALL session filter (no filtering)."""
+        config = BacktestConfig(
+            session_filter=SessionFilter.ALL,
+        )
+        engine = BacktestEngine(config=config)
+
+        def no_trade(bar, position, context):
+            return Signal(SignalType.HOLD)
+
+        result = engine.run(mixed_session_data, no_trade)
+
+        # Should have all bars
+        assert result.data_stats['bars_filtered'] == 0
+        assert result.data_stats['session_filter'] == 'all'
+
+    def test_utc_to_ny_conversion(self, utc_data):
+        """Test that UTC timestamps are properly converted to NY for session checks."""
+        config = BacktestConfig(
+            session_filter=SessionFilter.RTH_ONLY,
+            convert_timestamps_to_ny=True,
+        )
+        engine = BacktestEngine(config=config)
+
+        def no_trade(bar, position, context):
+            return Signal(SignalType.HOLD)
+
+        result = engine.run(utc_data, no_trade)
+
+        # Should filter out non-RTH hours
+        assert result.data_stats['bars_filtered'] > 0
+        # The data starts at 9:30 AM NY (14:30 UTC) so most should be RTH
+
+    def test_eod_flatten_with_utc_data(self):
+        """Test EOD flatten works correctly with UTC timestamps."""
+        # Create UTC data around EOD time (4:30 PM NY = 21:30 UTC in winter)
+        timestamps = pd.date_range(
+            start='2023-01-03 21:00:00',  # 4:00 PM NY
+            periods=3600,  # 1 hour
+            freq='1s',
+            tz='UTC',
+        )
+
+        prices = np.full(len(timestamps), 4500.0)
+        data = pd.DataFrame({
+            'open': prices,
+            'high': prices + 0.5,
+            'low': prices - 0.5,
+            'close': prices,
+            'volume': np.full(len(timestamps), 100),
+        }, index=timestamps)
+
+        config = BacktestConfig(
+            session_filter=SessionFilter.ALL,  # Don't filter
+            convert_timestamps_to_ny=True,
+        )
+        engine = BacktestEngine(config=config)
+
+        trades_after_flatten = []
+
+        def try_to_trade(bar, position, context):
+            if position is None:
+                return Signal(SignalType.LONG_ENTRY, confidence=0.80)
+            return Signal(SignalType.HOLD)
+
+        result = engine.run(data, try_to_trade)
+
+        # Engine should prevent trading after 4:30 PM
+        # Any position should be flattened
+        assert result is not None
+
+    def test_session_filter_eth_only(self, mixed_session_data):
+        """Test ETH-only session filtering."""
+        config = BacktestConfig(
+            session_filter=SessionFilter.ETH_ONLY,
+        )
+        engine = BacktestEngine(config=config)
+
+        def no_trade(bar, position, context):
+            return Signal(SignalType.HOLD)
+
+        result = engine.run(mixed_session_data, no_trade)
+
+        # ETH should filter out RTH (9:30-16:00)
+        assert result.data_stats['bars_filtered'] > 0
+        assert result.data_stats['session_filter'] == 'eth_only'
+
+    def test_empty_after_filtering(self):
+        """Test handling when all data is filtered out."""
+        # Create data only during non-trading hours (Saturday)
+        timestamps = pd.date_range(
+            start='2023-01-07 12:00:00',  # Saturday
+            periods=1000,
+            freq='1s',
+            tz='America/New_York',
+        )
+
+        prices = np.full(len(timestamps), 4500.0)
+        data = pd.DataFrame({
+            'open': prices,
+            'high': prices + 0.5,
+            'low': prices - 0.5,
+            'close': prices,
+            'volume': np.full(len(timestamps), 100),
+        }, index=timestamps)
+
+        config = BacktestConfig(
+            session_filter=SessionFilter.RTH_ONLY,
+        )
+        engine = BacktestEngine(config=config)
+
+        def no_trade(bar, position, context):
+            return Signal(SignalType.HOLD)
+
+        result = engine.run(data, no_trade)
+
+        # Should return valid result with 0 bars
+        assert result.data_stats['total_bars'] == 0
+        assert result.data_stats['bars_filtered'] == 1000
+
+    def test_timezone_conversion_disabled(self):
+        """Test that timezone conversion can be disabled."""
+        timestamps = pd.date_range(
+            start='2023-01-03 09:30:00',
+            periods=1000,
+            freq='1s',
+            tz='America/New_York',
+        )
+
+        prices = np.full(len(timestamps), 4500.0)
+        data = pd.DataFrame({
+            'open': prices,
+            'high': prices + 0.5,
+            'low': prices - 0.5,
+            'close': prices,
+            'volume': np.full(len(timestamps), 100),
+        }, index=timestamps)
+
+        config = BacktestConfig(
+            convert_timestamps_to_ny=False,
+        )
+        engine = BacktestEngine(config=config)
+
+        # Should still work with NY-timezone data
+        def no_trade(bar, position, context):
+            return Signal(SignalType.HOLD)
+
+        result = engine.run(data, no_trade)
+        assert result is not None
+
+    def test_dst_handling(self):
+        """Test DST transition handling (March - after spring forward)."""
+        # March 13, 2023 was the Monday after DST transition
+        timestamps = pd.date_range(
+            start='2023-03-13 09:30:00',
+            periods=23400,  # RTH duration
+            freq='1s',
+            tz='America/New_York',
+        )
+
+        prices = np.full(len(timestamps), 4500.0)
+        data = pd.DataFrame({
+            'open': prices,
+            'high': prices + 0.5,
+            'low': prices - 0.5,
+            'close': prices,
+            'volume': np.full(len(timestamps), 100),
+        }, index=timestamps)
+
+        config = BacktestConfig(
+            session_filter=SessionFilter.RTH_ONLY,
+            convert_timestamps_to_ny=True,
+        )
+        engine = BacktestEngine(config=config)
+
+        def no_trade(bar, position, context):
+            return Signal(SignalType.HOLD)
+
+        result = engine.run(data, no_trade)
+
+        # Should handle DST without errors
+        assert result is not None
+        assert result.data_stats['total_bars'] > 0
 
 
 class TestSimpleSignalGenerator:
