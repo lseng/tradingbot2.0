@@ -34,6 +34,7 @@ import logging
 import json
 
 from .neural_networks import FeedForwardNet, LSTMNet, EarlyStopping, create_model
+from .inference_benchmark import InferenceBenchmark, BenchmarkResult
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -753,6 +754,9 @@ def train_with_walk_forward(
     min_sharpe_threshold: float = 1.0,
     validate_sharpe: bool = True,
     results_path: Optional[str] = None,
+    validate_latency: bool = True,
+    max_latency_p95_ms: float = 10.0,
+    latency_benchmark_iterations: int = 500,
 ) -> Dict:
     """
     Train model using walk-forward validation with 3-class classification.
@@ -781,6 +785,11 @@ def train_with_walk_forward(
         validate_sharpe: If True and prices provided, validate average Sharpe
                          against min_sharpe_threshold.
         results_path: Optional path to save results JSON file.
+        validate_latency: If True (default), run inference benchmark after each fold
+                          to validate model meets latency requirements (< 10ms).
+        max_latency_p95_ms: Maximum allowed P95 latency in milliseconds (default 10.0).
+                            Training will fail if the final model exceeds this threshold.
+        latency_benchmark_iterations: Number of iterations for latency benchmark (default 500).
 
     Returns:
         Dictionary with results for each fold including:
@@ -794,9 +803,13 @@ def train_with_walk_forward(
         - avg_max_drawdown: Average max drawdown across folds (if prices provided)
         - avg_win_rate: Average win rate across folds (if prices provided)
         - sharpe_validation_passed: Whether average Sharpe >= threshold
+        - latency_metrics: Per-fold latency statistics (if validate_latency=True)
+        - avg_latency_p95_ms: Average P95 latency across folds
+        - latency_validation_passed: Whether final model P95 < max_latency_p95_ms
 
     Raises:
         ValueError: If prices length doesn't match X length.
+        ValueError: If validate_latency=True and final model P95 latency exceeds max_latency_p95_ms.
     """
     # Validate prices input if provided
     if prices is not None:
@@ -823,6 +836,9 @@ def train_with_walk_forward(
         'num_classes': num_classes,
         # Trading metrics (populated if prices provided)
         'trading_metrics_available': prices is not None,
+        # Latency metrics (populated if validate_latency=True)
+        'latency_validation_enabled': validate_latency,
+        'latency_metrics': [] if validate_latency else None,
     }
 
     validator = WalkForwardValidator(n_splits=n_splits, expanding=True)
@@ -923,6 +939,34 @@ def train_with_walk_forward(
                 f"Trades={trading_metrics['total_trades']}"
             )
 
+        # Run inference latency benchmark if enabled
+        if validate_latency:
+            benchmark = InferenceBenchmark(
+                requirement_ms=max_latency_p95_ms,
+                warmup_iterations=50,
+                num_iterations=latency_benchmark_iterations,
+            )
+            latency_result = benchmark.benchmark_model(
+                model=model,
+                input_dim=input_dim,
+                seq_length=seq_length if model_type == 'lstm' else 1,
+                batch_size=1,  # Single sample for live trading latency
+                model_name=f"fold_{fold + 1}_{model_type}",
+                model_type=model_type,
+            )
+            fold_result['latency_mean_ms'] = latency_result.mean_latency_ms
+            fold_result['latency_p95_ms'] = latency_result.p95_latency_ms
+            fold_result['latency_p99_ms'] = latency_result.p99_latency_ms
+            fold_result['latency_meets_requirement'] = latency_result.meets_requirement
+
+            results['latency_metrics'].append(latency_result.to_dict())
+
+            logger.info(
+                f"Fold {fold + 1} Latency: mean={latency_result.mean_latency_ms:.2f}ms, "
+                f"p95={latency_result.p95_latency_ms:.2f}ms, p99={latency_result.p99_latency_ms:.2f}ms "
+                f"[{'PASS' if latency_result.meets_requirement else 'FAIL'}]"
+            )
+
         results['fold_metrics'].append(fold_result)
 
         # Store probabilities and predicted classes
@@ -998,6 +1042,43 @@ def train_with_walk_forward(
                 f">= threshold ({min_sharpe_threshold:.3f})"
             )
 
+    # Calculate aggregate latency metrics if validation was enabled
+    if validate_latency and results['latency_metrics']:
+        latency_p95_values = [fm['latency_p95_ms'] for fm in results['fold_metrics'] if 'latency_p95_ms' in fm]
+        latency_p99_values = [fm['latency_p99_ms'] for fm in results['fold_metrics'] if 'latency_p99_ms' in fm]
+        latency_mean_values = [fm['latency_mean_ms'] for fm in results['fold_metrics'] if 'latency_mean_ms' in fm]
+
+        if latency_p95_values:
+            results['avg_latency_p95_ms'] = float(np.mean(latency_p95_values))
+            results['max_latency_p95_ms'] = float(np.max(latency_p95_values))
+            results['avg_latency_p99_ms'] = float(np.mean(latency_p99_values))
+            results['max_latency_p99_ms'] = float(np.max(latency_p99_values))
+            results['avg_latency_mean_ms'] = float(np.mean(latency_mean_values))
+
+            # Final validation: check if worst P95 latency is within threshold
+            worst_p95 = results['max_latency_p95_ms']
+            results['latency_validation_passed'] = worst_p95 < max_latency_p95_ms
+            results['max_latency_threshold_ms'] = max_latency_p95_ms
+
+            # Count folds that passed latency requirement
+            passed_folds = sum(1 for fm in results['fold_metrics'] if fm.get('latency_meets_requirement', False))
+            results['latency_passed_folds_pct'] = passed_folds / len(latency_p95_values) * 100
+
+            if not results['latency_validation_passed']:
+                error_msg = (
+                    f"LATENCY VALIDATION FAILED: Worst P95 latency ({worst_p95:.2f}ms) "
+                    f">= threshold ({max_latency_p95_ms:.1f}ms). "
+                    f"Model is too slow for live trading."
+                )
+                logger.error(error_msg)
+                # Raise error to fail training - model is not suitable for production
+                raise ValueError(error_msg)
+            else:
+                logger.info(
+                    f"LATENCY VALIDATION PASSED: Worst P95 latency ({worst_p95:.2f}ms) "
+                    f"< threshold ({max_latency_p95_ms:.1f}ms)"
+                )
+
     logger.info(f"\n{'='*60}")
     logger.info("WALK-FORWARD VALIDATION COMPLETE")
     logger.info(f"Overall Accuracy: {results['overall_accuracy']:.4f}")
@@ -1009,6 +1090,11 @@ def train_with_walk_forward(
         logger.info(f"Average Win Rate: {results.get('avg_win_rate', 0.0)*100:.1f}%")
         logger.info(f"Total Trades (all folds): {results.get('total_trades_all_folds', 0)}")
         logger.info(f"Sharpe Validation: {'PASSED' if results.get('sharpe_validation_passed', False) else 'FAILED'}")
+
+    if validate_latency and results.get('latency_metrics'):
+        logger.info(f"Average P95 Latency: {results.get('avg_latency_p95_ms', 0.0):.2f}ms")
+        logger.info(f"Worst P95 Latency: {results.get('max_latency_p95_ms', 0.0):.2f}ms")
+        logger.info(f"Latency Validation: {'PASSED' if results.get('latency_validation_passed', False) else 'FAILED'}")
 
     logger.info(f"{'='*60}")
 

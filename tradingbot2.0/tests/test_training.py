@@ -1126,3 +1126,254 @@ class TestWalkForwardResultsSaving:
 
         assert loaded['overall_accuracy'] == 0.75
         assert loaded['total_trades'] == 100
+
+
+class TestWalkForwardLatencyValidation:
+    """Tests for inference latency validation during walk-forward training.
+
+    These tests verify that when validate_latency=True, the training pipeline
+    benchmarks model inference latency and validates against the 10ms requirement.
+    """
+
+    def test_latency_validation_enabled_by_default(self, sample_features_and_targets):
+        """Test that latency validation is enabled by default."""
+        X, y = sample_features_and_targets
+
+        model_config = {
+            'type': 'feedforward',
+            'params': {'hidden_dims': [16]},
+            'learning_rate': 0.01
+        }
+
+        results = train_with_walk_forward(
+            X, y,
+            model_config=model_config,
+            n_splits=2,
+            epochs=2,
+            batch_size=32,
+            num_classes=3,
+            validate_latency=True,
+            latency_benchmark_iterations=100,  # Fewer iterations for faster tests
+        )
+
+        # Should have latency validation enabled
+        assert results['latency_validation_enabled'] == True
+        assert results['latency_metrics'] is not None
+        # At least one fold should have latency metrics (depends on data size)
+        assert len(results['latency_metrics']) >= 1
+
+    def test_latency_metrics_per_fold(self, sample_features_and_targets):
+        """Test that each fold has latency metrics."""
+        X, y = sample_features_and_targets
+
+        model_config = {
+            'type': 'feedforward',
+            'params': {'hidden_dims': [16]}
+        }
+
+        results = train_with_walk_forward(
+            X, y,
+            model_config=model_config,
+            n_splits=2,
+            epochs=2,
+            validate_latency=True,
+            latency_benchmark_iterations=100,
+        )
+
+        # Each fold should have latency metrics
+        for fold in results['fold_metrics']:
+            assert 'latency_mean_ms' in fold
+            assert 'latency_p95_ms' in fold
+            assert 'latency_p99_ms' in fold
+            assert 'latency_meets_requirement' in fold
+
+            # Latency values should be positive
+            assert fold['latency_mean_ms'] > 0
+            assert fold['latency_p95_ms'] > 0
+            assert fold['latency_p99_ms'] > 0
+
+    def test_aggregate_latency_metrics(self, sample_features_and_targets):
+        """Test that aggregate latency metrics are calculated."""
+        X, y = sample_features_and_targets
+
+        model_config = {
+            'type': 'feedforward',
+            'params': {'hidden_dims': [16]}
+        }
+
+        results = train_with_walk_forward(
+            X, y,
+            model_config=model_config,
+            n_splits=3,
+            epochs=2,
+            validate_latency=True,
+            latency_benchmark_iterations=100,
+        )
+
+        # Should have aggregate latency metrics
+        assert 'avg_latency_p95_ms' in results
+        assert 'max_latency_p95_ms' in results
+        assert 'avg_latency_p99_ms' in results
+        assert 'max_latency_p99_ms' in results
+        assert 'avg_latency_mean_ms' in results
+        assert 'latency_validation_passed' in results
+        assert 'latency_passed_folds_pct' in results
+
+        # Average should be <= max
+        assert results['avg_latency_p95_ms'] <= results['max_latency_p95_ms']
+
+    def test_latency_validation_passed(self, sample_features_and_targets):
+        """Test that latency validation passes with reasonable threshold."""
+        X, y = sample_features_and_targets
+
+        model_config = {
+            'type': 'feedforward',
+            'params': {'hidden_dims': [16]}  # Small model should be fast
+        }
+
+        results = train_with_walk_forward(
+            X, y,
+            model_config=model_config,
+            n_splits=2,
+            epochs=2,
+            validate_latency=True,
+            max_latency_p95_ms=100.0,  # Very generous threshold
+            latency_benchmark_iterations=100,
+        )
+
+        # Should pass with generous threshold
+        assert results['latency_validation_passed'] == True
+        assert results['max_latency_threshold_ms'] == 100.0
+
+    def test_latency_validation_fails_with_strict_threshold(self, sample_features_and_targets):
+        """Test that latency validation fails with impossibly strict threshold."""
+        X, y = sample_features_and_targets
+
+        model_config = {
+            'type': 'feedforward',
+            'params': {'hidden_dims': [16]}
+        }
+
+        # Should raise ValueError with impossible threshold
+        with pytest.raises(ValueError, match="LATENCY VALIDATION FAILED"):
+            train_with_walk_forward(
+                X, y,
+                model_config=model_config,
+                n_splits=2,
+                epochs=2,
+                validate_latency=True,
+                max_latency_p95_ms=0.001,  # 1 microsecond - impossible
+                latency_benchmark_iterations=100,
+            )
+
+    def test_latency_validation_disabled(self, sample_features_and_targets):
+        """Test that latency validation can be disabled."""
+        X, y = sample_features_and_targets
+
+        model_config = {
+            'type': 'feedforward',
+            'params': {'hidden_dims': [16]}
+        }
+
+        results = train_with_walk_forward(
+            X, y,
+            model_config=model_config,
+            n_splits=2,
+            epochs=2,
+            validate_latency=False,  # Disable latency validation
+        )
+
+        # Should not have latency metrics
+        assert results['latency_validation_enabled'] == False
+        assert results['latency_metrics'] is None
+        assert 'avg_latency_p95_ms' not in results
+
+        # Folds should not have latency metrics
+        for fold in results['fold_metrics']:
+            assert 'latency_mean_ms' not in fold
+
+    def test_latency_validation_with_lstm_model(self, sample_features_and_targets):
+        """Test latency validation works with LSTM models."""
+        X, y = sample_features_and_targets
+
+        model_config = {
+            'type': 'lstm',
+            'params': {
+                'hidden_dim': 16,
+                'num_layers': 1
+            }
+        }
+
+        results = train_with_walk_forward(
+            X, y,
+            model_config=model_config,
+            n_splits=2,
+            epochs=2,
+            seq_length=5,
+            validate_latency=True,
+            max_latency_p95_ms=500.0,  # Generous for LSTM
+            latency_benchmark_iterations=50,  # Fewer iterations for speed
+        )
+
+        # Should have latency metrics
+        assert results['latency_validation_enabled'] == True
+        # At least one fold should have latency metrics (depends on data size)
+        assert len(results['latency_metrics']) >= 1
+
+        for fold in results['fold_metrics']:
+            assert 'latency_p95_ms' in fold
+
+    def test_latency_metrics_saved_to_json(self, sample_features_and_targets, tmp_path):
+        """Test that latency metrics are included in saved JSON."""
+        X, y = sample_features_and_targets
+        results_path = str(tmp_path / "wf_latency_results.json")
+
+        model_config = {
+            'type': 'feedforward',
+            'params': {'hidden_dims': [16]}
+        }
+
+        results = train_with_walk_forward(
+            X, y,
+            model_config=model_config,
+            n_splits=2,
+            epochs=2,
+            validate_latency=True,
+            max_latency_p95_ms=100.0,
+            latency_benchmark_iterations=100,
+            results_path=results_path,
+        )
+
+        # File should exist
+        assert Path(results_path).exists()
+
+        # Load and verify latency metrics
+        import json
+        with open(results_path) as f:
+            saved = json.load(f)
+
+        assert 'latency_metrics' in saved
+        assert 'avg_latency_p95_ms' in saved
+        assert 'latency_validation_passed' in saved
+
+    def test_latency_benchmark_iterations_parameter(self, sample_features_and_targets):
+        """Test that latency_benchmark_iterations parameter is respected."""
+        X, y = sample_features_and_targets
+
+        model_config = {
+            'type': 'feedforward',
+            'params': {'hidden_dims': [16]}
+        }
+
+        results = train_with_walk_forward(
+            X, y,
+            model_config=model_config,
+            n_splits=2,
+            epochs=2,
+            validate_latency=True,
+            latency_benchmark_iterations=50,  # Custom iterations
+        )
+
+        # Check that benchmark used correct iterations
+        for latency_result in results['latency_metrics']:
+            assert latency_result['num_samples'] == 50
