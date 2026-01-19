@@ -1,8 +1,8 @@
 # Implementation Plan - MES Futures Scalping Bot
 
-> **Last Updated**: 2026-01-18 UTC (1.16 Fixed - Stop order failure now halts trading)
+> **Last Updated**: 2026-01-18 UTC (1.17 Fixed - EOD flatten with retry/verification)
 > **Status**: **UNBLOCKED - Bug #10 Fixed** - LSTM training now functional on full dataset
-> **Test Coverage**: 2,625 tests across 62 test files (1 skipped: conditional on optional deps)
+> **Test Coverage**: 2,627 tests across 62 test files (1 skipped: conditional on optional deps)
 > **Git Tag**: v0.0.72
 > **Code Quality**: No TODO/FIXME comments found in src/; all abstract methods properly implemented; EODPhase consolidated
 
@@ -36,7 +36,7 @@ Execute tasks in this exact order for optimal progress:
 | Order | ID | Task | Est. Time | Status |
 |-------|-----|------|-----------|--------|
 | 5 | 1.16 | **Stop order failure must HALT trading** (unprotected position) | 2 hrs | **FIXED** |
-| 6 | 1.17 | **EOD flatten with retry/verification** (orphan order cleanup) | 2 hrs | |
+| 6 | 1.17 | **EOD flatten with retry/verification** (orphan order cleanup) | 2 hrs | **FIXED** |
 | 7 | 1.14 | Track commission/slippage in live P&L (constants unused) | 3 hrs | |
 | 8 | 1.15 | Populate session metrics (wins/losses/gross_pnl never set) | 2 hrs | |
 
@@ -213,7 +213,7 @@ Issues affecting profitability validation and **LIVE TRADING SAFETY**. Ordered b
 | **1.14** | `src/trading/` | **Commission/slippage not tracked in live P&L** | `SessionMetrics.commissions` always 0.0 | CONFIRMED NOT IMPLEMENTED |
 | **1.15** | `src/trading/live_trader.py` | **Session metrics incomplete** | wins/losses/gross_pnl fields declared but NEVER populated | CONFIRMED NOT IMPLEMENTED |
 | **1.16** | `src/trading/order_executor.py:430-443` | **Stop order failure now halts trading** | Trading HALTS, circuit breaker engaged | **FIXED (2026-01-18)** |
-| **1.17** | `src/trading/live_trader.py:818-831` | **EOD flatten no verification** | Logs success regardless, no retry logic | CONFIRMED NOT IMPLEMENTED |
+| **1.17** | `src/trading/live_trader.py:832-924` | **EOD flatten with retry/verification** | Up to 3 retries, position sync, orphan cleanup | **FIXED (2026-01-18)** |
 | **1.1** | `train_scalping_model.py:662-686` | Walk-forward only calculates accuracy, NOT Sharpe | Cannot validate profitability | CONFIRMED NOT IMPLEMENTED |
 | **1.2** | `evaluation.py` | TradingSimulator.run_backtest() NEVER CALLED | Sharpe never calculated | CONFIRMED NOT IMPLEMENTED |
 | **1.3** | `inference_benchmark.py` | Inference latency NOT validated during training | May deploy slow model | NOT IMPLEMENTED |
@@ -308,35 +308,30 @@ When stop order placement fails and emergency exit also fails, the trading loop 
 
 ---
 
-### 1.17: EOD Flatten No Verification (SAFETY CRITICAL)
+### 1.17: EOD Flatten with Retry/Verification (FIXED)
 
-**File**: `src/trading/live_trader.py:818-831`
-**Confirmed**: 2026-01-18 - No retry logic, logs success regardless, no orphan order cleanup
+**File**: `src/trading/live_trader.py:832-924`
+**Status**: **FIXED (2026-01-18)**
+**Tests**: 2 new tests added for retry and orphan cleanup
 
-#### Problem
+#### Problem (RESOLVED)
 
-EOD flatten lacks verification and retry logic:
+EOD flatten previously lacked retry logic, verification, and orphan order cleanup.
 
-```python
-await self._order_executor.flatten_all(contract_id)
-# No verification that flatten succeeded
-logger.info("EOD flatten complete")  # Logs success regardless
-self._position_manager.flatten()      # Only updates local state
-```
+#### Fix Applied
 
-#### Issues
-
-- No retry if flatten order fails
-- No verification that broker shows flat position
-- Orphan stop/target orders may remain
-- Local state may desync from broker
+1. Added retry logic - up to 3 attempts with 2-second delay between
+2. Added position sync verification - syncs from API after each attempt
+3. Added orphan order cleanup - cancels all pending orders after flatten
+4. Added CRITICAL alert - triggers circuit breaker halt if still not flat at 4:31 PM
+5. New constants: `EOD_FLATTEN_MAX_RETRIES`, `EOD_FLATTEN_RETRY_DELAY_SECONDS`, `FLATTEN_CRITICAL`
 
 #### Acceptance Criteria
 
-- [ ] Verify position is flat after flatten_all()
-- [ ] Retry flatten up to 3 times on failure
-- [ ] Cancel all orphan orders after flatten
-- [ ] Raise CRITICAL alert if still not flat at 4:31 PM
+- [x] Verify position is flat after flatten_all()
+- [x] Retry flatten up to 3 times on failure
+- [x] Cancel all orphan orders after flatten
+- [x] Raise CRITICAL alert if still not flat at 4:31 PM
 
 ---
 

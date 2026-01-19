@@ -532,18 +532,28 @@ class TestLiveTraderEODFlatten:
 
     @pytest.mark.asyncio
     async def test_eod_flatten_has_position(self, trading_config):
-        """Test EOD flatten with open position."""
+        """Test EOD flatten with open position - includes retry and verification (1.17 FIX)."""
         trader = LiveTrader(trading_config)
 
+        # Mock position manager: not flat initially, then flat after flatten
         trader._position_manager = MagicMock()
-        trader._position_manager.is_flat = MagicMock(return_value=False)
+        trader._position_manager.is_flat = MagicMock(side_effect=[False, True])
 
+        # Mock REST client for position sync verification
+        trader._rest = AsyncMock()
+        trader._rest.get_position = AsyncMock(return_value=None)
+
+        # Mock order executor
         trader._order_executor = AsyncMock()
-        trader._order_executor.flatten_all = AsyncMock()
+        trader._order_executor.flatten_all = AsyncMock(return_value=True)
+        trader._order_executor._cancel_all_orders = AsyncMock()
 
         await trader._handle_eod_flatten()
 
+        # Should be called once if flatten succeeds and position is verified flat
         trader._order_executor.flatten_all.assert_called_once_with(trading_config.contract_id)
+        # Should cancel orphan orders
+        trader._order_executor._cancel_all_orders.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_eod_flatten_error_fallback(self, trading_config):

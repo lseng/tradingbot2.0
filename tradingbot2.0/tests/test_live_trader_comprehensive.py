@@ -955,22 +955,33 @@ class TestLiveTraderEODFlatten:
 
     @pytest.mark.asyncio
     async def test_eod_flatten_with_position(self):
-        """Test EOD flatten closes position."""
+        """Test EOD flatten closes position with retry and verification (1.17 FIX)."""
         config = TradingConfig()
         trader = LiveTrader(config, api_key="test")
 
+        # Mock position manager: not flat initially, then flat after flatten
         trader._position_manager = Mock()
-        trader._position_manager.is_flat.return_value = False
+        trader._position_manager.is_flat.side_effect = [False, True]  # First call False, second True
 
+        # Mock REST client for position sync verification
+        trader._rest = AsyncMock()
+        trader._rest.get_position = AsyncMock(return_value=None)  # No position = flat
+
+        # Mock order executor
         trader._order_executor = AsyncMock()
+        trader._order_executor.flatten_all = AsyncMock(return_value=True)
+        trader._order_executor._cancel_all_orders = AsyncMock()
 
         await trader._handle_eod_flatten()
 
+        # Should be called once if flatten succeeds and position is verified flat
         trader._order_executor.flatten_all.assert_called_once_with(config.contract_id)
+        # Should cancel orphan orders
+        trader._order_executor._cancel_all_orders.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_eod_flatten_error_recovery(self):
-        """Test EOD flatten recovers from error."""
+        """Test EOD flatten recovers from error with retries (1.17 FIX)."""
         config = TradingConfig()
         trader = LiveTrader(config, api_key="test")
 
@@ -979,11 +990,63 @@ class TestLiveTraderEODFlatten:
 
         trader._order_executor = AsyncMock()
         trader._order_executor.flatten_all.side_effect = RuntimeError("Flatten error")
+        trader._order_executor._cancel_all_orders = AsyncMock()
 
         await trader._handle_eod_flatten()
 
-        # Should force local position update
+        # Should have tried 3 times (retry logic)
+        assert trader._order_executor.flatten_all.call_count == 3
+        # Should force local position update after all retries fail
         trader._position_manager.flatten.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_eod_flatten_retry_succeeds_on_second_attempt(self):
+        """Test EOD flatten succeeds on retry after first failure (1.17 FIX)."""
+        config = TradingConfig()
+        trader = LiveTrader(config, api_key="test")
+
+        # Mock position manager
+        trader._position_manager = Mock()
+        # is_flat called: 1) initial check (False), 2) after second attempt sync (True)
+        # Note: is_flat not checked when flatten_all returns False
+        trader._position_manager.is_flat.side_effect = [False, True]
+
+        # Mock REST client
+        trader._rest = AsyncMock()
+        trader._rest.get_position = AsyncMock(return_value=None)
+
+        # First flatten attempt returns False, second returns True
+        trader._order_executor = AsyncMock()
+        trader._order_executor.flatten_all = AsyncMock(side_effect=[False, True])
+        trader._order_executor._cancel_all_orders = AsyncMock()
+
+        await trader._handle_eod_flatten()
+
+        # Should have been called twice (first False, second True succeeds)
+        assert trader._order_executor.flatten_all.call_count == 2
+        # Should cancel orphan orders
+        trader._order_executor._cancel_all_orders.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_eod_flatten_cancels_orphan_orders(self):
+        """Test EOD flatten always cancels orphan orders (1.17 FIX)."""
+        config = TradingConfig()
+        trader = LiveTrader(config, api_key="test")
+
+        trader._position_manager = Mock()
+        trader._position_manager.is_flat.side_effect = [False, True]
+
+        trader._rest = AsyncMock()
+        trader._rest.get_position = AsyncMock(return_value=None)
+
+        trader._order_executor = AsyncMock()
+        trader._order_executor.flatten_all = AsyncMock(return_value=True)
+        trader._order_executor._cancel_all_orders = AsyncMock()
+
+        await trader._handle_eod_flatten()
+
+        # Should always cancel orphan orders
+        trader._order_executor._cancel_all_orders.assert_called_once_with(config.contract_id)
 
 
 class TestLiveTraderPositionSync:

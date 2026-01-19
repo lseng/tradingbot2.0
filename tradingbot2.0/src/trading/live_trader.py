@@ -47,6 +47,11 @@ RTH_START = time(9, 30)
 RTH_END = time(16, 0)
 FLATTEN_START = time(16, 25)  # 4:25 PM - start flatten
 FLATTEN_DEADLINE = time(16, 30)  # 4:30 PM - must be flat
+FLATTEN_CRITICAL = time(16, 31)  # 4:31 PM - CRITICAL if still not flat (1.17 FIX)
+
+# EOD flatten retry constants (1.17 FIX)
+EOD_FLATTEN_MAX_RETRIES = 3
+EOD_FLATTEN_RETRY_DELAY_SECONDS = 2.0
 
 # Queue constants for backpressure (10.5)
 BAR_QUEUE_MAX_SIZE = 100  # Max bars in queue (~100 seconds buffer at 1s bars)
@@ -830,19 +835,96 @@ class LiveTrader:
             logger.error(f"Signal execution error: {e}")
 
     async def _handle_eod_flatten(self) -> None:
-        """Handle end-of-day flatten."""
+        """
+        Handle end-of-day flatten with retry and verification.
+
+        1.17 FIX: Implements retry logic, position verification, and orphan order cleanup.
+
+        Retry Logic:
+        - Up to 3 attempts to flatten positions
+        - 2 second delay between attempts
+        - Each attempt verifies position via API
+
+        Verification:
+        - Sync position from API after each flatten attempt
+        - Verify broker shows flat position
+
+        Orphan Order Cleanup:
+        - Cancel all pending orders after flatten
+        - Prevents stale stop/target orders from executing
+        """
         if self._position_manager.is_flat():
             return
 
         logger.warning("EOD FLATTEN - Closing all positions")
 
+        flatten_success = False
+
+        for attempt in range(1, EOD_FLATTEN_MAX_RETRIES + 1):
+            try:
+                logger.info(f"EOD flatten attempt {attempt}/{EOD_FLATTEN_MAX_RETRIES}")
+
+                # Attempt to flatten
+                result = await self._order_executor.flatten_all(self.config.contract_id)
+
+                if result:
+                    # Verify position is flat by syncing from API
+                    await self._sync_positions()
+
+                    if self._position_manager.is_flat():
+                        logger.info(f"EOD flatten verified - position flat on attempt {attempt}")
+                        flatten_success = True
+                        break
+                    else:
+                        logger.warning(
+                            f"EOD flatten attempt {attempt} - order executed but position not flat, "
+                            f"current: {self._position_manager.position}"
+                        )
+                else:
+                    logger.warning(f"EOD flatten attempt {attempt} - flatten_all returned False")
+
+            except Exception as e:
+                logger.error(f"EOD flatten attempt {attempt} failed: {e}")
+
+            # Wait before retry (unless last attempt)
+            if attempt < EOD_FLATTEN_MAX_RETRIES:
+                logger.info(f"Waiting {EOD_FLATTEN_RETRY_DELAY_SECONDS}s before retry...")
+                await asyncio.sleep(EOD_FLATTEN_RETRY_DELAY_SECONDS)
+
+        # Cancel all orphan orders regardless of flatten success
         try:
-            await self._order_executor.flatten_all(self.config.contract_id)
-            logger.info("EOD flatten complete")
+            logger.info("Cancelling all orphan orders after EOD flatten...")
+            await self._order_executor._cancel_all_orders(self.config.contract_id)
+            logger.info("Orphan orders cancelled")
         except Exception as e:
-            logger.error(f"EOD flatten failed: {e}")
-            # Force local position update
+            logger.error(f"Failed to cancel orphan orders: {e}")
+
+        # Final status check
+        if flatten_success:
+            logger.info("EOD flatten complete - all positions closed")
+        else:
+            # Force local position update as last resort
             self._position_manager.flatten()
+
+            # Check if we're past the CRITICAL time
+            current_time = datetime.now().time()
+            if current_time >= FLATTEN_CRITICAL:
+                logger.critical(
+                    f"CRITICAL: EOD flatten FAILED after {EOD_FLATTEN_MAX_RETRIES} attempts. "
+                    f"Position may still be open at broker! "
+                    f"Time: {current_time} is past {FLATTEN_CRITICAL}. "
+                    f"MANUAL INTERVENTION REQUIRED!"
+                )
+                # Engage circuit breaker to prevent any further activity
+                if self._circuit_breaker:
+                    self._circuit_breaker.trigger_halt(
+                        "EOD flatten failed - position may still be open at broker"
+                    )
+            else:
+                logger.error(
+                    f"EOD flatten failed after {EOD_FLATTEN_MAX_RETRIES} attempts. "
+                    f"Local position marked as flat, but broker state is uncertain."
+                )
 
     async def _sync_positions(self) -> None:
         """Sync positions from API."""
