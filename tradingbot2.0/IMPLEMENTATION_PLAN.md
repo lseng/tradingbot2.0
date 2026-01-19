@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-01-18 UTC (1.8/1.9 Fixed - Fill modes and ATR slippage)
 > **Status**: **UNBLOCKED - Bug #10 Fixed** - LSTM training now functional on full dataset
-> **Test Coverage**: 2,666 tests across 62 test files (1 skipped: conditional on optional deps)
+> **Test Coverage**: 2,701 tests across 62 test files (1 skipped: conditional on optional deps)
 > **Git Tag**: v0.0.78
 > **Code Quality**: No TODO/FIXME comments found in src/; all abstract methods properly implemented; EODPhase consolidated
 
@@ -14,7 +14,7 @@
 |----------|-------|--------|----------|
 | **P0** | 1 | FIXED | Bug #10: LSTM sequence creation - FIXED with numpy stride tricks |
 | **Code Quality** | 3 | FIXED | CQ.1, CQ.2, CQ.3 all FIXED - constants consolidated |
-| **P1** | 14 | HIGH | Monte Carlo simulation remaining |
+| **P1** | 14 | HIGH | All Phase 4 items complete |
 | **P2** | 12 | MEDIUM | Hybrid architecture, focal loss, session reporting, latency test organization |
 | **P3** | 9 | LOW | Nice-to-have items, **batch feature parity** |
 
@@ -53,7 +53,7 @@ Execute tasks in this exact order for optimal progress:
 |-------|-----|------|-----------|--------|
 | 13 | 1.8 | Fix NEXT_BAR_OPEN fill mode (uses bar['close']) | 2 hrs | **FIXED** |
 | 14 | 1.9 | Pass ATR to slippage model | 2 hrs | **FIXED** |
-| 15 | 1.6 | Implement Monte Carlo simulation | 6-8 hrs | |
+| 15 | 1.6 | Implement Monte Carlo simulation | 6-8 hrs | **FIXED (2026-01-18)** |
 
 ### Phase 5: Risk Management Enhancements
 | Order | ID | Task | Est. Time |
@@ -467,47 +467,44 @@ Spec requires "Inference latency < 10ms" but training pipeline previously never 
 
 ---
 
-### 1.6: Monte Carlo Simulation
+### 1.6: Monte Carlo Simulation (FIXED)
 
-**File**: `src/backtest/` (missing entirely)
+**File**: `src/backtest/monte_carlo.py`
+**Status**: **FIXED (2026-01-18)**
 **Spec Reference**: `specs/backtesting-engine.md` Mode 3
-**Confirmed**: 2026-01-18 - Zero references to "monte carlo", "bootstrap", or "permutation" in codebase
+**Tests**: 35 new tests added in `tests/test_monte_carlo.py`
 
-#### Problem
+#### Implementation Details
 
-Zero bootstrap/permutation functionality. Zero references to "monte carlo", "bootstrap", or "permutation" in entire codebase. Required for strategy robustness assessment.
+1. **New file**: `src/backtest/monte_carlo.py`
+2. **MonteCarloSimulator class** with trade shuffling
+3. **ConfidenceInterval dataclass** for storing interval results
+4. **MonteCarloResult dataclass** for comprehensive results
 
-#### Required Implementation
+#### Features Implemented
 
-```python
-class MonteCarloSimulator:
-    """Trade-shuffling Monte Carlo for confidence intervals."""
+- Confidence intervals for: final equity, max drawdown, Sharpe ratio, Sortino ratio, profit factor, win rate
+- Percentile rankings showing where original results fall in distribution
+- `is_robust()` method for robustness validation
+- Configurable number of simulations (default 1000)
+- Configurable confidence level (default 95%)
 
-    def __init__(self, trades: List[Trade], n_simulations: int = 1000):
-        self.trades = trades
-        self.n_simulations = n_simulations
+#### CLI Command
 
-    def run(self) -> MonteCarloResult:
-        """Shuffle trade sequence and compute equity curves."""
-        results = []
-        for _ in range(self.n_simulations):
-            shuffled = np.random.permutation(self.trades)
-            equity_curve = self._compute_equity(shuffled)
-            results.append({
-                'final_equity': equity_curve[-1],
-                'max_drawdown': self._max_drawdown(equity_curve),
-                'sharpe': self._sharpe(equity_curve)
-            })
-        return self._compute_confidence_intervals(results)
+```bash
+python scripts/run_monte_carlo.py --trades trades.csv
 ```
 
 #### Acceptance Criteria
 
-- [ ] `MonteCarloSimulator` class implemented
-- [ ] Accepts completed backtest trade list
-- [ ] Runs configurable number of simulations (default 1000)
-- [ ] Outputs confidence intervals for: final equity, max drawdown, Sharpe
-- [ ] CLI command: `python -m src.backtest.monte_carlo --trades trades.csv`
+- [x] `MonteCarloSimulator` class implemented
+- [x] Accepts completed backtest trade list
+- [x] Runs configurable number of simulations (default 1000)
+- [x] Outputs confidence intervals for: final equity, max drawdown, Sharpe
+- [x] Also outputs: Sortino ratio, profit factor, win rate confidence intervals
+- [x] Percentile rankings for original results
+- [x] `is_robust()` method for robustness validation
+- [x] CLI command: `python scripts/run_monte_carlo.py --trades trades.csv`
 
 ---
 
@@ -1010,6 +1007,23 @@ Bug fixes applied to `rt_features.py` were NOT backported to `scalping_features.
 ---
 
 ## Completed Items (Historical Reference)
+
+### Monte Carlo Simulation (2026-01-18)
+
+| Item | Issue | Fix |
+|------|-------|-----|
+| 1.6 | Monte Carlo simulation - ZERO references in codebase | Implemented `MonteCarloSimulator` class in `src/backtest/monte_carlo.py` with trade shuffling, confidence intervals for 6 metrics, percentile rankings, robustness validation |
+
+**New file**: `src/backtest/monte_carlo.py`
+- `MonteCarloSimulator` class with trade shuffling
+- `ConfidenceInterval` and `MonteCarloResult` dataclasses
+- Confidence intervals for: final equity, max drawdown, Sharpe ratio, Sortino ratio, profit factor, win rate
+- Percentile rankings showing where original results fall in distribution
+- `is_robust()` method for robustness validation
+
+**CLI**: `python scripts/run_monte_carlo.py --trades trades.csv`
+
+**New tests added (35 tests in tests/test_monte_carlo.py)**
 
 ### Fill Modes and ATR Slippage (2026-01-18)
 

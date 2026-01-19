@@ -50,6 +50,14 @@ from .go_live_validator import (
     ValidationStatus,
     check_go_live_ready,
 )
+from .monte_carlo import (
+    MonteCarloSimulator,
+    MonteCarloConfig,
+    MonteCarloResult,
+    ConfidenceInterval,
+    SimulationRun,
+    run_monte_carlo_from_csv,
+)
 
 # Visualization imports (optional - requires plotly)
 try:
@@ -115,4 +123,11 @@ __all__ = [
     "DrawdownPeriod",
     "identify_drawdown_periods",
     "export_visualization",
+    # Monte Carlo simulation
+    "MonteCarloSimulator",
+    "MonteCarloConfig",
+    "MonteCarloResult",
+    "ConfidenceInterval",
+    "SimulationRun",
+    "run_monte_carlo_from_csv",
 ]
