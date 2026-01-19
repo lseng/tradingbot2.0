@@ -35,7 +35,7 @@ from src.api import (
 )
 from src.trading.signal_generator import Signal, SignalType
 from src.trading.position_manager import PositionManager, Fill
-from src.lib.constants import MES_TICK_SIZE
+from src.lib.constants import MES_TICK_SIZE, MES_ROUND_TRIP_COST
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,12 @@ class EntryResult:
     Result of an entry order execution.
 
     Contains the entry fill and associated stop/target orders.
+
+    Attributes:
+        commission_cost: Round-trip commission cost for this trade in dollars.
+            Calculated as MES_ROUND_TRIP_COST ($0.84) per contract. This is the
+            cost incurred when the trade is eventually closed, charged upfront
+            for accurate P&L calculation.
     """
     status: ExecutionStatus
     entry_fill_price: Optional[float] = None
@@ -112,6 +118,8 @@ class EntryResult:
     timing: Optional[ExecutionTiming] = None
     # 1.16 FIX: Flag to indicate trading must halt (unprotected position exists)
     requires_halt: bool = False
+    # 1.14 FIX: Track commission cost per trade for accurate P&L calculation
+    commission_cost: float = 0.0
 
     @property
     def success(self) -> bool:
@@ -487,6 +495,9 @@ class OrderExecutor:
             # 7. Track orders for OCO
             self._track_oco_orders(stop_order, target_order)
 
+            # 1.14 FIX: Calculate round-trip commission cost for accurate P&L tracking
+            commission_cost = MES_ROUND_TRIP_COST * size
+
             return EntryResult(
                 status=ExecutionStatus.FILLED,
                 entry_fill_price=fill_price,
@@ -495,6 +506,7 @@ class OrderExecutor:
                 stop_order_id=stop_order.order_id if stop_order else None,
                 target_order_id=target_order.order_id if target_order else None,
                 timing=timing,
+                commission_cost=commission_cost,
             )
 
         except Exception as e:

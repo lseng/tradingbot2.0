@@ -38,7 +38,7 @@ from src.trading.signal_generator import SignalGenerator, SignalConfig, Signal, 
 from src.trading.order_executor import OrderExecutor, ExecutorConfig
 from src.trading.rt_features import RealTimeFeatureEngine, BarAggregator, RTFeaturesConfig, OHLCV
 from src.trading.recovery import RecoveryHandler, RecoveryConfig, ErrorEvent, ErrorSeverity
-from src.lib.constants import MES_TICK_VALUE
+from src.lib.constants import MES_TICK_VALUE, MES_ROUND_TRIP_COST
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +198,7 @@ class LiveTrader:
         self._last_bar: Optional[OHLCV] = None
         self._last_prediction: Optional[ModelPrediction] = None
         self._last_realized_pnl: float = 0.0  # Track session realized P&L for circuit breakers
+        self._peak_net_pnl: float = 0.0  # 1.15 FIX: Track peak net P&L for max_drawdown calculation
 
         # Bar processing queue with backpressure (10.5)
         self._bar_queue: asyncio.Queue[OHLCV] = asyncio.Queue(maxsize=BAR_QUEUE_MAX_SIZE)
@@ -292,6 +293,7 @@ class LiveTrader:
         # Register callback to track trade results for circuit breakers
         self._position_manager.on_position_change(self._on_position_change)
         self._last_realized_pnl = 0.0  # Track session realized P&L for incremental calculation
+        self._peak_net_pnl = 0.0  # 1.15 FIX: Reset peak for max_drawdown tracking
 
         # 4. Sync existing positions
         logger.info("4. Syncing existing positions...")
@@ -577,30 +579,72 @@ class LiveTrader:
 
         Reports trade results to RiskManager for circuit breaker tracking.
         This triggers consecutive loss/win tracking and pause logic.
+
+        1.14/1.15 FIX: Also updates SessionMetrics with:
+        - wins/losses count
+        - gross_pnl (P&L before commissions)
+        - commissions (round-trip cost)
+        - net_pnl (gross_pnl - commissions)
+        - max_drawdown (peak-to-trough)
         """
         try:
             # Only report completed trades (close, partial_close, flatten)
             if change.change_type not in ("close", "partial_close", "flatten", "reversal"):
                 return
 
-            # Calculate incremental P&L from this trade
+            # Calculate incremental P&L from this trade (this is GROSS P&L)
             new_realized = change.new_position.realized_pnl
-            trade_pnl = new_realized - self._last_realized_pnl
+            trade_gross_pnl = new_realized - self._last_realized_pnl
             self._last_realized_pnl = new_realized
 
-            # Report to risk manager (this triggers circuit breaker checks)
-            if self._risk_manager and trade_pnl != 0:
-                self._risk_manager.record_trade_result(trade_pnl)
+            # 1.14 FIX: Calculate commission for this trade
+            # Commission is based on the size of the position that was closed
+            if change.change_type == "partial_close" and change.fill:
+                # For partial close, use the fill size
+                closed_size = change.fill.size
+            else:
+                # For full close/flatten/reversal, use the old position size
+                closed_size = change.old_position.size if change.old_position else 0
+
+            trade_commission = MES_ROUND_TRIP_COST * closed_size
+
+            # Calculate net P&L after commission
+            trade_net_pnl = trade_gross_pnl - trade_commission
+
+            # 1.15 FIX: Update SessionMetrics with wins/losses/pnl
+            if trade_gross_pnl > 0:
+                self._session_metrics.wins += 1
+            elif trade_gross_pnl < 0:
+                self._session_metrics.losses += 1
+
+            # Update P&L metrics
+            self._session_metrics.gross_pnl += trade_gross_pnl
+            self._session_metrics.commissions += trade_commission
+            self._session_metrics.net_pnl += trade_net_pnl
+
+            # 1.15 FIX: Track max_drawdown (peak-to-trough)
+            # We track drawdown from peak net P&L
+            if self._session_metrics.net_pnl > self._peak_net_pnl:
+                self._peak_net_pnl = self._session_metrics.net_pnl
+            current_drawdown = self._peak_net_pnl - self._session_metrics.net_pnl
+            if current_drawdown > self._session_metrics.max_drawdown:
+                self._session_metrics.max_drawdown = current_drawdown
+
+            # Report NET P&L (after commission) to risk manager for accurate daily loss tracking
+            if self._risk_manager and trade_net_pnl != 0:
+                self._risk_manager.record_trade_result(trade_net_pnl)
                 logger.info(
-                    f"Trade result reported: P&L=${trade_pnl:+.2f}, "
+                    f"Trade result: gross_pnl=${trade_gross_pnl:+.2f}, "
+                    f"commission=${trade_commission:.2f}, net_pnl=${trade_net_pnl:+.2f}, "
+                    f"session_net=${self._session_metrics.net_pnl:+.2f}, "
                     f"consecutive_losses={self._risk_manager.state.consecutive_losses}"
                 )
 
-            # 10A.3: Update circuit breaker with trade result
+            # 10A.3: Update circuit breaker with trade result (based on NET P&L)
             if self._circuit_breaker:
-                if trade_pnl > 0:
+                if trade_net_pnl > 0:
                     self._circuit_breaker.record_win()
-                elif trade_pnl < 0:
+                elif trade_net_pnl < 0:
                     self._circuit_breaker.record_loss()
 
         except Exception as e:

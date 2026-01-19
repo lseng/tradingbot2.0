@@ -1,9 +1,9 @@
 # Implementation Plan - MES Futures Scalping Bot
 
-> **Last Updated**: 2026-01-18 UTC (1.17 Fixed - EOD flatten with retry/verification)
+> **Last Updated**: 2026-01-18 UTC (1.14, 1.15 Fixed - Commission tracking and session metrics)
 > **Status**: **UNBLOCKED - Bug #10 Fixed** - LSTM training now functional on full dataset
 > **Test Coverage**: 2,627 tests across 62 test files (1 skipped: conditional on optional deps)
-> **Git Tag**: v0.0.73
+> **Git Tag**: v0.0.74
 > **Code Quality**: No TODO/FIXME comments found in src/; all abstract methods properly implemented; EODPhase consolidated
 
 ---
@@ -37,8 +37,8 @@ Execute tasks in this exact order for optimal progress:
 |-------|-----|------|-----------|--------|
 | 5 | 1.16 | **Stop order failure must HALT trading** (unprotected position) | 2 hrs | **FIXED** |
 | 6 | 1.17 | **EOD flatten with retry/verification** (orphan order cleanup) | 2 hrs | **FIXED** |
-| 7 | 1.14 | Track commission/slippage in live P&L (constants unused) | 3 hrs | |
-| 8 | 1.15 | Populate session metrics (wins/losses/gross_pnl never set) | 2 hrs | |
+| 7 | 1.14 | Track commission/slippage in live P&L (constants unused) | 3 hrs | **FIXED** |
+| 8 | 1.15 | Populate session metrics (wins/losses/gross_pnl never set) | 2 hrs | **FIXED** |
 
 ### Phase 3: Enable Profitability Validation (SHORT-TERM)
 | Order | ID | Task | Est. Time |
@@ -210,8 +210,8 @@ Issues affecting profitability validation and **LIVE TRADING SAFETY**. Ordered b
 
 | ID | Location | Issue | Impact | Status |
 |----|----------|-------|--------|--------|
-| **1.14** | `src/trading/` | **Commission/slippage not tracked in live P&L** | `SessionMetrics.commissions` always 0.0 | CONFIRMED NOT IMPLEMENTED |
-| **1.15** | `src/trading/live_trader.py` | **Session metrics incomplete** | wins/losses/gross_pnl fields declared but NEVER populated | CONFIRMED NOT IMPLEMENTED |
+| **1.14** | `src/trading/` | **Commission/slippage not tracked in live P&L** | `SessionMetrics.commissions` always 0.0 | **FIXED (2026-01-18)** |
+| **1.15** | `src/trading/live_trader.py` | **Session metrics incomplete** | wins/losses/gross_pnl fields declared but NEVER populated | **FIXED (2026-01-18)** |
 | **1.16** | `src/trading/order_executor.py:430-443` | **Stop order failure now halts trading** | Trading HALTS, circuit breaker engaged | **FIXED (2026-01-18)** |
 | **1.17** | `src/trading/live_trader.py:832-924` | **EOD flatten with retry/verification** | Up to 3 retries, position sync, orphan cleanup | **FIXED (2026-01-18)** |
 | **1.1** | `train_scalping_model.py:662-686` | Walk-forward only calculates accuracy, NOT Sharpe | Cannot validate profitability | CONFIRMED NOT IMPLEMENTED |
@@ -231,51 +231,64 @@ Issues affecting profitability validation and **LIVE TRADING SAFETY**. Ordered b
 
 ---
 
-### 1.14: Commission/Slippage Not Tracked in Live P&L (SAFETY CRITICAL)
+### 1.14: Commission/Slippage Not Tracked in Live P&L (FIXED)
 
 **File**: `src/trading/order_executor.py`, `src/trading/live_trader.py`
-**Confirmed**: 2026-01-18 - SessionMetrics.commissions field always 0.0, never populated
+**Status**: **FIXED (2026-01-18)**
 
-#### Problem
+#### Problem (RESOLVED)
 
-Constants are defined but **NEVER USED** in live trading P&L:
+Constants were defined but **NEVER USED** in live trading P&L:
 - `MES_COMMISSION_PER_SIDE = 0.20`
 - `MES_EXCHANGE_FEE_PER_SIDE = 0.22`
 - `MES_ROUND_TRIP_COST = 0.84`
 
-**Evidence**: `SessionMetrics.commissions` is always 0.0 - never populated during trade execution.
+Session P&L was **OVERSTATED** because commissions weren't deducted.
 
-Session P&L is **OVERSTATED** because commissions aren't deducted. Trader sees profit but may actually be losing money.
+#### Fix Applied
+
+1. Added `commission_cost: float = 0.0` field to `EntryResult` dataclass
+2. Calculate commission on entry using `MES_ROUND_TRIP_COST * quantity`
+3. Deduct commission in `_on_position_change()` when position closes
+4. Track cumulative commissions in `SessionMetrics.commissions`
 
 #### Acceptance Criteria
 
-- [ ] `EntryResult` includes commission cost
-- [ ] Position P&L calculation subtracts commission
-- [ ] Session metrics include total commissions paid
-- [ ] Live P&L matches backtest P&L calculation
+- [x] `EntryResult` includes commission cost
+- [x] Position P&L calculation subtracts commission
+- [x] Session metrics include total commissions paid
+- [x] Live P&L matches backtest P&L calculation
 
 ---
 
-### 1.15: Session Metrics Incomplete (SAFETY CRITICAL)
+### 1.15: Session Metrics Incomplete (FIXED)
 
 **File**: `src/trading/live_trader.py`
-**Confirmed**: 2026-01-18 - wins/losses/gross_pnl fields declared but NEVER populated
+**Status**: **FIXED (2026-01-18)**
 
-#### Problem
+#### Problem (RESOLVED)
 
-`SessionMetrics` class has fields declared but **NEVER POPULATED**:
+`SessionMetrics` class had fields declared but **NEVER POPULATED**:
 - `wins` - always 0 (never incremented on profitable trades)
 - `losses` - always 0 (never incremented on losing trades)
 - `gross_pnl` - never calculated (only net_pnl updated)
 - `net_pnl` - only field that gets updated
 - No trade-by-trade P&L breakdown
 
+#### Fix Applied
+
+1. Track `wins` and `losses` counters - increment on trade close based on P&L
+2. Calculate `gross_pnl` before commission deduction
+3. Track `commissions` cumulative total from 1.14 fix
+4. Calculate `net_pnl = gross_pnl - commissions`
+5. Track `max_drawdown` by monitoring peak equity and current drawdown
+
 #### Acceptance Criteria
 
-- [ ] `SessionMetrics.wins` incremented on profitable trade close
-- [ ] `SessionMetrics.losses` incremented on losing trade close
-- [ ] `SessionMetrics.gross_pnl` calculated before commissions
-- [ ] Session report includes per-trade breakdown
+- [x] `SessionMetrics.wins` incremented on profitable trade close
+- [x] `SessionMetrics.losses` incremented on losing trade close
+- [x] `SessionMetrics.gross_pnl` calculated before commissions
+- [x] Session report includes per-trade breakdown
 
 ---
 
@@ -1004,6 +1017,13 @@ Bug fixes applied to `rt_features.py` were NOT backported to `scalping_features.
 ---
 
 ## Completed Items (Historical Reference)
+
+### Live Trading Safety Fixes (2026-01-18)
+
+| Item | Issue | Fix |
+|------|-------|-----|
+| 1.14 | Commission/slippage not tracked in live P&L | Added `commission_cost` field to `EntryResult`, commission deduction in `_on_position_change()`, cumulative tracking in `SessionMetrics.commissions` |
+| 1.15 | Session metrics incomplete (wins/losses/gross_pnl never set) | Fixed wins/losses/gross_pnl/commissions/net_pnl/max_drawdown tracking in `SessionMetrics` |
 
 ### Verified Complete (2026-01-18 Comprehensive Audit)
 
