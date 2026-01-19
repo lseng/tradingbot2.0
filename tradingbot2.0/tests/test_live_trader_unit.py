@@ -10,6 +10,7 @@ Tests cover:
 
 import pytest
 import asyncio
+import csv
 from datetime import datetime, date, time
 from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock, patch
@@ -196,6 +197,255 @@ class TestSessionMetrics:
         # Should not raise
         json_str = json.dumps(d)
         assert isinstance(json_str, str)
+
+
+class TestSessionMetricsExport:
+    """
+    Tests for SessionMetrics export functionality (2.8 fix).
+
+    Reference: specs/risk-management.md lines 222-237
+    """
+
+    def test_record_trade_winning(self):
+        """Test recording a winning trade updates metrics correctly."""
+        metrics = SessionMetrics()
+        metrics.record_trade(15.0)
+
+        assert len(metrics.trade_pnls) == 1
+        assert metrics.trade_pnls[0] == 15.0
+        assert metrics.largest_win == 15.0
+        assert metrics.largest_loss == 0.0
+        assert metrics.avg_win == 15.0
+        assert metrics.avg_loss == 0.0
+
+    def test_record_trade_losing(self):
+        """Test recording a losing trade updates metrics correctly."""
+        metrics = SessionMetrics()
+        metrics.record_trade(-12.50)
+
+        assert len(metrics.trade_pnls) == 1
+        assert metrics.trade_pnls[0] == -12.50
+        assert metrics.largest_win == 0.0
+        assert metrics.largest_loss == 12.50  # Stored as positive
+        assert metrics.avg_win == 0.0
+        assert metrics.avg_loss == 12.50  # Stored as positive
+
+    def test_record_trade_multiple(self):
+        """Test recording multiple trades updates running stats."""
+        metrics = SessionMetrics()
+        metrics.record_trade(15.0)
+        metrics.record_trade(-10.0)
+        metrics.record_trade(20.0)
+        metrics.record_trade(-5.0)
+
+        assert len(metrics.trade_pnls) == 4
+        assert metrics.largest_win == 20.0
+        assert metrics.largest_loss == 10.0  # abs(-10.0)
+        assert metrics.avg_win == 17.5  # (15 + 20) / 2
+        assert metrics.avg_loss == 7.5  # (10 + 5) / 2
+
+    def test_record_trade_updates_largest(self):
+        """Test that record_trade updates largest_win/loss when exceeded."""
+        metrics = SessionMetrics()
+        metrics.record_trade(10.0)
+        assert metrics.largest_win == 10.0
+
+        metrics.record_trade(25.0)
+        assert metrics.largest_win == 25.0
+
+        metrics.record_trade(15.0)
+        assert metrics.largest_win == 25.0  # Still the largest
+
+    def test_calculate_sharpe_daily_basic(self):
+        """Test Sharpe ratio calculation with simple data."""
+        metrics = SessionMetrics()
+        # Add trades with known mean and std
+        metrics.trade_pnls = [10.0, 20.0, 15.0, 5.0]
+
+        sharpe = metrics.calculate_sharpe_daily()
+
+        # Mean = 12.5, variance = 31.25, std ≈ 5.59
+        # Sharpe ≈ 12.5 / 5.59 ≈ 2.24
+        assert sharpe > 2.0
+        assert sharpe < 2.5
+
+    def test_calculate_sharpe_daily_insufficient_data(self):
+        """Test Sharpe ratio returns 0 with insufficient data."""
+        metrics = SessionMetrics()
+        metrics.trade_pnls = [10.0]  # Only one trade
+
+        sharpe = metrics.calculate_sharpe_daily()
+        assert sharpe == 0.0
+
+    def test_calculate_sharpe_daily_zero_std(self):
+        """Test Sharpe ratio returns 0 when all trades same value."""
+        metrics = SessionMetrics()
+        metrics.trade_pnls = [10.0, 10.0, 10.0, 10.0]
+
+        sharpe = metrics.calculate_sharpe_daily()
+        assert sharpe == 0.0
+
+    def test_calculate_sharpe_daily_negative_mean(self):
+        """Test Sharpe ratio handles negative mean correctly."""
+        metrics = SessionMetrics()
+        metrics.trade_pnls = [-10.0, -20.0, -5.0]
+
+        sharpe = metrics.calculate_sharpe_daily()
+        assert sharpe < 0.0  # Negative Sharpe for losing strategy
+
+    def test_to_dict_includes_new_fields(self):
+        """Test to_dict includes Sharpe and trade extreme fields."""
+        metrics = SessionMetrics()
+        metrics.record_trade(15.0)
+        metrics.record_trade(-12.50)
+
+        d = metrics.to_dict()
+
+        # Check spec-required fields (risk-management.md lines 222-237)
+        assert 'date' in d  # Spec uses 'date' not 'session_date'
+        assert 'trades' in d  # Spec uses 'trades' not 'trades_executed'
+        assert 'sharpe_daily' in d
+        assert 'largest_win' in d
+        assert 'largest_loss' in d
+        assert 'avg_win' in d
+        assert 'avg_loss' in d
+
+        assert d['largest_win'] == 15.0
+        assert d['largest_loss'] == 12.50
+
+    def test_export_json(self, tmp_path):
+        """Test exporting session metrics to JSON file."""
+        metrics = SessionMetrics(
+            trades_executed=10,
+            wins=6,
+            losses=4,
+            gross_pnl=150.0,
+            commissions=8.40,
+            net_pnl=141.60,
+        )
+        metrics.record_trade(50.0)
+        metrics.record_trade(-20.0)
+
+        json_path = tmp_path / "metrics.json"
+        metrics.export_json(json_path)
+
+        assert json_path.exists()
+
+        with open(json_path) as f:
+            data = json.load(f)
+
+        assert data['trades'] == 10
+        assert data['gross_pnl'] == 150.0
+        assert data['largest_win'] == 50.0
+        assert data['largest_loss'] == 20.0
+
+    def test_export_csv(self, tmp_path):
+        """Test exporting session metrics to CSV file."""
+        metrics = SessionMetrics(
+            trades_executed=12,
+            wins=7,
+            losses=5,
+            gross_pnl=45.0,
+            commissions=4.80,
+            net_pnl=40.20,
+            max_drawdown=25.0,
+        )
+        metrics.record_trade(15.0)
+        metrics.record_trade(-12.50)
+
+        csv_path = tmp_path / "metrics.csv"
+        metrics.export_csv(csv_path)
+
+        assert csv_path.exists()
+
+        # Read CSV and verify
+        import csv
+        with open(csv_path) as f:
+            reader = csv.DictReader(f)
+            row = next(reader)
+
+        assert row['trades'] == '12'
+        assert float(row['gross_pnl']) == 45.0
+        assert float(row['largest_win']) == 15.0
+        assert float(row['largest_loss']) == 12.50
+
+    def test_export_creates_parent_dirs(self, tmp_path):
+        """Test that export creates parent directories if needed."""
+        metrics = SessionMetrics()
+        nested_path = tmp_path / "deep" / "nested" / "dir" / "metrics.json"
+
+        metrics.export_json(nested_path)
+
+        assert nested_path.exists()
+
+    def test_to_dict_matches_spec_format(self):
+        """Test to_dict output matches spec format exactly."""
+        metrics = SessionMetrics(
+            session_date=date(2025, 1, 15),
+            trades_executed=12,
+            wins=7,
+            losses=5,
+            gross_pnl=45.0,
+            commissions=4.80,
+            net_pnl=40.20,
+            max_drawdown=25.0,
+        )
+        metrics.record_trade(15.0)
+        metrics.record_trade(-12.50)
+
+        d = metrics.to_dict()
+
+        # Verify exact field names from spec (risk-management.md lines 222-237)
+        assert d['date'] == '2025-01-15'
+        assert d['trades'] == 12
+        assert d['wins'] == 7
+        assert d['losses'] == 5
+        assert d['gross_pnl'] == 45.0
+        assert d['commissions'] == 4.80
+        assert d['net_pnl'] == 40.20
+        assert d['max_drawdown'] == 25.0
+        assert 'sharpe_daily' in d
+        assert d['largest_win'] == 15.0
+        assert d['largest_loss'] == 12.50
+
+
+class TestLiveTraderGetMetrics:
+    """Tests for LiveTrader.get_metrics() and get_session_metrics() (2.8 fix)."""
+
+    def test_get_metrics_returns_dict(self):
+        """Test that get_metrics returns a dictionary."""
+        config = TradingConfig()
+        trader = LiveTrader(config)
+
+        metrics = trader.get_metrics()
+
+        assert isinstance(metrics, dict)
+        assert 'trades' in metrics
+        assert 'net_pnl' in metrics
+
+    def test_get_session_metrics_returns_object(self):
+        """Test that get_session_metrics returns SessionMetrics object."""
+        config = TradingConfig()
+        trader = LiveTrader(config)
+
+        metrics = trader.get_session_metrics()
+
+        assert isinstance(metrics, SessionMetrics)
+        assert metrics.trades_executed == 0
+
+    def test_get_metrics_reflects_updates(self):
+        """Test that get_metrics reflects updated metrics."""
+        config = TradingConfig()
+        trader = LiveTrader(config)
+
+        # Directly update internal metrics for test
+        trader._session_metrics.trades_executed = 5
+        trader._session_metrics.net_pnl = 100.0
+
+        metrics = trader.get_metrics()
+
+        assert metrics['trades'] == 5
+        assert metrics['net_pnl'] == 100.0
 
 
 class TestLiveTraderInit:

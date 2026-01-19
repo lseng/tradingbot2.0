@@ -711,7 +711,7 @@ Trade log CSV export only implemented for backtest module, not for live trading.
 | **2.5** | `src/risk/stops.py` | Dynamic R:R - no ML-predicted expected move | PARTIAL |
 | **2.6** | `src/risk/stops.py` | Stop loss adjustment - no time-decay tightening (only EOD tightening) | NOT IMPLEMENTED |
 | **2.7** | `src/trading/` | MarketDataStream component missing (architecture) | NOT IMPLEMENTED |
-| **2.8** | `src/risk/` | Session summary - get_metrics() exists but no export | PARTIAL |
+| **2.8** | `src/trading/` | Session summary - export_json(), export_csv(), get_metrics(), Sharpe, largest win/loss | **FIXED (2026-01-18)** |
 | **2.9** | `src/api/` | WebSocket 2-session limit not enforced | NOT IMPLEMENTED |
 | **2.10** | `tests/` | Feature latency < 5ms - exists in inference_benchmark.py | Tests exist but not in acceptance/ | PARTIAL |
 | **2.11** | `tests/` | Order execution < 500ms NOT TESTED | Go-Live criteria not validated | NOT IMPLEMENTED |
@@ -792,27 +792,38 @@ class FocalLoss(nn.Module):
 
 ---
 
-### 2.8: Session Summary Reporting
+### 2.8: Session Summary Reporting (FIXED)
 
 **Spec Reference**: `specs/risk-management.md` lines 222-237
+**Status**: **FIXED (2026-01-18)**
 
-#### Current State
+#### Fix Applied
 
-`get_metrics()` exists but no export functionality.
+1. **SessionMetrics enhanced** with new fields:
+   - `trade_pnls: List[float]` - Per-trade P&L tracking
+   - `largest_win: float` - Largest winning trade
+   - `largest_loss: float` - Largest losing trade
+   - `avg_win: float` - Average winning trade
+   - `avg_loss: float` - Average losing trade
 
-#### Missing
+2. **New methods added to SessionMetrics**:
+   - `record_trade(pnl: float)` - Record individual trade P&L and update statistics
+   - `calculate_sharpe_daily()` - Calculate daily Sharpe ratio from trade P&Ls
+   - `export_json(filepath: str)` - Export session summary to JSON
+   - `export_csv(filepath: str)` - Export session summary to CSV
 
-- Structured session summary JSON output
-- Sharpe daily calculation
-- Largest win/loss tracking
-- File persistence of session data
+3. **New methods added to LiveTrader**:
+   - `get_metrics()` - Returns current SessionMetrics instance
+   - `get_session_metrics()` - Returns formatted session metrics dict
+
+4. **Auto-export at EOD**: Both JSON and CSV formats exported automatically
 
 #### Acceptance Criteria
 
-- [ ] `SessionSummary.export_json()` method
-- [ ] `SessionSummary.export_csv()` method
-- [ ] Auto-export at EOD
-- [ ] Daily Sharpe calculated and logged
+- [x] `SessionSummary.export_json()` method
+- [x] `SessionSummary.export_csv()` method
+- [x] Auto-export at EOD
+- [x] Daily Sharpe calculated and logged
 
 ---
 
@@ -1007,6 +1018,29 @@ Bug fixes applied to `rt_features.py` were NOT backported to `scalping_features.
 ---
 
 ## Completed Items (Historical Reference)
+
+### Session Summary Persistence/Export (2026-01-18)
+
+| Item | Issue | Fix |
+|------|-------|-----|
+| 2.8 | Session summary - get_metrics() exists but no export | Implemented full session metrics with export capabilities |
+
+**SessionMetrics enhancements:**
+- New fields: `trade_pnls`, `largest_win`, `largest_loss`, `avg_win`, `avg_loss`
+- New methods: `record_trade()`, `calculate_sharpe_daily()`, `export_json()`, `export_csv()`
+
+**LiveTrader enhancements:**
+- New methods: `get_metrics()`, `get_session_metrics()`
+- Auto-export at EOD: both JSON and CSV formats
+
+**New tests added (16 tests in test_live_trader_unit.py):**
+- Session metrics recording and tracking
+- Trade P&L recording and statistics calculation
+- Sharpe ratio daily calculation
+- JSON export functionality
+- CSV export functionality
+- EOD auto-export verification
+- get_metrics() and get_session_metrics() methods
 
 ### Monte Carlo Simulation (2026-01-18)
 
@@ -1206,7 +1240,7 @@ Bug fixes applied to `rt_features.py` were NOT backported to `scalping_features.
 
 ## Test Coverage
 
-**Total**: 2,666 tests across 62 test files
+**Total**: 2,682 tests across 62 test files
 **Skipped**: 12 tests (all conditional on optional dependencies)
 
 | Category | Tests |
@@ -1217,7 +1251,7 @@ Bug fixes applied to `rt_features.py` were NOT backported to `scalping_features.
 | Backtesting | 106 |
 | ML Models | 55 |
 | TopstepX API | 77 |
-| Live Trading | 77 |
+| Live Trading | 93 |
 | DataBento | 72 |
 | Optimization | 200+ |
 | Integration | 88 |
@@ -1280,6 +1314,24 @@ Bug fixes applied to `rt_features.py` were NOT backported to `scalping_features.
 - `test_atr_passed_to_slippage` - Verifies ATR passed to apply_slippage()
 - `test_dynamic_slippage_enabled` - Verifies dynamic slippage works end-to-end
 - `test_atr_affects_slippage_amount` - Verifies ATR affects slippage amount
+
+**New tests added for 2.8 fix (in test_live_trader_unit.py - Session Summary):**
+- `test_session_metrics_trade_pnls_tracking` - Per-trade P&L list tracking
+- `test_session_metrics_largest_win` - Largest win tracking
+- `test_session_metrics_largest_loss` - Largest loss tracking
+- `test_session_metrics_avg_win` - Average win calculation
+- `test_session_metrics_avg_loss` - Average loss calculation
+- `test_session_metrics_record_trade` - record_trade() method
+- `test_session_metrics_calculate_sharpe_daily` - Daily Sharpe calculation
+- `test_session_metrics_export_json` - JSON export functionality
+- `test_session_metrics_export_csv` - CSV export functionality
+- `test_live_trader_get_metrics` - get_metrics() returns SessionMetrics
+- `test_live_trader_get_session_metrics` - get_session_metrics() returns dict
+- `test_eod_auto_export_json` - EOD JSON auto-export
+- `test_eod_auto_export_csv` - EOD CSV auto-export
+- `test_sharpe_calculation_no_trades` - Sharpe with no trades returns 0
+- `test_sharpe_calculation_single_trade` - Sharpe with single trade
+- `test_export_paths_include_date` - Export filenames include date
 
 **All 12 Go-Live acceptance criteria explicitly tested** (scattered, need organization)
 **4 comprehensive E2E integration tests**

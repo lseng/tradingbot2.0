@@ -17,11 +17,13 @@ Reference: specs/live-trading-execution.md
 
 import asyncio
 import logging
+import csv
 from dataclasses import dataclass, field
 from datetime import datetime, time, date
 from pathlib import Path
-from typing import Optional, Callable, Awaitable
+from typing import Optional, Callable, Awaitable, List
 import json
+import math
 import signal
 
 import torch
@@ -94,7 +96,17 @@ class TradingConfig:
 
 @dataclass
 class SessionMetrics:
-    """Metrics for the trading session."""
+    """
+    Metrics for the trading session.
+
+    Tracks comprehensive session data including:
+    - Trade counts (wins/losses)
+    - P&L (gross, net, commissions)
+    - Risk metrics (max_drawdown, largest_win/loss)
+    - Performance metrics (Sharpe ratio, avg win/loss)
+
+    Reference: specs/risk-management.md lines 222-237 (Session Summary)
+    """
     session_date: date = field(default_factory=date.today)
     trades_executed: int = 0
     wins: int = 0
@@ -109,18 +121,97 @@ class SessionMetrics:
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
 
+    # 2.8 FIX: Trade-level tracking for largest win/loss and Sharpe calculation
+    trade_pnls: List[float] = field(default_factory=list)
+    largest_win: float = 0.0
+    largest_loss: float = 0.0  # Stored as positive value (absolute)
+    avg_win: float = 0.0
+    avg_loss: float = 0.0  # Stored as positive value (absolute)
+
+    def record_trade(self, pnl: float) -> None:
+        """
+        Record a trade P&L for tracking.
+
+        Updates largest_win, largest_loss, avg_win, avg_loss.
+        Stores pnl in trade_pnls list for Sharpe calculation.
+
+        Args:
+            pnl: Net P&L of the trade (positive or negative)
+        """
+        self.trade_pnls.append(pnl)
+
+        if pnl > 0:
+            # Update largest win
+            if pnl > self.largest_win:
+                self.largest_win = pnl
+            # Update average win
+            wins = [p for p in self.trade_pnls if p > 0]
+            self.avg_win = sum(wins) / len(wins) if wins else 0.0
+        elif pnl < 0:
+            # Update largest loss (store as positive for consistency with spec)
+            abs_loss = abs(pnl)
+            if abs_loss > self.largest_loss:
+                self.largest_loss = abs_loss
+            # Update average loss (store as positive)
+            losses = [abs(p) for p in self.trade_pnls if p < 0]
+            self.avg_loss = sum(losses) / len(losses) if losses else 0.0
+
+    def calculate_sharpe_daily(self) -> float:
+        """
+        Calculate daily Sharpe ratio from trade returns.
+
+        Uses simplified calculation: mean(returns) / std(returns)
+        Assumes risk-free rate of 0 for intraday trading.
+
+        Returns:
+            Sharpe ratio (0.0 if insufficient data or zero std)
+        """
+        if len(self.trade_pnls) < 2:
+            return 0.0
+
+        mean_pnl = sum(self.trade_pnls) / len(self.trade_pnls)
+        variance = sum((pnl - mean_pnl) ** 2 for pnl in self.trade_pnls) / len(self.trade_pnls)
+        std_pnl = math.sqrt(variance)
+
+        if std_pnl == 0:
+            return 0.0
+
+        return mean_pnl / std_pnl
+
     def to_dict(self) -> dict:
-        """Convert to dictionary."""
+        """
+        Convert to dictionary for serialization.
+
+        Matches spec format from specs/risk-management.md lines 222-237.
+        """
+        win_rate = self.wins / self.trades_executed * 100 if self.trades_executed > 0 else 0
+
         return {
-            "session_date": self.session_date.isoformat(),
-            "trades_executed": self.trades_executed,
+            # Core session info
+            "date": self.session_date.isoformat(),
+            "session_date": self.session_date.isoformat(),  # Legacy field
+            "trades": self.trades_executed,
+            "trades_executed": self.trades_executed,  # Legacy field
             "wins": self.wins,
             "losses": self.losses,
-            "win_rate": self.wins / self.trades_executed * 100 if self.trades_executed > 0 else 0,
-            "gross_pnl": self.gross_pnl,
-            "commissions": self.commissions,
-            "net_pnl": self.net_pnl,
-            "max_drawdown": self.max_drawdown,
+            "win_rate": round(win_rate, 1),
+
+            # P&L metrics
+            "gross_pnl": round(self.gross_pnl, 2),
+            "commissions": round(self.commissions, 2),
+            "net_pnl": round(self.net_pnl, 2),
+
+            # Risk metrics
+            "max_drawdown": round(self.max_drawdown, 2),
+            "sharpe_daily": round(self.calculate_sharpe_daily(), 2),
+
+            # Trade extremes (2.8 FIX)
+            "largest_win": round(self.largest_win, 2),
+            "largest_loss": round(self.largest_loss, 2),  # Positive value as per spec
+            "avg_win": round(self.avg_win, 2),
+            "avg_loss": round(self.avg_loss, 2),
+
+            # Session timing
             "signals_generated": self.signals_generated,
             "predictions_made": self.predictions_made,
             "bars_processed": self.bars_processed,
@@ -131,6 +222,50 @@ class SessionMetrics:
                 if self.start_time and self.end_time else 0
             ),
         }
+
+    def export_json(self, path: Path) -> None:
+        """
+        Export session metrics to JSON file.
+
+        Creates a JSON file with all session metrics in a format
+        compatible with the spec (risk-management.md lines 222-237).
+
+        Args:
+            path: Path to write JSON file
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(self.to_dict(), f, indent=2)
+        logger.info(f"Session metrics exported to JSON: {path}")
+
+    def export_csv(self, path: Path) -> None:
+        """
+        Export session metrics to CSV file.
+
+        Creates a CSV file with session metrics as a single row.
+        Headers are included for clarity.
+
+        Args:
+            path: Path to write CSV file
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = self.to_dict()
+
+        # Define the CSV columns in a logical order
+        columns = [
+            "date", "trades", "wins", "losses", "win_rate",
+            "gross_pnl", "commissions", "net_pnl",
+            "max_drawdown", "sharpe_daily",
+            "largest_win", "largest_loss", "avg_win", "avg_loss",
+            "signals_generated", "predictions_made", "bars_processed",
+            "duration_minutes"
+        ]
+
+        with open(path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=columns, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerow(data)
+        logger.info(f"Session metrics exported to CSV: {path}")
 
 
 class LiveTrader:
@@ -621,6 +756,9 @@ class LiveTrader:
             self._session_metrics.gross_pnl += trade_gross_pnl
             self._session_metrics.commissions += trade_commission
             self._session_metrics.net_pnl += trade_net_pnl
+
+            # 2.8 FIX: Record trade for largest win/loss and Sharpe calculation
+            self._session_metrics.record_trade(trade_net_pnl)
 
             # 1.15 FIX: Track max_drawdown (peak-to-trough)
             # We track drawdown from peak net P&L
@@ -1146,27 +1284,38 @@ class LiveTrader:
         logger.info("=" * 60)
 
     async def _save_session_state(self) -> None:
-        """Save session state to disk."""
+        """
+        Save session state to disk.
+
+        2.8 FIX: Exports session metrics in both JSON and CSV formats
+        for analysis and reporting.
+        """
         try:
             log_dir = Path(self.config.log_dir)
             log_dir.mkdir(parents=True, exist_ok=True)
 
-            # Save metrics
-            metrics_file = log_dir / f"metrics_{date.today().isoformat()}.json"
-            with open(metrics_file, 'w') as f:
-                json.dump(self._session_metrics.to_dict(), f, indent=2)
+            # 2.8 FIX: Export to JSON using new method
+            json_file = log_dir / f"metrics_{date.today().isoformat()}.json"
+            self._session_metrics.export_json(json_file)
 
-            logger.info(f"Session metrics saved to {metrics_file}")
+            # 2.8 FIX: Also export to CSV for spreadsheet analysis
+            csv_file = log_dir / f"metrics_{date.today().isoformat()}.csv"
+            self._session_metrics.export_csv(csv_file)
 
         except Exception as e:
             logger.error(f"Failed to save session state: {e}")
 
     def _generate_session_report(self) -> None:
-        """Generate and log session report."""
+        """
+        Generate and log session report.
+
+        2.8 FIX: Enhanced report includes Sharpe ratio, largest win/loss,
+        and average win/loss per spec.
+        """
         metrics = self._session_metrics.to_dict()
 
         report = f"""
-Session Report - {metrics['session_date']}
+Session Report - {metrics['date']}
 {'=' * 50}
 Duration: {metrics['duration_minutes']:.1f} minutes
 Bars Processed: {metrics['bars_processed']}
@@ -1174,7 +1323,7 @@ Predictions Made: {metrics['predictions_made']}
 Signals Generated: {metrics['signals_generated']}
 
 Trading Results:
-  Trades: {metrics['trades_executed']}
+  Trades: {metrics['trades']}
   Wins: {metrics['wins']} ({metrics['win_rate']:.1f}%)
   Losses: {metrics['losses']}
 
@@ -1183,10 +1332,42 @@ P&L:
   Commissions: ${metrics['commissions']:.2f}
   Net: ${metrics['net_pnl']:+.2f}
 
-Max Drawdown: ${metrics['max_drawdown']:.2f}
+Risk Metrics:
+  Max Drawdown: ${metrics['max_drawdown']:.2f}
+  Sharpe (Daily): {metrics['sharpe_daily']:.2f}
+
+Trade Analysis:
+  Largest Win: ${metrics['largest_win']:+.2f}
+  Largest Loss: -${metrics['largest_loss']:.2f}
+  Average Win: ${metrics['avg_win']:+.2f}
+  Average Loss: -${metrics['avg_loss']:.2f}
 {'=' * 50}
 """
         logger.info(report)
+
+    def get_metrics(self) -> dict:
+        """
+        Get current session metrics.
+
+        2.8 FIX: Public method for accessing session metrics.
+        Returns a dictionary with all session data.
+
+        Returns:
+            Dictionary with session metrics
+        """
+        return self._session_metrics.to_dict()
+
+    def get_session_metrics(self) -> SessionMetrics:
+        """
+        Get the SessionMetrics object directly.
+
+        2.8 FIX: Allows access to the raw SessionMetrics for
+        advanced use cases like exporting to different formats.
+
+        Returns:
+            SessionMetrics object
+        """
+        return self._session_metrics
 
     def _on_alert(self, error: ErrorEvent) -> None:
         """Handle alert from recovery handler."""
