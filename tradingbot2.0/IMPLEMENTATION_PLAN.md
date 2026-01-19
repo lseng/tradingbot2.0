@@ -1,9 +1,9 @@
 # Implementation Plan - MES Futures Scalping Bot
 
-> **Last Updated**: 2026-01-18 UTC (1.4/1.5 Fixed - RTH/ETH session filtering with UTC->NY timezone conversion)
+> **Last Updated**: 2026-01-18 UTC (1.8/1.9 Fixed - Fill modes and ATR slippage)
 > **Status**: **UNBLOCKED - Bug #10 Fixed** - LSTM training now functional on full dataset
-> **Test Coverage**: 2,657 tests across 62 test files (1 skipped: conditional on optional deps)
-> **Git Tag**: v0.0.77
+> **Test Coverage**: 2,666 tests across 62 test files (1 skipped: conditional on optional deps)
+> **Git Tag**: v0.0.78
 > **Code Quality**: No TODO/FIXME comments found in src/; all abstract methods properly implemented; EODPhase consolidated
 
 ---
@@ -14,7 +14,7 @@
 |----------|-------|--------|----------|
 | **P0** | 1 | FIXED | Bug #10: LSTM sequence creation - FIXED with numpy stride tricks |
 | **Code Quality** | 3 | FIXED | CQ.1, CQ.2, CQ.3 all FIXED - constants consolidated |
-| **P1** | 14 | HIGH | Session filtering, Monte Carlo, latency validation |
+| **P1** | 14 | HIGH | Monte Carlo simulation remaining |
 | **P2** | 12 | MEDIUM | Hybrid architecture, focal loss, session reporting, latency test organization |
 | **P3** | 9 | LOW | Nice-to-have items, **batch feature parity** |
 
@@ -49,11 +49,11 @@ Execute tasks in this exact order for optimal progress:
 | 12 | 1.4/1.5 | Implement RTH/ETH session filtering with UTC->NY | 4-6 hrs | **FIXED** |
 
 ### Phase 4: Complete Backtest Engine (MEDIUM-TERM)
-| Order | ID | Task | Est. Time |
-|-------|-----|------|-----------|
-| 13 | 1.8 | Fix NEXT_BAR_OPEN fill mode (uses bar['close']) | 2 hrs |
-| 14 | 1.9 | Pass ATR to slippage model | 2 hrs |
-| 15 | 1.6 | Implement Monte Carlo simulation | 6-8 hrs |
+| Order | ID | Task | Est. Time | Status |
+|-------|-----|------|-----------|--------|
+| 13 | 1.8 | Fix NEXT_BAR_OPEN fill mode (uses bar['close']) | 2 hrs | **FIXED** |
+| 14 | 1.9 | Pass ATR to slippage model | 2 hrs | **FIXED** |
+| 15 | 1.6 | Implement Monte Carlo simulation | 6-8 hrs | |
 
 ### Phase 5: Risk Management Enhancements
 | Order | ID | Task | Est. Time |
@@ -220,8 +220,8 @@ Issues affecting profitability validation and **LIVE TRADING SAFETY**. Ordered b
 | **1.4** | `src/backtest/engine.py` | RTH/ETH session filtering - CONFIG ONLY | No actual filtering logic implemented | **FIXED (2026-01-18)** |
 | **1.5** | `src/backtest/` | No UTC->NY timezone conversion, no DST handling | Session times incorrect | **FIXED (2026-01-18)** |
 | **1.6** | `src/backtest/` | Monte Carlo simulation - ZERO references | No robustness assessment | CONFIRMED NOT IMPLEMENTED |
-| **1.8** | `src/backtest/engine.py:680-684` | Fill modes ALL USE bar['close'] | NEXT_BAR_OPEN broken | CONFIRMED BROKEN |
-| **1.9** | `src/backtest/slippage.py` | ATR slippage params NOT PASSED from engine | ATR-based slippage unused | CONFIRMED NOT IMPLEMENTED |
+| **1.8** | `src/backtest/engine.py:680-684` | Fill modes ALL USE bar['close'] | NEXT_BAR_OPEN broken | **FIXED (2026-01-18)** |
+| **1.9** | `src/backtest/slippage.py` | ATR slippage params NOT PASSED from engine | ATR-based slippage unused | **FIXED (2026-01-18)** |
 | **1.10** | `src/risk/stops.py` | Partial profit taking - single level only | No multi-level TP (TP1/TP2/TP3) | PARTIAL |
 | **1.11** | `tests/` | No `tests/acceptance/` directory exists | Go-Live criteria not organized | CONFIRMED NOT IMPLEMENTED |
 | **1.12** | `src/data/` | Parquet partitioning - flat files only | Not year/month partitioned | NOT IMPLEMENTED |
@@ -511,68 +511,52 @@ class MonteCarloSimulator:
 
 ---
 
-### 1.8: Fill Modes ALL USE SAME LOGIC (BROKEN)
+### 1.8: Fill Modes ALL USE SAME LOGIC (FIXED)
 
 **File**: `src/backtest/engine.py:680-684`
-**Confirmed**: 2026-01-18 - All fill modes use identical `bar['close']` logic
+**Status**: **FIXED (2026-01-18)**
 
-#### Problem
+#### Problem (RESOLVED)
 
-Two fill modes (NEXT_BAR_OPEN and PRICE_TOUCH) are documented but both use identical `bar['close']` logic:
+Two fill modes (NEXT_BAR_OPEN and PRICE_TOUCH) were documented but both used identical `bar['close']` logic.
 
-```python
-if self.config.fill_mode == OrderFillMode.SIGNAL_BAR_CLOSE:
-    base_price = bar['close']
-else:
-    # NEXT_BAR_OPEN or PRICE_TOUCH - use close as approximation
-    base_price = bar['close']  # All modes use same price!
-```
+#### Fix Applied
 
-| Mode | Expected Behavior | Actual Behavior |
-|------|-------------------|-----------------|
-| NEXT_BAR_OPEN | **Next bar's open** | bar['close'] |
-| PRICE_TOUCH | Fill at price level when touched | bar['close'] |
-
-#### Impact
-
-NEXT_BAR_OPEN mode gives unrealistic fills - in reality you cannot get filled at current bar's close, only next bar's open.
+1. NEXT_BAR_OPEN now queues entries and fills at next bar's open price
+2. PRICE_TOUCH checks if order price is within bar's high/low range before filling
+3. Added 5 new tests in `TestFillModes` class in `test_backtest.py`
 
 #### Acceptance Criteria
 
-- [ ] NEXT_BAR_OPEN mode: fills at `bars[i+1]['open']` (not current bar close)
-- [ ] PRICE_TOUCH mode: fills at specified price if `bar['low'] <= price <= bar['high']`
-- [ ] Unit test verifies each mode produces different fill prices
-- [ ] Backtest results differ meaningfully between modes
+- [x] NEXT_BAR_OPEN mode: fills at `bars[i+1]['open']` (not current bar close)
+- [x] PRICE_TOUCH mode: fills at specified price if `bar['low'] <= price <= bar['high']`
+- [x] Unit test verifies each mode produces different fill prices
+- [x] Backtest results differ meaningfully between modes
 
 ---
 
-### 1.9: ATR Slippage Parameters Not Passed
+### 1.9: ATR Slippage Parameters Not Passed (FIXED)
 
 **File**: `src/backtest/slippage.py` + `src/backtest/engine.py`
-**Confirmed**: 2026-01-18 - No calls to slippage model with ATR parameter found
+**Status**: **FIXED (2026-01-18)**
 
-#### Problem
+#### Problem (RESOLVED)
 
-`SlippageModel` has ATR-based slippage calculation but the backtest engine **NEVER passes ATR values** to it.
+`SlippageModel` had ATR-based slippage calculation but the backtest engine **NEVER passed ATR values** to it.
 
-**Current Code Path**:
-```python
-# slippage.py - has ATR support
-def calculate_slippage(self, price, volume, atr=None):
-    if self.model_type == 'atr' and atr is not None:
-        return price * self.atr_multiplier * atr
-    # Falls back to fixed slippage
+#### Fix Applied
 
-# engine.py - NEVER passes atr
-slippage = self.slippage_model.calculate_slippage(price, volume)  # atr missing!
-```
+1. Added `_update_atr()` method to backtest engine for rolling ATR calculation
+2. Current ATR and baseline ATR now passed to `apply_slippage()` on every fill
+3. New config parameters added: `atr_period`, `atr_baseline_period`, `enable_dynamic_slippage`
+4. Added 4 new tests in `TestATRDynamicSlippage` class in `test_backtest.py`
 
 #### Acceptance Criteria
 
-- [ ] Engine calculates rolling ATR from price bars (14-period default)
-- [ ] ATR passed to `calculate_slippage()` on every fill
-- [ ] ATR-based slippage mode works end-to-end
-- [ ] Unit test verifies ATR affects slippage amount
+- [x] Engine calculates rolling ATR from price bars (14-period default)
+- [x] ATR passed to `calculate_slippage()` on every fill
+- [x] ATR-based slippage mode works end-to-end
+- [x] Unit test verifies ATR affects slippage amount
 
 ---
 
@@ -1027,6 +1011,26 @@ Bug fixes applied to `rt_features.py` were NOT backported to `scalping_features.
 
 ## Completed Items (Historical Reference)
 
+### Fill Modes and ATR Slippage (2026-01-18)
+
+| Item | Issue | Fix |
+|------|-------|-----|
+| 1.8 | Fill modes ALL USE bar['close'] - NEXT_BAR_OPEN broken | NEXT_BAR_OPEN now queues entries and fills at next bar's open; PRICE_TOUCH checks if order price is within bar's high/low range |
+| 1.9 | ATR slippage params NOT PASSED from engine | Added `_update_atr()` method to backtest engine; current and baseline ATR now passed to `apply_slippage()`; new config params: `atr_period`, `atr_baseline_period`, `enable_dynamic_slippage` |
+
+**New tests added for 1.8 fix (5 tests in TestFillModes class in test_backtest.py):**
+- `test_signal_bar_close_fill_mode` - Fills at current bar's close
+- `test_next_bar_open_fill_mode` - Queues entry and fills at next bar's open
+- `test_price_touch_fill_mode_hit` - Fills at order price when within bar range
+- `test_price_touch_fill_mode_miss` - No fill when price outside bar range
+- `test_fill_modes_produce_different_results` - Verifies modes produce different fill prices
+
+**New tests added for 1.9 fix (4 tests in TestATRDynamicSlippage class in test_backtest.py):**
+- `test_atr_calculation` - Verifies rolling ATR calculation
+- `test_atr_passed_to_slippage` - Verifies ATR passed to apply_slippage()
+- `test_dynamic_slippage_enabled` - Verifies dynamic slippage works end-to-end
+- `test_atr_affects_slippage_amount` - Verifies ATR affects slippage amount
+
 ### Session Filtering and Timezone Handling (2026-01-18)
 
 | Item | Issue | Fix |
@@ -1188,7 +1192,7 @@ Bug fixes applied to `rt_features.py` were NOT backported to `scalping_features.
 
 ## Test Coverage
 
-**Total**: 2,657 tests across 62 test files
+**Total**: 2,666 tests across 62 test files
 **Skipped**: 12 tests (all conditional on optional dependencies)
 
 | Category | Tests |
@@ -1196,7 +1200,7 @@ Bug fixes applied to `rt_features.py` were NOT backported to `scalping_features.
 | Data Pipeline | 76 |
 | Memory Utils | 43 |
 | Risk Management | 77 |
-| Backtesting | 97 |
+| Backtesting | 106 |
 | ML Models | 55 |
 | TopstepX API | 77 |
 | Live Trading | 77 |
@@ -1249,6 +1253,19 @@ Bug fixes applied to `rt_features.py` were NOT backported to `scalping_features.
 - `test_dst_november_transition` - DST handled correctly for November transition
 - `test_eod_flatten_with_timezone` - EOD flatten uses timezone conversion
 - `test_position_opening_with_timezone` - Position restrictions use timezone conversion
+
+**New tests added for 1.8 fix (in test_backtest.py - TestFillModes):**
+- `test_signal_bar_close_fill_mode` - Fills at current bar's close
+- `test_next_bar_open_fill_mode` - Queues entry and fills at next bar's open
+- `test_price_touch_fill_mode_hit` - Fills at order price when within bar range
+- `test_price_touch_fill_mode_miss` - No fill when price outside bar range
+- `test_fill_modes_produce_different_results` - Verifies modes produce different fill prices
+
+**New tests added for 1.9 fix (in test_backtest.py - TestATRDynamicSlippage):**
+- `test_atr_calculation` - Verifies rolling ATR calculation
+- `test_atr_passed_to_slippage` - Verifies ATR passed to apply_slippage()
+- `test_dynamic_slippage_enabled` - Verifies dynamic slippage works end-to-end
+- `test_atr_affects_slippage_amount` - Verifies ATR affects slippage amount
 
 **All 12 Go-Live acceptance criteria explicitly tested** (scattered, need organization)
 **4 comprehensive E2E integration tests**

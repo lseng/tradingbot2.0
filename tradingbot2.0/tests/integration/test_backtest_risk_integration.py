@@ -47,7 +47,8 @@ def create_test_data(
     timestamps = pd.date_range(
         start=start_date,
         periods=num_bars,
-        freq=f'{bar_seconds}s'
+        freq=f'{bar_seconds}s',
+        tz='America/New_York',  # Add timezone for proper session filtering
     )
 
     np.random.seed(42)

@@ -44,6 +44,7 @@ from src.backtest.engine import (
     Position,
     WalkForwardValidator,
     create_simple_signal_generator,
+    SessionFilter,
 )
 from src.backtest.metrics import PerformanceMetrics, calculate_metrics
 
@@ -110,7 +111,7 @@ def sample_ohlcv_data() -> pd.DataFrame:
         'low': low,
         'close': close,
         'volume': volume,
-    }, index=pd.DatetimeIndex(timestamps))
+    }, index=pd.DatetimeIndex(timestamps, tz='America/New_York'))
 
     return df
 
@@ -120,6 +121,7 @@ def small_ohlcv_data() -> pd.DataFrame:
     """
     Generate small synthetic data for quick tests.
     Only 1000 bars - enough to run basic engine tests.
+    Includes NY timezone for proper session filtering.
     """
     np.random.seed(42)
 
@@ -130,7 +132,8 @@ def small_ohlcv_data() -> pd.DataFrame:
     timestamps = pd.date_range(
         start='2024-01-02 09:30:00',
         periods=n_bars,
-        freq='1s'
+        freq='1s',
+        tz='America/New_York',  # Add timezone for proper session filtering
     )
 
     df = pd.DataFrame({
@@ -480,7 +483,8 @@ class TestEODFlattenIntegration:
         timestamps = pd.date_range(
             start='2024-01-02 16:00:00',  # 4:00 PM
             end='2024-01-02 16:45:00',  # 4:45 PM
-            freq='1s'
+            freq='1s',
+            tz='America/New_York',  # Add timezone for proper EOD handling
         )
 
         np.random.seed(42)
@@ -498,6 +502,7 @@ class TestEODFlattenIntegration:
         config = BacktestConfig(
             eod_flatten_time=time(16, 30),  # 4:30 PM
             eod_close_only_time=time(16, 15),  # 4:15 PM
+            session_filter=SessionFilter.ALL,  # Don't filter out late-day data
         )
         engine = BacktestEngine(config=config)
 
@@ -526,7 +531,8 @@ class TestEODFlattenIntegration:
         timestamps = pd.date_range(
             start='2024-01-02 16:15:00',  # Start at close-only time
             end='2024-01-02 16:29:00',
-            freq='1s'
+            freq='1s',
+            tz='America/New_York',  # Add timezone for proper EOD handling
         )
 
         np.random.seed(42)
@@ -543,6 +549,7 @@ class TestEODFlattenIntegration:
         config = BacktestConfig(
             eod_close_only_time=time(16, 15),
             eod_flatten_time=time(16, 30),
+            session_filter=SessionFilter.ALL,  # Don't filter out late-day data
         )
         engine = BacktestEngine(config=config)
 

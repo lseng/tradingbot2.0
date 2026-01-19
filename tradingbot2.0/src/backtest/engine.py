@@ -137,6 +137,24 @@ class Signal:
 
 
 @dataclass
+class PendingEntry:
+    """
+    Pending entry order for NEXT_BAR_OPEN fill mode.
+
+    When using NEXT_BAR_OPEN mode, entries are queued and filled
+    at the next bar's open price, avoiding lookahead bias.
+
+    Attributes:
+        signal: The entry signal
+        bar_idx: Bar index when signal was generated
+        timestamp: Timestamp when signal was generated
+    """
+    signal: 'Signal'
+    bar_idx: int
+    timestamp: datetime
+
+
+@dataclass
 class Position:
     """
     Open position state.
@@ -194,6 +212,9 @@ class BacktestConfig:
         max_consecutive_losses: Max consecutive losses before pause (default: 5)
         max_daily_drawdown: Max intraday drawdown (default: $75)
         max_per_trade_risk: Max risk per trade (default: $25)
+        atr_period: Period for ATR calculation (default: 14)
+        atr_baseline_period: Period for baseline ATR (default: 50)
+        enable_dynamic_slippage: Whether to use ATR-based dynamic slippage (default: True)
     """
     initial_capital: float = 1000.0
     commission_per_side: float = 0.20
@@ -224,6 +245,10 @@ class BacktestConfig:
     max_consecutive_losses: int = 5  # Triggers 30-min pause
     max_daily_drawdown: float = 75.0  # Max intraday drawdown (7.5%)
     max_per_trade_risk: float = 25.0  # Max risk per individual trade (2.5%)
+    # ATR-based dynamic slippage parameters
+    atr_period: int = 14  # Period for current ATR calculation
+    atr_baseline_period: int = 50  # Period for baseline (normal) ATR
+    enable_dynamic_slippage: bool = True  # Use ATR-based slippage adjustments
 
     @property
     def round_trip_cost(self) -> float:
@@ -258,6 +283,10 @@ class BacktestConfig:
             "max_consecutive_losses": self.max_consecutive_losses,
             "max_daily_drawdown": self.max_daily_drawdown,
             "max_per_trade_risk": self.max_per_trade_risk,
+            # ATR-based dynamic slippage parameters
+            "atr_period": self.atr_period,
+            "atr_baseline_period": self.atr_baseline_period,
+            "enable_dynamic_slippage": self.enable_dynamic_slippage,
         }
 
 
@@ -380,6 +409,16 @@ class BacktestEngine:
         # Session filtering stats
         self._bars_filtered = 0
         self._bars_processed = 0
+
+        # Pending entry tracking (for NEXT_BAR_OPEN fill mode)
+        self._pending_entry: Optional[PendingEntry] = None
+
+        # ATR tracking for dynamic slippage
+        self._true_range_history: List[float] = []  # Rolling true range values
+        self._atr_baseline_history: List[float] = []  # Longer-term ATR history
+        self._current_atr: float = 0.0
+        self._baseline_atr: float = 0.0
+        self._prev_close: Optional[float] = None  # For true range calculation
 
         # Reset cost/slippage tracking
         self._cost_model.reset()
@@ -523,6 +562,159 @@ class BacktestEngine:
 
         return filtered_data
 
+    def _update_atr(self, bar: pd.Series) -> None:
+        """
+        Update ATR (Average True Range) tracking for dynamic slippage.
+
+        ATR is calculated as the average of True Range over a rolling window.
+        True Range = max(high - low, |high - prev_close|, |low - prev_close|)
+
+        This provides volatility context for dynamic slippage adjustments:
+        - _current_atr: Short-term ATR (e.g., 14-period)
+        - _baseline_atr: Longer-term ATR (e.g., 50-period) for comparison
+
+        Args:
+            bar: Current bar data with OHLC
+        """
+        high = bar['high']
+        low = bar['low']
+        close = bar['close']
+
+        # Calculate True Range
+        if self._prev_close is not None:
+            true_range = max(
+                high - low,
+                abs(high - self._prev_close),
+                abs(low - self._prev_close)
+            )
+        else:
+            true_range = high - low
+
+        # Update rolling true range history
+        self._true_range_history.append(true_range)
+
+        # Keep only the history we need for baseline ATR
+        max_history = max(self.config.atr_period, self.config.atr_baseline_period)
+        if len(self._true_range_history) > max_history:
+            self._true_range_history = self._true_range_history[-max_history:]
+
+        # Calculate current ATR (short-term)
+        if len(self._true_range_history) >= self.config.atr_period:
+            self._current_atr = np.mean(self._true_range_history[-self.config.atr_period:])
+        else:
+            self._current_atr = np.mean(self._true_range_history) if self._true_range_history else 0.0
+
+        # Calculate baseline ATR (longer-term)
+        if len(self._true_range_history) >= self.config.atr_baseline_period:
+            self._baseline_atr = np.mean(self._true_range_history[-self.config.atr_baseline_period:])
+        else:
+            # Use current ATR as baseline until we have enough history
+            self._baseline_atr = self._current_atr
+
+        # Store previous close for next bar's true range calculation
+        self._prev_close = close
+
+    def _get_slippage_atr_params(self) -> Tuple[Optional[float], Optional[float]]:
+        """
+        Get ATR parameters for slippage calculation.
+
+        Returns:
+            Tuple of (current_atr, normal_atr) or (None, None) if disabled
+        """
+        if not self.config.enable_dynamic_slippage:
+            return None, None
+
+        if self._current_atr > 0 and self._baseline_atr > 0:
+            return self._current_atr, self._baseline_atr
+
+        return None, None
+
+    def _process_pending_entry(
+        self,
+        bar: pd.Series,
+        timestamp: datetime,
+        bar_idx: int,
+    ) -> None:
+        """
+        Process a pending entry order (for NEXT_BAR_OPEN fill mode).
+
+        This fills a queued entry at the current bar's open price,
+        which is the correct behavior for NEXT_BAR_OPEN mode.
+
+        Args:
+            bar: Current bar data (we fill at this bar's open)
+            timestamp: Current timestamp
+            bar_idx: Current bar index
+        """
+        if self._pending_entry is None:
+            return
+
+        # Check if we still can open a position
+        if self._position is not None:
+            logger.debug("Pending entry cancelled: already in position")
+            self._pending_entry = None
+            return
+
+        if not self._can_open_new_position(timestamp):
+            logger.debug("Pending entry cancelled: EOD restrictions")
+            self._pending_entry = None
+            return
+
+        signal = self._pending_entry.signal
+        direction = 1 if signal.signal_type == SignalType.LONG_ENTRY else -1
+
+        # Fill at THIS bar's open (which is the "next bar" from signal's perspective)
+        entry_price = bar['open']
+
+        # Get ATR params for slippage
+        current_atr, normal_atr = self._get_slippage_atr_params()
+
+        # Apply slippage
+        entry_price = self._slippage_model.apply_slippage(
+            price=entry_price,
+            direction=direction,
+            order_type=OrderType.MARKET,
+            current_atr=current_atr,
+            normal_atr=normal_atr,
+        )
+
+        # Calculate position size
+        size_multiplier = self._get_eod_size_multiplier(timestamp)
+        contracts = max(1, int(size_multiplier))  # Minimum 1 contract
+        contracts = min(contracts, self.config.max_position_size)
+
+        # Calculate stop and target prices
+        stop_ticks = signal.stop_ticks or self.config.default_stop_ticks
+        target_ticks = signal.target_ticks or self.config.default_target_ticks
+
+        if direction == 1:  # Long
+            stop_price = entry_price - (stop_ticks * self.config.tick_size)
+            target_price = entry_price + (target_ticks * self.config.tick_size)
+        else:  # Short
+            stop_price = entry_price + (stop_ticks * self.config.tick_size)
+            target_price = entry_price - (target_ticks * self.config.tick_size)
+
+        # Create position
+        self._position = Position(
+            entry_time=timestamp,  # Use current bar's timestamp (fill time)
+            entry_price=entry_price,
+            direction=direction,
+            contracts=contracts,
+            stop_price=stop_price,
+            target_price=target_price,
+            entry_bar_idx=bar_idx,
+            model_confidence=signal.confidence,
+            predicted_class=signal.predicted_class,
+        )
+
+        logger.debug(
+            f"Pending entry filled at {entry_price:.2f} (open of bar {bar_idx}), "
+            f"direction={direction}, contracts={contracts}"
+        )
+
+        # Clear pending entry
+        self._pending_entry = None
+
     def run(
         self,
         data: pd.DataFrame,
@@ -600,8 +792,16 @@ class BacktestEngine:
         # Main loop
         total_bars = len(data)
         for bar_idx, (timestamp, bar) in enumerate(data.iterrows()):
+            # Update ATR tracking FIRST (before any trading decisions)
+            self._update_atr(bar)
+
             # Check for new trading day
             self._handle_new_day(timestamp)
+
+            # Process pending entry (for NEXT_BAR_OPEN mode)
+            # This fills queued entries at THIS bar's open
+            if self._pending_entry is not None:
+                self._process_pending_entry(bar, timestamp, bar_idx)
 
             # Check stop/target on open position
             if self._position is not None:
@@ -611,6 +811,10 @@ class BacktestEngine:
 
             # Check EOD flatten
             if self._should_flatten_eod(timestamp):
+                # Cancel any pending entries at EOD
+                if self._pending_entry is not None:
+                    logger.debug("Pending entry cancelled due to EOD flatten")
+                    self._pending_entry = None
                 if self._position is not None:
                     self._execute_exit(
                         Signal(SignalType.FLATTEN, reason="EOD flatten"),
@@ -904,7 +1108,12 @@ class BacktestEngine:
         bar_idx: int,
     ) -> None:
         """
-        Execute an entry order.
+        Execute an entry order based on the configured fill mode.
+
+        Fill Modes:
+        - SIGNAL_BAR_CLOSE: Fill immediately at this bar's close price
+        - NEXT_BAR_OPEN: Queue entry to fill at next bar's open price
+        - PRICE_TOUCH: Fill only if order price is within bar's range
 
         Args:
             signal: Entry signal
@@ -914,19 +1123,51 @@ class BacktestEngine:
         """
         direction = 1 if signal.signal_type == SignalType.LONG_ENTRY else -1
 
-        # Get fill price based on fill mode
-        if self.config.fill_mode == OrderFillMode.SIGNAL_BAR_CLOSE:
-            base_price = bar['close']
-        else:
-            # NEXT_BAR_OPEN or PRICE_TOUCH - use close as approximation
+        # Handle fill mode
+        if self.config.fill_mode == OrderFillMode.NEXT_BAR_OPEN:
+            # Queue entry to be filled at next bar's open
+            self._pending_entry = PendingEntry(
+                signal=signal,
+                bar_idx=bar_idx,
+                timestamp=timestamp,
+            )
+            logger.debug(f"Entry queued for next bar open (bar {bar_idx})")
+            return
+
+        elif self.config.fill_mode == OrderFillMode.PRICE_TOUCH:
+            # For PRICE_TOUCH, we need to determine an "order price"
+            # Use the close as the intended entry price, then check if
+            # price touched that level during the bar
+            intended_price = bar['close']
+
+            # Check if the intended price was touched during the bar
+            # A price is "touched" if it falls within [low, high]
+            if not (bar['low'] <= intended_price <= bar['high']):
+                # Price not touched - entry fails
+                logger.debug(
+                    f"PRICE_TOUCH entry failed: price {intended_price:.2f} "
+                    f"not in range [{bar['low']:.2f}, {bar['high']:.2f}]"
+                )
+                return
+
+            # Fill at the intended price (limit order behavior - no slippage)
+            entry_price = intended_price
+
+        else:  # SIGNAL_BAR_CLOSE
+            # Fill at this bar's close price with slippage
             base_price = bar['close']
 
-        # Apply slippage
-        entry_price = self._slippage_model.apply_slippage(
-            price=base_price,
-            direction=direction,
-            order_type=OrderType.MARKET,
-        )
+            # Get ATR params for slippage
+            current_atr, normal_atr = self._get_slippage_atr_params()
+
+            # Apply slippage
+            entry_price = self._slippage_model.apply_slippage(
+                price=base_price,
+                direction=direction,
+                order_type=OrderType.MARKET,
+                current_atr=current_atr,
+                normal_atr=normal_atr,
+            )
 
         # Calculate position size
         size_multiplier = self._get_eod_size_multiplier(timestamp)
@@ -994,10 +1235,15 @@ class BacktestEngine:
 
         # Apply slippage for market exits (not targets)
         if exit_reason != ExitReason.TARGET:
+            # Get ATR params for slippage
+            current_atr, normal_atr = self._get_slippage_atr_params()
+
             exit_price = self._slippage_model.apply_slippage(
                 price=base_price,
                 direction=-pos.direction,  # Opposite direction for exit
                 order_type=OrderType.MARKET,
+                current_atr=current_atr,
+                normal_atr=normal_atr,
                 contracts=pos.contracts,
             )
         else:

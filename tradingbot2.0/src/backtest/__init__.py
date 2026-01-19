@@ -35,9 +35,11 @@ from .engine import (
     BacktestConfig,
     BacktestResult,
     OrderFillMode,
+    SessionFilter,
     Signal,
     SignalType,
     Position,
+    PendingEntry,
     WalkForwardValidator,
 )
 from .go_live_validator import (
@@ -93,9 +95,11 @@ __all__ = [
     "BacktestConfig",
     "BacktestResult",
     "OrderFillMode",
+    "SessionFilter",
     "Signal",
     "SignalType",
     "Position",
+    "PendingEntry",
     "WalkForwardValidator",
     # Go-Live Validation
     "GoLiveValidator",
