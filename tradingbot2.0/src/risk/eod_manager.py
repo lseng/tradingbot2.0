@@ -237,6 +237,46 @@ class EODManager:
         status = self.get_status(current_time)
         return status.minutes_to_close
 
+    def get_stop_tighten_factor(self, current_time: Optional[datetime] = None) -> float:
+        """
+        Get stop tightening factor based on time remaining until close.
+
+        2.6 FIX: Implements time-decay stop tightening.
+
+        Returns a factor (0.0 to 1.0) that should be multiplied with
+        stop distance. Factor decreases as market close approaches:
+
+        - > 60 minutes to close: 1.0 (no tightening)
+        - 30-60 minutes: 0.90 (10% tighter)
+        - 15-30 minutes: 0.80 (20% tighter)
+        - 5-15 minutes: 0.70 (30% tighter)
+        - < 5 minutes: 0.60 (40% tighter)
+
+        This protects profits as EOD approaches and reduces overnight
+        exposure risk per specs/risk-management.md.
+
+        Args:
+            current_time: Time to check (uses current time if None)
+
+        Returns:
+            Tightening factor (1.0 = no tightening, lower = tighter stops)
+        """
+        minutes = self.get_minutes_to_close(current_time)
+
+        # No tightening if more than 60 minutes to close
+        if minutes > 60:
+            return 1.0
+
+        # Progressive tightening schedule
+        if minutes > 30:
+            return 0.90  # 10% tighter
+        elif minutes > 15:
+            return 0.80  # 20% tighter
+        elif minutes > 5:
+            return 0.70  # 30% tighter
+        else:
+            return 0.60  # 40% tighter (maximum tightening)
+
     def is_trading_session(self, current_time: Optional[datetime] = None) -> bool:
         """
         Check if currently in trading session (9:30 AM - 4:30 PM NY).

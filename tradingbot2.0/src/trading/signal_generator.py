@@ -227,6 +227,7 @@ class SignalGenerator:
         position: Position,
         risk_manager: 'RiskManager',
         current_atr: Optional[float] = None,
+        eod_tighten_factor: Optional[float] = None,
     ) -> Optional[Signal]:
         """
         Generate trading signal from model prediction.
@@ -236,6 +237,8 @@ class SignalGenerator:
             position: Current position state
             risk_manager: Risk manager for limit checks
             current_atr: Current ATR for volatility-adjusted stops
+            eod_tighten_factor: EOD stop tightening factor (1.0 = no tightening,
+                               lower = tighter stops). See EODManager.get_stop_tighten_factor()
 
         Returns:
             Signal to execute, or None if no action
@@ -259,7 +262,8 @@ class SignalGenerator:
             )
 
         # Calculate stop/target based on ATR or defaults
-        stop_ticks, target_ticks = self._calculate_stops(current_atr)
+        # 2.6 FIX: Apply EOD time-decay tightening
+        stop_ticks, target_ticks = self._calculate_stops(current_atr, eod_tighten_factor)
 
         # Generate signal based on position state
         if position.is_flat:
@@ -461,12 +465,20 @@ class SignalGenerator:
             reason="Holding short position",
         )
 
-    def _calculate_stops(self, current_atr: Optional[float]) -> tuple[float, float]:
+    def _calculate_stops(
+        self,
+        current_atr: Optional[float],
+        eod_tighten_factor: Optional[float] = None,
+    ) -> tuple[float, float]:
         """
         Calculate stop and target distances.
 
+        2.6 FIX: Applies EOD time-decay tightening when factor provided.
+
         Args:
             current_atr: Current ATR in points
+            eod_tighten_factor: EOD tightening factor (1.0 = no tightening,
+                               0.7 = 30% tighter). Tightens stops as EOD approaches.
 
         Returns:
             Tuple of (stop_ticks, target_ticks)
@@ -483,6 +495,18 @@ class SignalGenerator:
             # Use defaults
             stop_ticks = self.config.default_stop_ticks
             target_ticks = self.config.default_target_ticks
+
+        # 2.6 FIX: Apply EOD time-decay tightening
+        if eod_tighten_factor is not None and eod_tighten_factor < 1.0:
+            original_stop = stop_ticks
+            stop_ticks = max(4.0, stop_ticks * eod_tighten_factor)  # Maintain minimum
+            # Target is tightened proportionally
+            target_ticks = target_ticks * eod_tighten_factor
+
+            logger.debug(
+                f"EOD tightening applied: stop {original_stop:.1f} -> {stop_ticks:.1f} ticks "
+                f"(factor={eod_tighten_factor:.2f})"
+            )
 
         return stop_ticks, target_ticks
 

@@ -1,8 +1,8 @@
 # Implementation Plan - MES Futures Scalping Bot
 
-> **Last Updated**: 2026-01-18 UTC (2.8 Fixed - Session summary persistence/export)
+> **Last Updated**: 2026-01-18 UTC (2.6 Fixed - Time-decay stop tightening)
 > **Status**: **UNBLOCKED - Bug #10 Fixed** - LSTM training now functional on full dataset
-> **Test Coverage**: 2,717 tests across 62 test files (1 skipped: conditional on optional deps)
+> **Test Coverage**: 2,735 tests across 62 test files (1 skipped: conditional on optional deps)
 > **Git Tag**: v0.0.80
 > **Code Quality**: No TODO/FIXME comments found in src/; all abstract methods properly implemented; EODPhase consolidated
 
@@ -15,7 +15,7 @@
 | **P0** | 1 | FIXED | Bug #10: LSTM sequence creation - FIXED with numpy stride tricks |
 | **Code Quality** | 3 | FIXED | CQ.1, CQ.2, CQ.3 all FIXED - constants consolidated |
 | **P1** | 14 | HIGH | All Phase 4 items complete |
-| **P2** | 11 | MEDIUM | Hybrid architecture, focal loss, latency test organization (session reporting FIXED) |
+| **P2** | 10 | MEDIUM | Hybrid architecture, focal loss, latency test organization (session reporting FIXED, time-decay stops FIXED) |
 | **P3** | 9 | LOW | Nice-to-have items, **batch feature parity** |
 
 ---
@@ -56,11 +56,11 @@ Execute tasks in this exact order for optimal progress:
 | 15 | 1.6 | Implement Monte Carlo simulation | 6-8 hrs | **FIXED (2026-01-18)** |
 
 ### Phase 5: Risk Management Enhancements
-| Order | ID | Task | Est. Time |
-|-------|-----|------|-----------|
-| 16 | 1.10 | Implement partial profit taking (TP1/TP2/TP3) | 4 hrs |
-| 17 | 2.6 | Add time-decay stop tightening | 3 hrs |
-| 18 | 2.8 | Add session summary persistence/export | 2 hrs |
+| Order | ID | Task | Est. Time | Status |
+|-------|-----|------|-----------|--------|
+| 16 | 1.10 | Implement partial profit taking (TP1/TP2/TP3) | 4 hrs | |
+| 17 | 2.6 | Add time-decay stop tightening | 3 hrs | **FIXED (2026-01-18)** |
+| 18 | 2.8 | Add session summary persistence/export | 2 hrs | **FIXED (2026-01-18)** |
 
 ### Phase 6: Pre-Paper Trading Requirements
 | Order | ID | Task | Est. Time |
@@ -709,7 +709,7 @@ Trade log CSV export only implemented for backtest module, not for live trading.
 | **2.3** | `src/ml/` | Focal loss NOT implemented - uses CrossEntropyLoss only | NOT IMPLEMENTED |
 | **2.4** | `src/ml/` | Gradient clipping inconsistent (spec: 1.0) | PARTIAL |
 | **2.5** | `src/risk/stops.py` | Dynamic R:R - no ML-predicted expected move | PARTIAL |
-| **2.6** | `src/risk/stops.py` | Stop loss adjustment - no time-decay tightening (only EOD tightening) | NOT IMPLEMENTED |
+| **2.6** | `src/risk/stops.py` | Time-decay stop tightening - dynamic factor based on minutes to close | **FIXED (2026-01-18)** |
 | **2.7** | `src/trading/` | MarketDataStream component missing (architecture) | NOT IMPLEMENTED |
 | **2.8** | `src/trading/` | Session summary - export_json(), export_csv(), get_metrics(), Sharpe, largest win/loss | **FIXED (2026-01-18)** |
 | **2.9** | `src/api/` | WebSocket 2-session limit not enforced | NOT IMPLEMENTED |
@@ -772,7 +772,7 @@ class FocalLoss(nn.Module):
 
 ---
 
-### 2.5-2.6: Dynamic Stop/Target Management
+### 2.5: Dynamic Stop/Target Management
 
 **File**: `src/risk/stops.py`
 
@@ -780,7 +780,6 @@ class FocalLoss(nn.Module):
 
 - ML-predicted expected move for dynamic R:R
 - Volatility-adjusted stop widening
-- Time-decay tightening as EOD approaches (only EOD tightening exists, no gradual time-decay)
 - Price stall detection
 
 #### Acceptance Criteria
@@ -788,7 +787,34 @@ class FocalLoss(nn.Module):
 - [ ] `DynamicStopManager` accepts volatility prediction
 - [ ] Stop width = `base_width * volatility_multiplier`
 - [ ] After 50% of max hold time, stops tighten by 25%
-- [ ] EOD proximity triggers aggressive stop tightening
+
+---
+
+### 2.6: Time-Decay Stop Tightening (FIXED)
+
+**File**: `src/risk/eod_manager.py`, `src/trading/signal_generator.py`, `src/trading/live_trader.py`
+**Status**: **FIXED (2026-01-18)**
+**Tests**: 19 new tests added (12 for EODManager, 7 for SignalGenerator)
+
+#### Implementation Details
+
+1. **EODManager.get_stop_tighten_factor()** implemented with progressive tightening based on minutes to close:
+   - `>60 minutes`: factor = 1.0 (no tightening)
+   - `30-60 minutes`: factor = 0.90 (10% tighter)
+   - `15-30 minutes`: factor = 0.80 (20% tighter)
+   - `5-15 minutes`: factor = 0.70 (30% tighter)
+   - `<5 minutes`: factor = 0.60 (40% tighter)
+
+2. **SignalGenerator._calculate_stops()** updated to accept and apply `tighten_factor` parameter
+
+3. **LiveTrader** passes tighten factor from EODManager to SignalGenerator during signal processing
+
+#### Acceptance Criteria
+
+- [x] `EODManager.get_stop_tighten_factor()` returns progressive factor based on minutes to close
+- [x] `SignalGenerator._calculate_stops()` accepts and applies tighten factor
+- [x] `LiveTrader` integrates EODManager tighten factor with SignalGenerator
+- [x] EOD proximity triggers aggressive stop tightening
 
 ---
 
@@ -1018,6 +1044,27 @@ Bug fixes applied to `rt_features.py` were NOT backported to `scalping_features.
 ---
 
 ## Completed Items (Historical Reference)
+
+### Time-Decay Stop Tightening (2026-01-18)
+
+| Item | Issue | Fix |
+|------|-------|-----|
+| 2.6 | Stop loss adjustment - no time-decay tightening (only EOD tightening) | Implemented progressive stop tightening based on minutes to close |
+
+**EODManager.get_stop_tighten_factor() implemented:**
+- Progressive tightening: 1.0 (>60min), 0.90 (30-60), 0.80 (15-30), 0.70 (5-15), 0.60 (<5min)
+
+**SignalGenerator._calculate_stops() updated:**
+- Accepts and applies `tighten_factor` parameter
+
+**LiveTrader integration:**
+- Passes tighten factor from EODManager to SignalGenerator
+
+**New tests added (19 tests):**
+- 12 tests for EODManager stop tightening factor
+- 7 tests for SignalGenerator tighten factor application
+
+---
 
 ### Session Summary Persistence/Export (2026-01-18)
 

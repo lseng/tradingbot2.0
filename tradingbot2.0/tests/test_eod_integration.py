@@ -759,5 +759,123 @@ class TestEODStatusReasons:
         assert "flat" in status.reason.lower() or "4:30" in status.reason
 
 
+# =============================================================================
+# Time-Decay Stop Tightening Tests (2.6 FIX)
+# =============================================================================
+
+class TestStopTightenFactor:
+    """
+    Tests for EODManager.get_stop_tighten_factor().
+
+    2.6 FIX: Time-decay stop tightening as EOD approaches.
+
+    Factor schedule (minutes to close -> factor):
+    - > 60 minutes: 1.0 (no tightening)
+    - 30-60 minutes: 0.90 (10% tighter)
+    - 15-30 minutes: 0.80 (20% tighter)
+    - 5-15 minutes: 0.70 (30% tighter)
+    - < 5 minutes: 0.60 (40% tighter)
+    """
+
+    def test_no_tightening_early_session(self, eod_manager):
+        """Test no tightening when more than 60 minutes to close."""
+        # 2 hours before close (2:30 PM -> 4:30 PM = 120 mins)
+        test_time = datetime(2025, 1, 15, 14, 30, 0, tzinfo=NY_TIMEZONE)
+        factor = eod_manager.get_stop_tighten_factor(test_time)
+        assert factor == 1.0, f"Expected 1.0 for 120 mins to close, got {factor}"
+
+    def test_no_tightening_over_60_minutes(self, eod_manager):
+        """Test no tightening when exactly 61 minutes to close."""
+        # 61 minutes before close (3:29 PM)
+        test_time = datetime(2025, 1, 15, 15, 29, 0, tzinfo=NY_TIMEZONE)
+        factor = eod_manager.get_stop_tighten_factor(test_time)
+        assert factor == 1.0, f"Expected 1.0 for 61 mins to close, got {factor}"
+
+    def test_10_percent_tightening_30_60_minutes(self, eod_manager):
+        """Test 10% tightening when 30-60 minutes to close."""
+        # 45 minutes before close (3:45 PM)
+        test_time = datetime(2025, 1, 15, 15, 45, 0, tzinfo=NY_TIMEZONE)
+        factor = eod_manager.get_stop_tighten_factor(test_time)
+        assert factor == 0.90, f"Expected 0.90 for 45 mins to close, got {factor}"
+
+    def test_20_percent_tightening_15_30_minutes(self, eod_manager):
+        """Test 20% tightening when 15-30 minutes to close."""
+        # 20 minutes before close (4:10 PM)
+        test_time = datetime(2025, 1, 15, 16, 10, 0, tzinfo=NY_TIMEZONE)
+        factor = eod_manager.get_stop_tighten_factor(test_time)
+        assert factor == 0.80, f"Expected 0.80 for 20 mins to close, got {factor}"
+
+    def test_30_percent_tightening_5_15_minutes(self, eod_manager):
+        """Test 30% tightening when 5-15 minutes to close."""
+        # 10 minutes before close (4:20 PM)
+        test_time = datetime(2025, 1, 15, 16, 20, 0, tzinfo=NY_TIMEZONE)
+        factor = eod_manager.get_stop_tighten_factor(test_time)
+        assert factor == 0.70, f"Expected 0.70 for 10 mins to close, got {factor}"
+
+    def test_40_percent_tightening_under_5_minutes(self, eod_manager):
+        """Test 40% tightening when less than 5 minutes to close."""
+        # 3 minutes before close (4:27 PM)
+        test_time = datetime(2025, 1, 15, 16, 27, 0, tzinfo=NY_TIMEZONE)
+        factor = eod_manager.get_stop_tighten_factor(test_time)
+        assert factor == 0.60, f"Expected 0.60 for 3 mins to close, got {factor}"
+
+    def test_boundary_60_minutes(self, eod_manager):
+        """Test boundary at exactly 60 minutes to close."""
+        # Exactly 60 minutes (3:30 PM)
+        test_time = datetime(2025, 1, 15, 15, 30, 0, tzinfo=NY_TIMEZONE)
+        factor = eod_manager.get_stop_tighten_factor(test_time)
+        # 60 minutes should be in the 30-60 band (0.90)
+        assert factor == 0.90, f"Expected 0.90 for exactly 60 mins, got {factor}"
+
+    def test_boundary_30_minutes(self, eod_manager):
+        """Test boundary at exactly 30 minutes to close."""
+        # Exactly 30 minutes (4:00 PM)
+        test_time = datetime(2025, 1, 15, 16, 0, 0, tzinfo=NY_TIMEZONE)
+        factor = eod_manager.get_stop_tighten_factor(test_time)
+        # 30 minutes should be in the 15-30 band (0.80)
+        assert factor == 0.80, f"Expected 0.80 for exactly 30 mins, got {factor}"
+
+    def test_boundary_15_minutes(self, eod_manager):
+        """Test boundary at exactly 15 minutes to close."""
+        # Exactly 15 minutes (4:15 PM)
+        test_time = datetime(2025, 1, 15, 16, 15, 0, tzinfo=NY_TIMEZONE)
+        factor = eod_manager.get_stop_tighten_factor(test_time)
+        # 15 minutes should be in the 5-15 band (0.70)
+        assert factor == 0.70, f"Expected 0.70 for exactly 15 mins, got {factor}"
+
+    def test_boundary_5_minutes(self, eod_manager):
+        """Test boundary at exactly 5 minutes to close."""
+        # Exactly 5 minutes (4:25 PM)
+        test_time = datetime(2025, 1, 15, 16, 25, 0, tzinfo=NY_TIMEZONE)
+        factor = eod_manager.get_stop_tighten_factor(test_time)
+        # 5 minutes should be in the <5 band (0.60)
+        assert factor == 0.60, f"Expected 0.60 for exactly 5 mins, got {factor}"
+
+    def test_at_market_close(self, eod_manager):
+        """Test maximum tightening at market close."""
+        # At 4:30 PM (0 minutes)
+        test_time = datetime(2025, 1, 15, 16, 30, 0, tzinfo=NY_TIMEZONE)
+        factor = eod_manager.get_stop_tighten_factor(test_time)
+        assert factor == 0.60, f"Expected 0.60 for 0 mins to close, got {factor}"
+
+    def test_progressive_tightening(self, eod_manager):
+        """Test that factors decrease monotonically as time progresses."""
+        times = [
+            datetime(2025, 1, 15, 14, 30, 0, tzinfo=NY_TIMEZONE),  # 120 mins
+            datetime(2025, 1, 15, 15, 45, 0, tzinfo=NY_TIMEZONE),  # 45 mins
+            datetime(2025, 1, 15, 16, 10, 0, tzinfo=NY_TIMEZONE),  # 20 mins
+            datetime(2025, 1, 15, 16, 20, 0, tzinfo=NY_TIMEZONE),  # 10 mins
+            datetime(2025, 1, 15, 16, 27, 0, tzinfo=NY_TIMEZONE),  # 3 mins
+        ]
+
+        factors = [eod_manager.get_stop_tighten_factor(t) for t in times]
+
+        # Verify monotonically decreasing or equal
+        for i in range(len(factors) - 1):
+            assert factors[i] >= factors[i + 1], (
+                f"Factor should decrease over time: {factors[i]} >= {factors[i + 1]}"
+            )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -834,11 +834,16 @@ class LiveTrader:
 
             # 5. Generate signal
             current_atr = self._feature_engine.get_atr()
+
+            # 2.6 FIX: Get EOD tightening factor for time-decay stop management
+            eod_tighten_factor = self._eod_manager.get_stop_tighten_factor() if self._eod_manager else None
+
             signal = self._signal_generator.generate(
                 prediction=prediction,
                 position=self._position_manager.position,
                 risk_manager=self._risk_manager,
                 current_atr=current_atr,
+                eod_tighten_factor=eod_tighten_factor,
             )
 
             if signal and signal.signal_type != SignalType.HOLD:

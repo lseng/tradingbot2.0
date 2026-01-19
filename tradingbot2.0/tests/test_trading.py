@@ -545,6 +545,78 @@ class TestSignalGenerator:
         # ATR=1.0, multiplier=1.5, so stop = 1.5 points = 6 ticks
         assert signal.stop_ticks >= 4.0  # At least minimum
 
+    def test_eod_tightening_no_factor(self, generator, mock_risk_manager, flat_position):
+        """No tightening when factor is None."""
+        pred = ModelPrediction(direction=1, confidence=0.75)
+
+        signal = generator.generate(pred, flat_position, mock_risk_manager, eod_tighten_factor=None)
+
+        # Default stop_ticks is 8.0
+        assert signal.stop_ticks == 8.0
+
+    def test_eod_tightening_factor_1(self, generator, mock_risk_manager, flat_position):
+        """No tightening when factor is 1.0."""
+        pred = ModelPrediction(direction=1, confidence=0.75)
+
+        signal = generator.generate(pred, flat_position, mock_risk_manager, eod_tighten_factor=1.0)
+
+        # Factor 1.0 = no tightening, default stop_ticks is 8.0
+        assert signal.stop_ticks == 8.0
+
+    def test_eod_tightening_factor_applied(self, generator, mock_risk_manager, flat_position):
+        """Tightening applied when factor < 1.0."""
+        pred = ModelPrediction(direction=1, confidence=0.75)
+
+        # Factor 0.7 = 30% tighter
+        signal = generator.generate(pred, flat_position, mock_risk_manager, eod_tighten_factor=0.7)
+
+        # Default stop_ticks is 8.0, with 0.7 factor = 5.6 ticks
+        expected_stop = 8.0 * 0.7  # 5.6
+        assert abs(signal.stop_ticks - expected_stop) < 0.01
+
+    def test_eod_tightening_minimum_stop(self, generator, mock_risk_manager, flat_position):
+        """Minimum stop of 4 ticks enforced during tightening."""
+        pred = ModelPrediction(direction=1, confidence=0.75)
+
+        # Factor 0.3 would reduce 8.0 to 2.4, but minimum is 4.0
+        signal = generator.generate(pred, flat_position, mock_risk_manager, eod_tighten_factor=0.3)
+
+        assert signal.stop_ticks >= 4.0
+
+    def test_eod_tightening_affects_target(self, generator, mock_risk_manager, flat_position):
+        """Target is also tightened proportionally."""
+        pred = ModelPrediction(direction=1, confidence=0.75)
+
+        # Without tightening
+        signal_normal = generator.generate(pred, flat_position, mock_risk_manager, eod_tighten_factor=1.0)
+
+        # With 0.7 tightening
+        signal_tight = generator.generate(pred, flat_position, mock_risk_manager, eod_tighten_factor=0.7)
+
+        # Target should be tightened proportionally
+        expected_target = signal_normal.target_ticks * 0.7
+        assert abs(signal_tight.target_ticks - expected_target) < 0.01
+
+    def test_eod_tightening_with_atr(self, generator, mock_risk_manager, flat_position):
+        """Tightening works with ATR-based stops."""
+        pred = ModelPrediction(direction=1, confidence=0.75)
+
+        # Without tightening
+        signal_normal = generator.generate(
+            pred, flat_position, mock_risk_manager,
+            current_atr=1.0, eod_tighten_factor=1.0
+        )
+
+        # With 0.8 tightening (20% tighter)
+        signal_tight = generator.generate(
+            pred, flat_position, mock_risk_manager,
+            current_atr=1.0, eod_tighten_factor=0.8
+        )
+
+        # Stop should be reduced by ~20%, but min 4 ticks
+        assert signal_tight.stop_ticks < signal_normal.stop_ticks
+        assert signal_tight.stop_ticks >= 4.0
+
 
 # =============================================================================
 # Real-Time Features Tests
