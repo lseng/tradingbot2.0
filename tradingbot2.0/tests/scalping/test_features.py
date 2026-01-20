@@ -22,6 +22,7 @@ from scalping.features import (
     ScalpingFeatureGenerator,
     FeatureConfig,
     create_target_variable,
+    create_volatility_target,
     _calculate_returns,
     _calculate_emas,
     _calculate_rsi,
@@ -414,3 +415,91 @@ class TestCreateTargetVariable:
         # The filter should reduce positive class percentage
         # (requires larger upward move to count as 1)
         assert with_filter_pct <= no_filter_pct
+
+
+class TestCreateVolatilityTarget:
+    """Tests for volatility target creation."""
+
+    def test_volatility_target_created(self, extended_5min_data):
+        """Test that volatility target is created."""
+        df_with_target, threshold = create_volatility_target(
+            extended_5min_data, horizon_bars=6
+        )
+
+        assert "target_volatility_6bar" in df_with_target.columns
+        assert threshold > 0  # Threshold should be positive
+
+    def test_volatility_target_binary(self, extended_5min_data):
+        """Test that volatility target is binary (0 or 1)."""
+        df_with_target, _ = create_volatility_target(
+            extended_5min_data, horizon_bars=6
+        )
+
+        valid_targets = df_with_target["target_volatility_6bar"].dropna()
+        assert all(v in [0.0, 1.0] for v in valid_targets)
+
+    def test_volatility_target_nan_at_end(self, extended_5min_data):
+        """Test that volatility target has NaN at the end (no future data)."""
+        df_with_target, _ = create_volatility_target(
+            extended_5min_data, horizon_bars=6
+        )
+
+        # Only the very last bar should have NaN (no future bars at all)
+        # Other bars near the end will have partial data but still produce a value
+        last_target = df_with_target["target_volatility_6bar"].iloc[-1]
+        assert pd.isna(last_target)
+
+    def test_volatility_target_class_balance(self, extended_5min_data):
+        """Test that volatility target respects percentile threshold."""
+        # 60th percentile means ~40% should be HIGH
+        df_with_target, _ = create_volatility_target(
+            extended_5min_data,
+            horizon_bars=6,
+            threshold_percentile=60.0,
+        )
+
+        valid_targets = df_with_target["target_volatility_6bar"].dropna()
+        high_pct = valid_targets.mean()
+
+        # Should be approximately 40% HIGH (1.0)
+        # Allow some tolerance due to small sample size
+        assert 0.2 < high_pct < 0.6
+
+    def test_future_volatility_column(self, extended_5min_data):
+        """Test that raw future volatility is also returned."""
+        df_with_target, _ = create_volatility_target(
+            extended_5min_data, horizon_bars=6
+        )
+
+        assert "future_volatility_6bar" in df_with_target.columns
+        # Future volatility should be positive
+        valid_vol = df_with_target["future_volatility_6bar"].dropna()
+        assert all(v >= 0 for v in valid_vol)
+
+    def test_different_thresholds(self, extended_5min_data):
+        """Test that different thresholds give different results."""
+        df_low, _ = create_volatility_target(
+            extended_5min_data,
+            horizon_bars=6,
+            threshold_percentile=30.0,  # Low threshold = more HIGH
+        )
+        df_high, _ = create_volatility_target(
+            extended_5min_data,
+            horizon_bars=6,
+            threshold_percentile=80.0,  # High threshold = fewer HIGH
+        )
+
+        low_pct = df_low["target_volatility_6bar"].dropna().mean()
+        high_pct = df_high["target_volatility_6bar"].dropna().mean()
+
+        # Lower threshold should give more HIGH classifications
+        assert low_pct > high_pct
+
+    def test_returns_tuple(self, extended_5min_data):
+        """Test that function returns tuple (DataFrame, threshold)."""
+        result = create_volatility_target(extended_5min_data, horizon_bars=6)
+
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        assert isinstance(result[0], pd.DataFrame)
+        assert isinstance(result[1], float)

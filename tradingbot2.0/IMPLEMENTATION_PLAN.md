@@ -1,7 +1,7 @@
 # Implementation Plan - 5-Minute Scalping System
 
 > **Last Updated**: 2026-01-20 UTC (Verified via codebase analysis)
-> **Status**: PHASES 1, 2.1, 2.2, 3.1, 3.3 COMPLETE - **VALIDATION FAILED**
+> **Status**: PHASES 1, 2.1, 2.2, 3.1, 3.3, 3.4 COMPLETE - **VALIDATION FAILED**
 > **Primary Spec**: `specs/5M_SCALPING_SYSTEM.md`
 > **Approach**: LightGBM/XGBoost (NOT neural networks)
 > **Data**: 6.5-year 1-minute data aggregated to 5-minute bars
@@ -9,7 +9,7 @@
 
 ## Progress Update - 2026-01-20
 
-**Phase 1 (Data Pipeline), Phase 2.1 (LightGBM Model Setup), Phase 2.2 (Walk-Forward Validation), Phase 3.1 (Backtest Engine), and Phase 3.3 (Validation Backtest) are COMPLETE.**
+**Phase 1 (Data Pipeline), Phase 2.1 (LightGBM Model Setup), Phase 2.2 (Walk-Forward Validation), Phase 3.1 (Backtest Engine), Phase 3.3 (Validation Backtest), and Phase 3.4 (Volatility Prediction Analysis) are COMPLETE.**
 
 ### CRITICAL FINDING: Validation Backtest FAILED
 
@@ -91,6 +91,33 @@ Given the validation failure, the following options should be considered:
    - Systematic macro strategies (longer timeframes)
 
 **Do NOT proceed to Phase 5 (Live Integration)** with the current system - it would result in significant losses.
+
+---
+
+## Phase 3.4: Volatility Prediction Analysis (COMPLETE)
+
+**Key Results:**
+- Volatility model achieves **AUC 0.856** (vs 0.51 for direction prediction)
+- Validation accuracy: **80.0%**
+- When predicting HIGH volatility, 79.8% are actually high (strong precision)
+- Top features: atr_14 (0.496 correlation), bar_range (0.435), bb_width (0.318)
+- Time-of-day is also predictive (first/last hour more volatile)
+
+**Critical Finding:**
+- Direction remains unpredictable regardless of volatility regime
+- HIGH volatility: 47.8% UP
+- LOW volatility: 50.2% UP
+- This means volatility prediction alone cannot improve direction trading
+
+**Implications:**
+1. Volatility IS predictable (unlike direction)
+2. But volatility prediction doesn't help us know WHICH WAY the market will move
+3. Alternative strategies needed: trade volatility itself (straddles), not direction
+
+**New files created:**
+- `scripts/run_volatility_prediction.py` - Volatility training and analysis script
+- Added `create_volatility_target()` function to `src/scalping/features.py`
+- Added 7 tests for volatility target in `tests/scalping/test_features.py`
 
 ---
 

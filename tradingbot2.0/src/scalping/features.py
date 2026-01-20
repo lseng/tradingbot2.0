@@ -469,6 +469,94 @@ class ScalpingFeatureGenerator:
         return True
 
 
+def create_volatility_target(
+    df: pd.DataFrame,
+    horizon_bars: int = 6,
+    threshold_percentile: float = 60.0,
+    tick_size: float = 0.25,
+) -> pd.DataFrame:
+    """
+    Create binary target variable for volatility prediction.
+
+    Instead of predicting price direction (which showed no signal), predict
+    whether the next N bars will have HIGH or LOW volatility.
+
+    Args:
+        df: DataFrame with OHLCV data
+        horizon_bars: Number of bars to look ahead (6 bars = 30 min on 5M)
+        threshold_percentile: Percentile above which volatility is considered HIGH
+        tick_size: Contract tick size (MES = 0.25)
+
+    Returns:
+        DataFrame with volatility target columns added
+
+    Target:
+        1 if realized_volatility[t:t+horizon] > percentile threshold
+        0 otherwise
+
+    Why this approach:
+        - Volatility is more predictable than direction (mean-reverting)
+        - High volatility periods offer better trading opportunities
+        - Low volatility periods are better for waiting/avoiding trades
+        - Can be used to filter direction trades or trade volatility directly
+    """
+    result = df.copy()
+
+    # Calculate forward-looking realized volatility as range over horizon
+    # Use rolling max(high) - rolling min(low) over the horizon period
+    future_high = df["high"].shift(-horizon_bars).rolling(window=horizon_bars, min_periods=1).max()
+    future_low = df["low"].shift(-horizon_bars).rolling(window=horizon_bars, min_periods=1).min()
+
+    # Shift back to align with current bar
+    # Actually, we need the range of the NEXT horizon bars, not including current
+    # So we look at bars t+1 through t+horizon
+    future_range = []
+    for i in range(len(df)):
+        end_idx = min(i + horizon_bars, len(df))
+        if i + 1 < len(df):
+            period_high = df["high"].iloc[i+1:end_idx].max() if end_idx > i+1 else np.nan
+            period_low = df["low"].iloc[i+1:end_idx].min() if end_idx > i+1 else np.nan
+            if pd.notna(period_high) and pd.notna(period_low):
+                future_range.append(period_high - period_low)
+            else:
+                future_range.append(np.nan)
+        else:
+            future_range.append(np.nan)
+
+    future_volatility = pd.Series(future_range, index=df.index)
+
+    # Normalize by current price to make comparable across time
+    future_volatility_pct = future_volatility / df["close"]
+
+    # Calculate threshold from training data (exclude last horizon bars)
+    valid_vol = future_volatility_pct.dropna()
+    if len(valid_vol) > 0:
+        threshold = np.percentile(valid_vol, threshold_percentile)
+    else:
+        threshold = 0.0
+
+    # Create binary target: 1 = HIGH volatility, 0 = LOW volatility
+    target_values = np.where(
+        future_volatility_pct.isna(),
+        np.nan,
+        (future_volatility_pct > threshold).astype(float)
+    )
+    result[f"target_volatility_{horizon_bars}bar"] = target_values
+
+    # Also store the raw volatility for analysis
+    result[f"future_volatility_{horizon_bars}bar"] = future_volatility_pct
+
+    # Log statistics
+    target_col = f"target_volatility_{horizon_bars}bar"
+    valid_targets = result[target_col].dropna()
+    if len(valid_targets) > 0:
+        high_vol_pct = valid_targets.mean() * 100
+        logger.info(f"Volatility target created: {high_vol_pct:.1f}% HIGH volatility periods "
+                   f"(threshold={threshold:.4f}, percentile={threshold_percentile})")
+
+    return result, threshold
+
+
 def create_target_variable(
     df: pd.DataFrame,
     horizon_bars: int = 6,

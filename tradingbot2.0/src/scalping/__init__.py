@@ -23,6 +23,7 @@ from .features import (
     ScalpingFeatureGenerator,
     FeatureConfig,
     create_target_variable,
+    create_volatility_target,
 )
 from .model import (
     ScalpingModel,
@@ -61,6 +62,7 @@ __all__ = [
     "ScalpingFeatureGenerator",
     "FeatureConfig",
     "create_target_variable",
+    "create_volatility_target",
     # Model
     "ScalpingModel",
     "ModelConfig",
