@@ -256,7 +256,7 @@ class TestCheckpointLoadingFormats:
 
     def test_load_new_format_checkpoint(self, new_format_checkpoint):
         """Test loading checkpoint in new format (model_config with type/params)."""
-        model, config = load_model(new_format_checkpoint)
+        model, config, scaler_mean, scaler_scale, is_binary = load_model(new_format_checkpoint)
 
         # Verify model loaded correctly
         assert model is not None
@@ -271,7 +271,7 @@ class TestCheckpointLoadingFormats:
 
     def test_load_old_format_checkpoint(self, old_format_checkpoint):
         """Test loading checkpoint in old format (config with model_type)."""
-        model, config = load_model(old_format_checkpoint)
+        model, config, scaler_mean, scaler_scale, is_binary = load_model(old_format_checkpoint)
 
         # Verify model loaded correctly
         assert model is not None
@@ -287,7 +287,7 @@ class TestCheckpointLoadingFormats:
 
     def test_load_lstm_checkpoint(self, lstm_checkpoint):
         """Test loading LSTM checkpoint."""
-        model, config = load_model(lstm_checkpoint)
+        model, config, _, _, _ = load_model(lstm_checkpoint)
 
         assert model is not None
         assert isinstance(model, LSTMNet)
@@ -295,7 +295,7 @@ class TestCheckpointLoadingFormats:
 
     def test_load_hybrid_checkpoint(self, hybrid_checkpoint):
         """Test loading Hybrid checkpoint."""
-        model, config = load_model(hybrid_checkpoint)
+        model, config, _, _, _ = load_model(hybrid_checkpoint)
 
         assert model is not None
         assert isinstance(model, HybridNet)
@@ -311,7 +311,7 @@ class TestCheckpointLoadingFormats:
             'model_state_dict': sample_feedforward_model.state_dict(),
         }, path1)
 
-        model1, _ = load_model(str(path1))
+        model1, _, _, _, _ = load_model(str(path1))
         assert model1 is not None
 
         # Test with 'state_dict' key (old format)
@@ -322,7 +322,7 @@ class TestCheckpointLoadingFormats:
             'state_dict': sample_feedforward_model.state_dict(),
         }, path2)
 
-        model2, _ = load_model(str(path2))
+        model2, _, _, _, _ = load_model(str(path2))
         assert model2 is not None
 
     def test_load_model_file_not_found(self, tmp_path):
@@ -344,7 +344,7 @@ class TestCheckpointLoadingFormats:
 
     def test_load_model_on_cpu(self, new_format_checkpoint):
         """Test loading model explicitly on CPU."""
-        model, config = load_model(new_format_checkpoint, device='cpu')
+        model, config, _, _, _ = load_model(new_format_checkpoint, device='cpu')
 
         # Verify model is on CPU
         for param in model.parameters():
@@ -365,7 +365,7 @@ class TestCheckpointLoadingFormats:
             'model_state_dict': sample_feedforward_model.state_dict(),
         }, path)
 
-        model, config = load_model(str(path))
+        model, config, _, _, _ = load_model(str(path))
         assert model is not None
         assert isinstance(model, FeedForwardNet)
 
@@ -617,7 +617,7 @@ class TestWithRealModel:
         if real_model_path is None:
             pytest.skip("Real model not available")
 
-        model, config = load_model(real_model_path)
+        model, config, _, _, _ = load_model(real_model_path)
 
         assert model is not None
         assert not model.training  # Should be in eval mode
@@ -627,7 +627,7 @@ class TestWithRealModel:
         if real_model_path is None:
             pytest.skip("Real model not available")
 
-        model, config = load_model(real_model_path)
+        model, config, _, _, _ = load_model(real_model_path)
 
         # Get input_dim from the model's first layer
         # FeedForwardNet has hidden_layers[0] as the first Linear layer
@@ -683,7 +683,7 @@ class TestEdgeCases:
             # No config - will use defaults that match this architecture
         }, path)
 
-        model, config = load_model(str(path))
+        model, config, _, _, _ = load_model(str(path))
         assert model is not None
         assert isinstance(model, FeedForwardNet)
 
@@ -699,5 +699,5 @@ class TestEdgeCases:
             'custom_metrics': [1, 2, 3],  # Extra field
         }, path)
 
-        model, config = load_model(str(path))
+        model, config, _, _, _ = load_model(str(path))
         assert model is not None
