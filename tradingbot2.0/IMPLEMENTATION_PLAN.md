@@ -1,6 +1,6 @@
 # Implementation Plan - 5-Minute Scalping System
 
-> **Last Updated**: 2026-01-20 UTC (Verified via codebase analysis)
+> **Last Updated**: 2026-01-20 UTC (tag v0.0.93)
 > **Status**: PHASES 1-3.6 COMPLETE - **ALL DIRECTION STRATEGIES FAILED** - PROJECT CONCLUDED
 > **Primary Spec**: `specs/5M_SCALPING_SYSTEM.md`
 > **Approach**: LightGBM/XGBoost (NOT neural networks)
@@ -115,7 +115,15 @@ Given the validation failure, the following options should be considered:
 
 **Current Test Status:**
 - All **3,140 tests pass** (2 skipped)
-- Created tag **v0.0.91**
+- Created tag **v0.0.93**
+
+### Recent Commits (v0.0.92 - v0.0.93)
+
+**v0.0.93** - Add binary model support, feature normalization, and archive specs:
+- `scripts/run_backtest.py`: Added scaler_mean/scaler_scale support for feature normalization, is_binary flag for binary UP/DOWN models, load_model() now returns 5 values
+- `src/ml/models/training.py`: Fixed duplicate num_classes argument in train_with_walk_forward()
+- `BUGS_FOUND.md`: Documented bugs #10 (LSTM slow - FIXED), #11 (OOM on full dataset - NOT FIXED), #12 (Blackwell GPU - ENVIRONMENT)
+- Moved legacy specs to `specs/archive/`
 
 ### Project Status Summary
 
