@@ -55,7 +55,7 @@ python scripts/download_data.py --backfill-gaps --validate
 
 Run these after implementing to get immediate feedback:
 
-- Tests: `pytest tests/` (2547 tests, 91% coverage)
+- Tests: `pytest tests/` (3443 tests)
 - Typecheck: `mypy src/ml/`
 - Lint: `ruff check src/ml/`
 
@@ -92,7 +92,7 @@ src/
 scripts/
 ├── run_backtest.py        # Backtest entry point
 └── run_live.py            # Live trading entry point
-tests/                     # 2547 tests (unit + integration)
+tests/                     # 3443 tests (unit + integration)
 ```
 
 ### Codebase Patterns
@@ -102,14 +102,6 @@ tests/                     # 2547 tests (unit + integration)
 - Walk-forward validation (time-series cross-validation)
 - Early stopping and gradient clipping for training stability
 
-### Known Issues (IMPORTANT - READ FIRST)
+### Known Issues
 
-**See `BUGS_FOUND.md` for 9 bugs discovered during production deployment.**
-
-Key issues requiring attention:
-1. Checkpoint format inconsistency between training and inference scripts
-2. ScalpingFeatureEngineer API mismatch in backtest script
-3. PerformanceMetrics attribute naming inconsistency
-4. Memory issues with large datasets (need chunked processing)
-
-Run `cat BUGS_FOUND.md` before planning to see full details and recommended fixes.
+See `BUGS_FOUND.md` for bug history. All 13 bugs have been fixed except #12 (Blackwell GPU compatibility - awaits PyTorch upgrade).
