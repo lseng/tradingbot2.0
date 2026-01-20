@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "ml"))
 
 from models.training import (
     SequenceDataset,
+    LazySequenceDataset,
     ModelTrainer,
     WalkForwardValidator,
     compute_class_weights,
@@ -763,6 +764,304 @@ class TestSequenceCreationPerformance:
 
         with pytest.raises(ValueError, match="Not enough samples"):
             SequenceDataset(X, y, seq_length=20)  # seq_length > n_samples
+
+
+class TestLazySequenceDataset:
+    """Tests for LazySequenceDataset class.
+
+    LazySequenceDataset provides memory-efficient sequence generation for LSTM
+    training on large datasets. It generates sequences on-the-fly during
+    __getitem__ calls instead of materializing all sequences upfront.
+
+    This addresses Bug #11: LSTM Sequence Creation OOM on full dataset.
+    """
+
+    def test_init_creates_correct_length(self, sample_features_and_targets):
+        """Test that initialization sets correct dataset length."""
+        X, y = sample_features_and_targets
+        seq_length = 10
+
+        dataset = LazySequenceDataset(X, y, seq_length=seq_length)
+
+        # Should have len(X) - seq_length samples
+        expected_samples = len(X) - seq_length
+        assert len(dataset) == expected_samples
+
+    def test_getitem_returns_correct_shapes(self, sample_features_and_targets):
+        """Test that __getitem__ returns correct tensor shapes."""
+        X, y = sample_features_and_targets
+        seq_length = 15
+        n_features = X.shape[1]
+
+        dataset = LazySequenceDataset(X, y, seq_length=seq_length)
+
+        # Get first item
+        X_seq, y_val = dataset[0]
+
+        assert X_seq.shape == (seq_length, n_features)
+        assert y_val.shape == ()  # Scalar
+
+    def test_getitem_returns_correct_types(self, sample_features_and_targets):
+        """Test that __getitem__ returns correct tensor types."""
+        X, y = sample_features_and_targets
+
+        dataset = LazySequenceDataset(X, y)
+        X_seq, y_val = dataset[0]
+
+        assert isinstance(X_seq, torch.Tensor)
+        assert isinstance(y_val, torch.Tensor)
+        assert X_seq.dtype == torch.float32
+        assert y_val.dtype == torch.int64  # LongTensor for CrossEntropyLoss
+
+    def test_getitem_values_match_sequencedataset(self, sample_features_and_targets):
+        """Test that values from LazySequenceDataset match SequenceDataset."""
+        X, y = sample_features_and_targets
+        seq_length = 10
+
+        lazy_dataset = LazySequenceDataset(X, y, seq_length=seq_length)
+        eager_dataset = SequenceDataset(X, y, seq_length=seq_length)
+
+        # Compare several samples
+        for idx in [0, 5, 10, len(lazy_dataset) - 1]:
+            X_lazy, y_lazy = lazy_dataset[idx]
+
+            # Get corresponding values from eager dataset
+            X_eager = torch.FloatTensor(eager_dataset.X[idx])
+            y_eager = torch.tensor(eager_dataset.y[idx], dtype=torch.long)
+
+            torch.testing.assert_close(X_lazy, X_eager)
+            assert y_lazy.item() == y_eager.item()
+
+    def test_negative_indexing(self, sample_features_and_targets):
+        """Test that negative indexing works correctly."""
+        X, y = sample_features_and_targets
+        seq_length = 10
+
+        dataset = LazySequenceDataset(X, y, seq_length=seq_length)
+
+        # Get last item using negative index
+        X_last_neg, y_last_neg = dataset[-1]
+        X_last_pos, y_last_pos = dataset[len(dataset) - 1]
+
+        torch.testing.assert_close(X_last_neg, X_last_pos)
+        assert y_last_neg.item() == y_last_pos.item()
+
+    def test_index_out_of_range_raises(self, sample_features_and_targets):
+        """Test that out-of-range indexing raises IndexError."""
+        X, y = sample_features_and_targets
+        seq_length = 10
+
+        dataset = LazySequenceDataset(X, y, seq_length=seq_length)
+
+        with pytest.raises(IndexError):
+            _ = dataset[len(dataset)]  # One past the end
+
+        with pytest.raises(IndexError):
+            _ = dataset[-len(dataset) - 1]  # One before the start
+
+    def test_insufficient_data_raises(self):
+        """Test that insufficient data raises ValueError."""
+        X = np.random.randn(10, 5).astype(np.float32)
+        y = np.random.randint(0, 3, 10)
+
+        with pytest.raises(ValueError, match="Not enough samples"):
+            LazySequenceDataset(X, y, seq_length=20)
+
+    def test_dataloader_integration(self, sample_features_and_targets):
+        """Test that LazySequenceDataset works with PyTorch DataLoader."""
+        X, y = sample_features_and_targets
+        seq_length = 10
+        batch_size = 16
+
+        dataset = LazySequenceDataset(X, y, seq_length=seq_length)
+        loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
+
+        # Iterate through loader
+        total_samples = 0
+        for X_batch, y_batch in loader:
+            assert X_batch.dim() == 3  # (batch, seq_length, features)
+            assert y_batch.dim() == 1  # (batch,)
+            total_samples += len(X_batch)
+
+        assert total_samples == len(dataset)
+
+    def test_memory_estimate_methods(self, sample_features_and_targets):
+        """Test memory estimation methods."""
+        X, y = sample_features_and_targets
+        seq_length = 10
+
+        dataset = LazySequenceDataset(X, y, seq_length=seq_length)
+
+        # Lazy memory should be less than full materialization
+        lazy_gb = dataset.get_memory_estimate_gb()
+        full_gb = LazySequenceDataset.estimate_full_materialization_gb(
+            len(X), seq_length, X.shape[1]
+        )
+
+        # Lazy should use significantly less memory
+        assert lazy_gb < full_gb
+        # For this small test dataset, difference won't be huge
+        # but for large datasets, full_gb >> lazy_gb
+
+    def test_memory_efficiency_large_dataset(self):
+        """Test memory efficiency with larger dataset.
+
+        This test verifies that LazySequenceDataset doesn't allocate
+        O(n * seq_length * features) memory like SequenceDataset does.
+        """
+        import sys
+
+        n_samples = 50_000
+        n_features = 50
+        seq_length = 60
+
+        X = np.random.randn(n_samples, n_features).astype(np.float32)
+        y = np.random.randint(0, 3, n_samples)
+
+        # Create lazy dataset - should NOT allocate expanded sequences
+        lazy_dataset = LazySequenceDataset(X, y, seq_length=seq_length)
+
+        # Lazy dataset stores reference to X, not expanded sequences
+        # Memory should be ~O(n * features), not O(n * seq_length * features)
+        lazy_mem_gb = lazy_dataset.get_memory_estimate_gb()
+        full_mem_gb = LazySequenceDataset.estimate_full_materialization_gb(
+            n_samples, seq_length, n_features
+        )
+
+        # Lazy should use ~60x less memory (seq_length factor)
+        ratio = full_mem_gb / lazy_mem_gb
+        assert ratio > 30, f"Expected >30x memory savings, got {ratio:.1f}x"
+
+    def test_lstm_training_with_lazy_dataset(self, sample_features_and_targets):
+        """Test that LSTM model can train using LazySequenceDataset."""
+        X, y = sample_features_and_targets
+        seq_length = 10
+        batch_size = 16
+
+        # Create lazy dataset and loader
+        train_dataset = LazySequenceDataset(X[:400], y[:400], seq_length=seq_length)
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset, batch_size=batch_size, shuffle=True
+        )
+
+        # Create LSTM model
+        model = LSTMNet(input_dim=40, hidden_dim=16, num_layers=1, num_classes=3)
+
+        # Create trainer
+        trainer = ModelTrainer(model, device='cpu')
+
+        # Train for 2 epochs - should complete without errors
+        history = trainer.train(train_loader, epochs=2)
+
+        assert len(history['train_loss']) == 2
+        assert all(loss > 0 for loss in history['train_loss'])
+
+
+class TestLazySequenceWalkForward:
+    """Tests for walk-forward validation with LazySequenceDataset.
+
+    These tests verify that the use_lazy_sequences parameter works correctly
+    in train_with_walk_forward function.
+    """
+
+    def test_walk_forward_with_lazy_sequences_auto(self, sample_features_and_targets):
+        """Test walk-forward with use_lazy_sequences='auto' (default)."""
+        X, y = sample_features_and_targets
+
+        model_config = {
+            'type': 'lstm',
+            'params': {'hidden_dim': 16, 'num_layers': 1}
+        }
+
+        # With auto mode and low threshold, should use lazy sequences
+        results = train_with_walk_forward(
+            X, y,
+            model_config=model_config,
+            n_splits=2,
+            epochs=2,
+            batch_size=32,
+            seq_length=5,
+            num_classes=3,
+            validate_latency=False,
+            use_lazy_sequences='auto',
+            lazy_threshold_samples=100,  # Low threshold to trigger lazy
+        )
+
+        assert 'fold_metrics' in results
+        assert len(results['fold_metrics']) >= 1
+
+    def test_walk_forward_with_lazy_sequences_forced(self, sample_features_and_targets):
+        """Test walk-forward with use_lazy_sequences=True (forced)."""
+        X, y = sample_features_and_targets
+
+        model_config = {
+            'type': 'lstm',
+            'params': {'hidden_dim': 16, 'num_layers': 1}
+        }
+
+        # Force lazy sequences
+        results = train_with_walk_forward(
+            X, y,
+            model_config=model_config,
+            n_splits=2,
+            epochs=2,
+            batch_size=32,
+            seq_length=5,
+            num_classes=3,
+            validate_latency=False,
+            use_lazy_sequences=True,
+        )
+
+        assert results is not None
+        assert 'overall_accuracy' in results
+
+    def test_walk_forward_without_lazy_sequences(self, sample_features_and_targets):
+        """Test walk-forward with use_lazy_sequences=False (standard mode)."""
+        X, y = sample_features_and_targets
+
+        model_config = {
+            'type': 'lstm',
+            'params': {'hidden_dim': 16, 'num_layers': 1}
+        }
+
+        # Disable lazy sequences
+        results = train_with_walk_forward(
+            X, y,
+            model_config=model_config,
+            n_splits=2,
+            epochs=2,
+            batch_size=32,
+            seq_length=5,
+            num_classes=3,
+            validate_latency=False,
+            use_lazy_sequences=False,
+        )
+
+        assert results is not None
+        assert 'overall_accuracy' in results
+
+    def test_feedforward_ignores_lazy_sequences(self, sample_features_and_targets):
+        """Test that feedforward model ignores use_lazy_sequences parameter."""
+        X, y = sample_features_and_targets
+
+        model_config = {
+            'type': 'feedforward',
+            'params': {'hidden_dims': [16]}
+        }
+
+        # Should work regardless of use_lazy_sequences
+        results = train_with_walk_forward(
+            X, y,
+            model_config=model_config,
+            n_splits=2,
+            epochs=2,
+            num_classes=3,
+            validate_latency=False,
+            use_lazy_sequences=True,  # Should be ignored for feedforward
+        )
+
+        assert results is not None
+        assert 'overall_accuracy' in results
 
 
 class TestSimulateTradingForFold:

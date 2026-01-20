@@ -23,7 +23,7 @@ Best Practices:
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, Dataset
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 import pandas as pd
@@ -93,6 +93,137 @@ class SequenceDataset:
             torch.FloatTensor(self.X),
             torch.LongTensor(self.y)  # Class indices (0, 1, 2)
         )
+
+
+class LazySequenceDataset(Dataset):
+    """
+    Memory-efficient sequence dataset for LSTM training on large datasets.
+
+    Unlike SequenceDataset which materializes all sequences upfront, this class
+    generates sequences on-the-fly during __getitem__ calls. This reduces memory
+    usage from O(n * seq_length * features) to O(n * features), enabling training
+    on datasets that would otherwise cause OOM.
+
+    Trade-off: Slightly slower per-batch data loading due to on-the-fly sequence
+    creation, but avoids the ~145GB memory spike that occurs when materializing
+    all sequences for 6M+ samples.
+
+    Example:
+        >>> features = np.random.randn(6_000_000, 56).astype(np.float32)
+        >>> targets = np.random.randint(0, 3, 6_000_000)
+        >>> dataset = LazySequenceDataset(features, targets, seq_length=60)
+        >>> loader = DataLoader(dataset, batch_size=256, num_workers=4)
+        >>> for X_batch, y_batch in loader:
+        ...     # X_batch shape: (256, 60, 56)
+        ...     # y_batch shape: (256,)
+        ...     pass
+    """
+
+    def __init__(
+        self,
+        features: np.ndarray,
+        targets: np.ndarray,
+        seq_length: int = 20,
+        num_classes: int = 3
+    ):
+        """
+        Initialize lazy sequence dataset.
+
+        Args:
+            features: Feature array (n_samples, n_features) - stored by reference
+            targets: Target array (n_samples,) - class indices for multi-class
+            seq_length: Number of timesteps per sequence
+            num_classes: Number of classes (2=binary with BCELoss, 3+=multi-class)
+
+        Memory Usage:
+            - Stores references to input arrays (no copy)
+            - Per-batch allocation: batch_size * seq_length * n_features * 4 bytes
+            - For batch_size=256, seq=60, features=56: ~3.4 MB per batch
+            - Total memory: O(n * features) instead of O(n * seq * features)
+        """
+        self.seq_length = seq_length
+        self.num_classes = num_classes
+
+        # Validate inputs
+        n_samples = len(features) - seq_length
+        if n_samples <= 0:
+            raise ValueError(f"Not enough samples ({len(features)}) for sequence length {seq_length}")
+
+        # Store references (no copy) - critical for memory efficiency
+        self.features = features
+        self.targets = targets
+        self.n_samples = n_samples
+        self.n_features = features.shape[1]
+
+        logger.debug(
+            f"LazySequenceDataset: {self.n_samples} samples, "
+            f"seq_length={seq_length}, features={self.n_features}, "
+            f"memory ~{features.nbytes / 1e9:.1f} GB (lazy)"
+        )
+
+    def __len__(self) -> int:
+        """Return total number of sequences."""
+        return self.n_samples
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Get a single sequence and its target on-the-fly.
+
+        Args:
+            idx: Index of the sequence (0 to n_samples - 1)
+
+        Returns:
+            Tuple of (sequence_tensor, target_tensor):
+                - sequence_tensor: FloatTensor of shape (seq_length, n_features)
+                - target_tensor: LongTensor scalar (class index)
+        """
+        if idx < 0:
+            idx = self.n_samples + idx
+        if idx < 0 or idx >= self.n_samples:
+            raise IndexError(f"Index {idx} out of range for dataset with {self.n_samples} samples")
+
+        # Extract sequence: features[idx : idx + seq_length]
+        # No copy needed for slicing - PyTorch tensor conversion handles it
+        X_seq = self.features[idx : idx + self.seq_length]
+        y = self.targets[idx + self.seq_length]
+
+        # Convert to tensors
+        return torch.FloatTensor(X_seq), torch.tensor(y, dtype=torch.long)
+
+    def get_memory_estimate_gb(self) -> float:
+        """
+        Estimate memory usage in GB.
+
+        Returns:
+            Estimated memory for features + targets (no sequence expansion)
+        """
+        features_bytes = self.features.nbytes
+        targets_bytes = self.targets.nbytes
+        return (features_bytes + targets_bytes) / (1024 ** 3)
+
+    @staticmethod
+    def estimate_full_materialization_gb(
+        n_samples: int,
+        seq_length: int,
+        n_features: int
+    ) -> float:
+        """
+        Estimate memory if all sequences were materialized (like SequenceDataset).
+
+        Args:
+            n_samples: Number of samples
+            seq_length: Sequence length
+            n_features: Number of features
+
+        Returns:
+            Estimated memory in GB for full materialization
+        """
+        # X: (n_samples - seq_length, seq_length, n_features) * 4 bytes (float32)
+        # y: (n_samples - seq_length,) * 8 bytes (int64)
+        n_sequences = n_samples - seq_length
+        x_bytes = n_sequences * seq_length * n_features * 4
+        y_bytes = n_sequences * 8
+        return (x_bytes + y_bytes) / (1024 ** 3)
 
 
 def create_sequences_fast(
@@ -757,6 +888,8 @@ def train_with_walk_forward(
     validate_latency: bool = True,
     max_latency_p95_ms: float = 10.0,
     latency_benchmark_iterations: int = 500,
+    use_lazy_sequences: Union[bool, str] = 'auto',
+    lazy_threshold_samples: int = 1_000_000,
 ) -> Dict:
     """
     Train model using walk-forward validation with 3-class classification.
@@ -790,6 +923,12 @@ def train_with_walk_forward(
         max_latency_p95_ms: Maximum allowed P95 latency in milliseconds (default 10.0).
                             Training will fail if the final model exceeds this threshold.
         latency_benchmark_iterations: Number of iterations for latency benchmark (default 500).
+        use_lazy_sequences: Controls memory-efficient sequence generation for LSTM:
+                           - 'auto': Use LazySequenceDataset when samples > lazy_threshold_samples
+                           - True: Always use LazySequenceDataset (lower memory, slightly slower)
+                           - False: Always materialize sequences (faster, higher memory)
+        lazy_threshold_samples: When use_lazy_sequences='auto', use lazy loading if
+                                training samples exceed this threshold (default 1M).
 
     Returns:
         Dictionary with results for each fold including:
@@ -862,27 +1001,66 @@ def train_with_walk_forward(
 
         # Create model
         model_type = model_config.get('type', 'feedforward')
+        input_dim = X.shape[1]
+
+        # Determine whether to use lazy sequences for LSTM (memory-efficient for large datasets)
+        should_use_lazy = False
+        if model_type == 'lstm':
+            if use_lazy_sequences == 'auto':
+                should_use_lazy = len(X_train) > lazy_threshold_samples
+                if should_use_lazy:
+                    materialized_gb = LazySequenceDataset.estimate_full_materialization_gb(
+                        len(X_train), seq_length, input_dim
+                    )
+                    logger.info(
+                        f"Using LazySequenceDataset for memory efficiency "
+                        f"(train samples: {len(X_train):,}, would use ~{materialized_gb:.1f} GB if materialized)"
+                    )
+            elif use_lazy_sequences is True:
+                should_use_lazy = True
+                logger.info("Using LazySequenceDataset (forced via use_lazy_sequences=True)")
 
         if model_type == 'lstm':
-            # Create sequences
-            train_seq = SequenceDataset(X_train, y_train, seq_length, num_classes)
-            test_seq = SequenceDataset(X_test, y_test, seq_length, num_classes)
-            X_train_t, y_train_t = train_seq.get_tensors()
-            X_test_t, y_test_t = test_seq.get_tensors()
-            input_dim = X.shape[1]
+            if should_use_lazy:
+                # Memory-efficient: Use LazySequenceDataset which generates sequences on-the-fly
+                # This avoids OOM for datasets with millions of samples (Bug #11 fix)
+                train_dataset = LazySequenceDataset(X_train, y_train, seq_length, num_classes)
+                train_loader = DataLoader(
+                    train_dataset,
+                    batch_size=batch_size,
+                    shuffle=True,
+                    num_workers=0,  # Workers can cause issues with lazy loading
+                    pin_memory=False
+                )
+
+                # For test set, we still materialize sequences for prediction
+                # Test sets are typically smaller and we need full tensor for predict()
+                test_seq = SequenceDataset(X_test, y_test, seq_length, num_classes)
+                X_test_t, y_test_t = test_seq.get_tensors()
+                test_dataset = TensorDataset(X_test_t, y_test_t)
+                test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+            else:
+                # Standard: Materialize all sequences upfront (faster but more memory)
+                train_seq = SequenceDataset(X_train, y_train, seq_length, num_classes)
+                test_seq = SequenceDataset(X_test, y_test, seq_length, num_classes)
+                X_train_t, y_train_t = train_seq.get_tensors()
+                X_test_t, y_test_t = test_seq.get_tensors()
+
+                train_dataset = TensorDataset(X_train_t, y_train_t)
+                test_dataset = TensorDataset(X_test_t, y_test_t)
+                train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+                test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
         else:
             # For non-LSTM models, targets are class indices (LongTensor)
             X_train_t = torch.FloatTensor(X_train)
             y_train_t = torch.LongTensor(y_train)  # Class indices, no unsqueeze
             X_test_t = torch.FloatTensor(X_test)
             y_test_t = torch.LongTensor(y_test)
-            input_dim = X.shape[1]
 
-        # Create data loaders
-        train_dataset = TensorDataset(X_train_t, y_train_t)
-        test_dataset = TensorDataset(X_test_t, y_test_t)
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+            train_dataset = TensorDataset(X_train_t, y_train_t)
+            test_dataset = TensorDataset(X_test_t, y_test_t)
+            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+            test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
         # Create and train model
         # Remove num_classes from params if present to avoid duplicate argument

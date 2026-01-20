@@ -1,11 +1,32 @@
 # Implementation Plan - 5-Minute Scalping System
 
-> **Last Updated**: 2026-01-21 UTC (tag v0.0.95)
+> **Last Updated**: 2026-01-20 UTC (tag v0.0.96)
 > **Status**: PHASES 1-3.6 COMPLETE - **ALL DIRECTION STRATEGIES FAILED** - PROJECT CONCLUDED
 > **Primary Spec**: `specs/5M_SCALPING_SYSTEM.md`
 > **Approach**: LightGBM/XGBoost (NOT neural networks)
 > **Data**: 6.5-year 1-minute data aggregated to 5-minute bars
 > **Data File**: `data/historical/MES/MES_full_1min_continuous_UNadjusted.txt` (122MB, 2.3M rows)
+
+## Progress Update - 2026-01-20
+
+### Bug #11 Fixed: LSTM Sequence Creation OOM
+
+**Bug #11 is now FIXED** using `LazySequenceDataset`.
+
+**Problem**: The original LSTM sequence creation materialized all sequences at once, causing Out-of-Memory errors on the full dataset with memory usage of O(n * seq_length * features).
+
+**Solution**: Implemented `LazySequenceDataset` which generates sequences on-the-fly instead of materializing all at once. This reduces memory usage from O(n * seq_length * features) to O(n * features).
+
+**Changes:**
+- Added `LazySequenceDataset` class for memory-efficient sequence generation
+- Updated walk-forward cross-validation to use lazy sequence loading
+- Added 15 new tests for `LazySequenceDataset` and lazy sequence walk-forward
+
+**Test Count Update:**
+- Previous: 3,163 tests (68 tests in `test_training.py`)
+- Current: **3,178 tests** (83 tests in `test_training.py`)
+
+---
 
 ## Progress Update - 2026-01-21
 
@@ -55,7 +76,7 @@ The following source files were committed to the repository:
 
 ### Remaining P1 Bugs (from BUGS_FOUND.md)
 
-1. **Bug #11: LSTM Sequence Creation OOM on full dataset** - NOT FIXED
+1. **Bug #11: LSTM Sequence Creation OOM on full dataset** - **FIXED** (v0.0.96 - LazySequenceDataset)
 2. **Bug #13: Walk-Forward CV Memory Usage** - Needs investigation
 
 ---
