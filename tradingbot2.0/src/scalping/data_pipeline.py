@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 class DataConfig:
     """Configuration for data pipeline."""
 
-    data_path: Path
+    data_path: Path | str
     train_start: str = "2019-05-01"
     train_end: str = "2022-12-31"
     val_start: str = "2023-01-01"
@@ -45,9 +45,14 @@ class DataConfig:
     target_timeframe: str = "5min"
     rth_only: bool = True
 
+    def __post_init__(self):
+        """Convert data_path to Path if it's a string."""
+        if isinstance(self.data_path, str):
+            self.data_path = Path(self.data_path)
+
 
 def load_1min_data(
-    file_path: Path,
+    file_path: Path | str,
     validate: bool = True,
 ) -> pd.DataFrame:
     """
@@ -63,6 +68,10 @@ def load_1min_data(
     Expected file format:
         2019-05-01 00:00:00,2849.00,2849.25,2848.75,2849.00,100
     """
+    # Convert string to Path if needed
+    if isinstance(file_path, str):
+        file_path = Path(file_path)
+
     logger.info(f"Loading 1-minute data from {file_path}")
 
     if not file_path.exists():

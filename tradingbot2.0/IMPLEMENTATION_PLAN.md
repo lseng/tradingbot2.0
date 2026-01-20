@@ -1,7 +1,7 @@
 # Implementation Plan - 5-Minute Scalping System
 
 > **Last Updated**: 2026-01-20 UTC (Verified via codebase analysis)
-> **Status**: PHASES 1, 2.1, 2.2, 3.1 COMPLETE
+> **Status**: PHASES 1, 2.1, 2.2, 3.1, 3.3 COMPLETE - **VALIDATION FAILED**
 > **Primary Spec**: `specs/5M_SCALPING_SYSTEM.md`
 > **Approach**: LightGBM/XGBoost (NOT neural networks)
 > **Data**: 6.5-year 1-minute data aggregated to 5-minute bars
@@ -9,7 +9,36 @@
 
 ## Progress Update - 2026-01-20
 
-**Phase 1 (Data Pipeline), Phase 2.1 (LightGBM Model Setup), Phase 2.2 (Walk-Forward Validation), and Phase 3.1 (Backtest Engine) are COMPLETE.**
+**Phase 1 (Data Pipeline), Phase 2.1 (LightGBM Model Setup), Phase 2.2 (Walk-Forward Validation), Phase 3.1 (Backtest Engine), and Phase 3.3 (Validation Backtest) are COMPLETE.**
+
+### CRITICAL FINDING: Validation Backtest FAILED
+
+**The 24-feature LightGBM approach does NOT produce a profitable trading signal.** The validation backtest on 2023 data revealed a fundamental issue: the features have no predictive power for 5-minute price direction.
+
+**Validation Results (2023 data, min_confidence=60%):**
+- Total Trades: **0** (model never produced confidence >= 60%)
+- Model stopped at iteration 4 due to early stopping
+- Validation AUC: **0.51** (barely above random)
+- Prediction probability range: 0.42 - 0.51 (extremely narrow, centered on 0.5)
+
+**With confidence threshold lowered to 50%:**
+- Total Trades: 4,998 (19.6/day)
+- **Win Rate: 38.8%** (worse than coin flip)
+- **Profit Factor: 0.28** (losing $3.5 for every $1 won)
+- **Net P&L: -$26,420** on validation set
+- 60.9% of exits were stop losses
+
+**Feature Correlation Analysis:**
+| Feature | Correlation with Target |
+|---------|------------------------|
+| close_vs_ema200 | +0.019 |
+| close_vs_ema50 | +0.017 |
+| macd_signal | +0.015 |
+| All others | < 0.015 |
+
+The strongest feature correlation is only 0.019 - effectively zero predictive power.
+
+**Root Cause:** The MES futures market on 5-minute bars is highly efficient. Price movements approximate a random walk, making directional prediction with technical features essentially impossible.
 
 **New Modules Created**:
 - `src/scalping/data_pipeline.py` - Data loading, aggregation, RTH filtering, temporal splits
@@ -17,6 +46,7 @@
 - `src/scalping/model.py` - LightGBM classifier training and inference
 - `src/scalping/walk_forward.py` - Walk-forward cross-validation with calibration metrics
 - `src/scalping/backtest.py` - Simplified backtest engine with slippage, commission, and time stops
+- `scripts/run_validation_backtest.py` - Validation backtest runner
 - `tests/scalping/` - Comprehensive test suite with 173 passing tests
 
 ---
@@ -28,12 +58,39 @@ The previous neural network approach (v0.0.83) did NOT achieve profitability. Th
 | Phase | Description | Effort | Status |
 |-------|-------------|--------|--------|
 | **Phase 1** | Data Pipeline | 6-8 hrs | COMPLETE |
-| **Phase 2** | Model Training | 4-6 hrs | IN PROGRESS |
-| **Phase 3** | Backtesting | 4-6 hrs | IN PROGRESS |
-| **Phase 4** | Analysis & Iteration | 4-6 hrs | NOT STARTED |
-| **Phase 5** | Live Integration (if profitable) | 8-12 hrs | NOT STARTED |
+| **Phase 2** | Model Training | 4-6 hrs | COMPLETE (2.1, 2.2) |
+| **Phase 3** | Backtesting | 4-6 hrs | COMPLETE - **FAILED** |
+| **Phase 4** | Analysis & Iteration | 4-6 hrs | BLOCKED |
+| **Phase 5** | Live Integration (if profitable) | 8-12 hrs | BLOCKED |
 
 **Total Estimated Effort**: 26-38 hours
+
+### Recommendations for Next Steps
+
+Given the validation failure, the following options should be considered:
+
+1. **Alternative Features**: The current 24 technical features may not capture market microstructure. Consider:
+   - Order flow imbalance (requires Level 2 data)
+   - Bid-ask spread dynamics
+   - Volume-at-price patterns
+   - Cross-market correlations (ES, NQ, VIX)
+
+2. **Alternative Targets**: Instead of directional prediction, consider:
+   - Volatility prediction (profitable via options/straddles)
+   - Range-bound detection (mean reversion strategies)
+   - Breakout detection (momentum after range)
+
+3. **Alternative Timeframes**: 5-minute bars may be too efficient. Consider:
+   - Tick data with microstructure features
+   - Daily bars with fundamental factors
+   - Event-driven strategies (FOMC, earnings)
+
+4. **Alternative Approach**: The efficient market hypothesis suggests:
+   - Market-making strategies (provide liquidity, earn spread)
+   - Arbitrage strategies (statistical, cross-market)
+   - Systematic macro strategies (longer timeframes)
+
+**Do NOT proceed to Phase 5 (Live Integration)** with the current system - it would result in significant losses.
 
 ---
 
@@ -382,17 +439,28 @@ class ScalpingBacktest:
 
 ### 3.3 Validation Set Evaluation
 **Effort**: 1 hour
+**Status**: COMPLETE - **FAILED ALL CRITERIA**
 
 **Tasks**:
-- [ ] Run backtest on 2023 validation data
-- [ ] Analyze results, identify failure modes
-- [ ] Iterate on confidence threshold if needed (60%, 65%, 70%)
-- [ ] DO NOT touch test set yet
+- [x] Run backtest on 2023 validation data
+- [x] Analyze results, identify failure modes
+- [x] Iterate on confidence threshold if needed (60%, 65%, 70%)
+- [x] DO NOT touch test set (not proceeding due to validation failure)
+
+**Results** (scripts/run_validation_backtest.py):
+- With 60% confidence: **0 trades** (model too uncertain)
+- With 50% confidence: **4,998 trades**, **38.8% win rate**, **PF 0.28**, **-$26,420 loss**
+- Model AUC: 0.51 (random), stopped at iteration 4
+
+**Failure Mode Analysis**:
+- Features have no predictive power (max correlation 0.019)
+- Model correctly identified no signal by producing near-0.5 probabilities
+- Lowering confidence threshold just increases random trading and losses
 
 **Acceptance Criteria**:
-- [ ] Validation win rate > 52%
-- [ ] Validation profit factor > 1.0
-- [ ] Average >= 2 trades per day
+- [x] ~~Validation win rate > 52%~~ **FAILED: 38.8%**
+- [x] ~~Validation profit factor > 1.0~~ **FAILED: 0.28**
+- [x] Average >= 2 trades per day **PASSED: 19.6** (only with 50% threshold)
 
 ### 3.4 Test Set Evaluation (FINAL - ONE TIME ONLY)
 **Effort**: 1 hour
