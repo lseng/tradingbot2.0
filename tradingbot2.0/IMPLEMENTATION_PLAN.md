@@ -1,7 +1,7 @@
 # Implementation Plan - 5-Minute Scalping System
 
 > **Last Updated**: 2026-01-20 UTC (Verified via codebase analysis)
-> **Status**: PHASES 1, 2.1, 2.2, 3.1, 3.3, 3.4, 3.5 COMPLETE - **EXPLORING ALTERNATIVE STRATEGIES**
+> **Status**: PHASES 1-3.6 COMPLETE - **ALL DIRECTION STRATEGIES FAILED** - PROJECT CONCLUDED
 > **Primary Spec**: `specs/5M_SCALPING_SYSTEM.md`
 > **Approach**: LightGBM/XGBoost (NOT neural networks)
 > **Data**: 6.5-year 1-minute data aggregated to 5-minute bars
@@ -9,7 +9,7 @@
 
 ## Progress Update - 2026-01-20
 
-**Phase 1 (Data Pipeline), Phase 2.1 (LightGBM Model Setup), Phase 2.2 (Walk-Forward Validation), Phase 3.1 (Backtest Engine), Phase 3.3 (Validation Backtest), Phase 3.4 (Volatility Prediction Analysis), and Phase 3.5 (Breakout Detection Strategy) are COMPLETE.**
+**All phases through 3.6 are COMPLETE.** The project has conclusively demonstrated that direction prediction using technical features on 5-minute MES futures bars is NOT viable.
 
 ### CRITICAL FINDING: Validation Backtest FAILED
 
@@ -63,9 +63,10 @@ The previous neural network approach (v0.0.83) did NOT achieve profitability. Th
 | **Phase 1** | Data Pipeline | 6-8 hrs | COMPLETE |
 | **Phase 2** | Model Training | 4-6 hrs | COMPLETE (2.1, 2.2) |
 | **Phase 3.1-3.4** | Backtesting & Volatility | 4-6 hrs | COMPLETE - **DIRECTION FAILED** |
-| **Phase 3.5** | Breakout Detection Strategy | 4 hrs | COMPLETE - **TESTING** |
-| **Phase 4** | Analysis & Iteration | 4-6 hrs | BLOCKED (pending Phase 3.5 results) |
-| **Phase 5** | Live Integration (if profitable) | 8-12 hrs | BLOCKED |
+| **Phase 3.5** | Breakout Detection Strategy | 4 hrs | COMPLETE - **FAILED** (WR=39%, PF=0.50) |
+| **Phase 3.6** | Mean-Reversion Strategy | 4 hrs | COMPLETE - **FAILED** (WR=19%, PF=0.11) |
+| **Phase 4** | Analysis & Iteration | 4-6 hrs | BLOCKED (no profitable strategy found) |
+| **Phase 5** | Live Integration | 8-12 hrs | BLOCKED (no profitable strategy found) |
 
 **Total Estimated Effort**: 26-38 hours
 
@@ -125,11 +126,12 @@ Given the validation failure, the following options should be considered:
 
 ---
 
-## Phase 3.5: Breakout Detection Strategy (COMPLETE)
+## Phase 3.5: Breakout Detection Strategy (COMPLETE - FAILED)
 
 **Implemented**: 2026-01-20
+**Tested**: 2026-01-20
 
-After finding that volatility is predictable (AUC 0.856) but direction is not, this phase implements a **breakout detection strategy** that:
+After finding that volatility is predictable (AUC 0.856) but direction is not, this phase implemented a **breakout detection strategy** that:
 
 1. **Detects consolidation periods** using:
    - Bollinger Band squeeze (BB inside Keltner Channel)
@@ -151,25 +153,132 @@ After finding that volatility is predictable (AUC 0.856) but direction is not, t
 - Slippage: 1 tick entry and exit
 - Commission: $0.84 round-trip
 
-**New Modules Created:**
+### Backtest Results (2023 Validation Set) - FAILED
+
+| Metric | Result | Required | Status |
+|--------|--------|----------|--------|
+| Total Trades | 555 | >= 3/day | **PASS** |
+| Win Rate | 39.1% | >= 55% | **FAIL** |
+| Profit Factor | 0.50 | >= 1.2 | **FAIL** |
+| Total P&L | -$3,899.95 | > $0 | **FAIL** |
+
+**Direction Prediction Analysis:**
+| Range Position | Setups | Actual UP | Actual DOWN | Predicted | Edge |
+|----------------|--------|-----------|-------------|-----------|------|
+| Near Bottom (<35%) | 249 | 51.4% | 48.6% | UP | **+2.8pp** |
+| Near Top (>65%) | 313 | 50.5% | 49.5% | DOWN | **-1.0pp (WRONG!)** |
+| Middle (skip) | 209 | 52.6% | 47.4% | N/A | N/A |
+
+**Critical Finding:** Range position does NOT reliably predict breakout direction:
+- Near-bottom setups only have 2.8pp edge toward UP (not statistically significant)
+- Near-top setups actually favor UP breakout more than DOWN (opposite of expectation!)
+- The hypothesis that "price breaks out in the direction of the closer boundary" is FALSE
+
+**Root Cause:** Even with excellent volatility prediction (AUC 0.855), direction remains unpredictable. The MES futures market on 5-minute bars is too efficient for technical features to predict direction.
+
+### Modules Created
+
 - `src/scalping/breakout.py` - Breakout detection features, targets, and trading logic
 - `scripts/run_breakout_detection.py` - Training and validation script
 - `tests/scalping/test_breakout.py` - 40 comprehensive tests
 
-**New Features (14 breakout-specific):**
+**Features (14 breakout-specific):**
 - Consolidation: bb_squeeze, consolidation_score, atr_percentile, squeeze_duration, range_contraction
 - Direction: range_position, dist_from_high, dist_from_low, momentum_divergence, micro_trend, volume_expansion
 - Timing: cumulative_consolidation, is_opening_range, is_pre_close
 
 **Test Coverage:**
-- 40 tests covering all breakout functionality
+- 40 tests covering all breakout functionality (all passing)
 - Total scalping tests: 220 (including 180 from Phases 1-3.4)
-- All tests passing
 
-**Next Steps:**
-- Run `scripts/run_breakout_detection.py` on real data to evaluate strategy performance
-- If edge > 10pp on direction prediction, proceed to Phase 4 analysis
-- If no edge, consider mean-reversion strategy in consolidation periods
+---
+
+## Phase 3.6: Mean-Reversion Strategy (COMPLETE - FAILED)
+
+**Implemented**: 2026-01-20
+**Tested**: 2026-01-20
+
+**Rationale**: Since direction is unpredictable regardless of approach, we pivoted to exploiting the one signal that DOES work: **volatility prediction**.
+
+**Key Insight (INVALIDATED)**: The hypothesis that "during LOW volatility periods, prices tend to mean-revert" was tested and **DISPROVEN** on this data.
+
+### Strategy Logic
+
+**Entry Conditions:**
+- Volatility model predicts LOW (< 40% probability of high vol)
+- RSI(7) < 30 OR RSI(7) > 70 (extreme reading)
+- Price extended from EMA (> 0.3% deviation)
+- Not in first/last hour (higher natural volatility)
+
+**Direction:**
+- RSI < 30 + below EMA → BUY (expect mean reversion up)
+- RSI > 70 + above EMA → SELL (expect mean reversion down)
+
+**Exit Rules:**
+- Profit target: 4 ticks ($5.00)
+- Stop loss: 4 ticks ($5.00)
+- Time stop: 15 minutes (3 bars)
+- Exit if volatility prediction changes to HIGH
+
+### Backtest Results (2023 Validation Set) - FAILED
+
+| Metric | Result | Required | Status |
+|--------|--------|----------|--------|
+| Total Trades | 356 | >= 3/day | **FAIL** (1.4/day) |
+| Win Rate | 19.1% | >= 55% | **FAIL** |
+| Profit Factor | 0.11 | >= 1.2 | **FAIL** |
+| Total P&L | -$5,865.29 | > $0 | **FAIL** |
+
+**Exit Reasons:**
+- Stop loss: 325 (91.3%)
+- Profit target: 31 (8.7%)
+
+**Critical Finding:** Mean-reversion during low volatility DOES NOT WORK. When RSI shows oversold/overbought, the trend continues rather than reverting. This confirms that:
+1. The MES futures market is momentum-driven, not mean-reverting
+2. RSI extremes are momentum signals, not reversal signals
+3. Even with volatility filtering, direction remains unpredictable
+
+### Modules Created
+
+- `src/scalping/mean_reversion.py` - Mean-reversion features, targets, and trading logic
+- `scripts/run_mean_reversion.py` - Training and validation script
+- `tests/scalping/test_mean_reversion.py` - 34 comprehensive tests (all passing)
+
+---
+
+## Summary of All Strategies Attempted
+
+| Strategy | Phase | Result | Win Rate | PF | Trades | P&L |
+|----------|-------|--------|----------|-----|--------|-----|
+| Direction (24 features) | 3.3 | FAILED | 38.8% | 0.28 | 4,998 | -$26,420 |
+| Breakout Detection | 3.5 | FAILED | 39.1% | 0.50 | 555 | -$3,900 |
+| Mean-Reversion | 3.6 | FAILED | 19.1% | 0.11 | 356 | -$5,865 |
+
+### Key Findings
+
+1. **Volatility IS predictable** (AUC 0.855) - but this cannot be monetized via direction trading
+2. **Direction is NOT predictable** regardless of:
+   - Feature engineering (24 technical features)
+   - Breakout detection (consolidation + volatility filter)
+   - Mean-reversion (RSI extremes + low vol filter)
+3. **Market efficiency**: The MES futures market on 5-minute bars is too efficient for technical analysis-based direction prediction
+4. **RSI is NOT a reversal signal**: RSI extremes indicate momentum continuation, not reversal
+
+### Recommendations
+
+**Stop trying to predict direction.** All evidence indicates this is not viable with:
+- Current data (MES futures, 5-minute bars)
+- Current features (technical indicators)
+- Current approach (classification with tree-based models)
+
+**Alternative paths forward:**
+1. **Different data**: Order flow, Level 2, cross-market correlations
+2. **Different timeframe**: Tick data (microstructure) or daily bars (fundamental factors)
+3. **Different market**: Less efficient markets may have more predictable patterns
+4. **Different strategy**: Market-making, arbitrage, systematic macro (not direction prediction)
+5. **Options trading**: Trade volatility directly via straddles/strangles (requires options capability)
+
+**Current Status**: This project has validated that the 5-minute MES scalping approach using technical features is NOT viable. Further work on direction prediction is not recommended.
 
 ---
 
