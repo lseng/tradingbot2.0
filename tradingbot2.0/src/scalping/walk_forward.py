@@ -275,6 +275,7 @@ class WalkForwardCV:
         X: np.ndarray,
         y: np.ndarray,
         timestamps: pd.DatetimeIndex,
+        lazy: bool = False,
     ) -> List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, datetime, datetime, datetime, datetime]]:
         """
         Generate folds from numpy arrays with timestamps.
@@ -283,10 +284,18 @@ class WalkForwardCV:
             X: Feature array (n_samples, n_features)
             y: Target array (n_samples,)
             timestamps: DatetimeIndex aligned with X and y
+            lazy: If True, return a generator to reduce memory usage (Bug #13 fix).
+                  When lazy=True, folds are generated on-the-fly and only one fold's
+                  data is in memory at a time. This reduces peak memory from
+                  O(n_folds * data_size) to O(data_size).
 
         Returns:
-            List of (X_train, y_train, X_val, y_val, train_start, train_end, val_start, val_end) tuples
+            If lazy=False: List of (X_train, y_train, X_val, y_val, train_start, train_end, val_start, val_end) tuples
+            If lazy=True: Generator yielding the same tuples one at a time
         """
+        if lazy:
+            return self._generate_folds_from_arrays_lazy(X, y, timestamps)
+
         # Create temporary DataFrame for fold generation
         temp_df = pd.DataFrame(index=timestamps)
         temp_df['_target'] = y
@@ -312,6 +321,116 @@ class WalkForwardCV:
             ))
 
         return array_folds
+
+    def _generate_folds_from_arrays_lazy(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        timestamps: pd.DatetimeIndex,
+    ):
+        """
+        Memory-efficient generator that yields folds one at a time.
+
+        This is the Bug #13 fix: instead of materializing all folds upfront
+        (which uses O(n_folds * data_size) memory), this generator creates
+        each fold on demand, using only O(data_size) memory at any time.
+
+        The generator yields:
+            Tuple of (X_train, y_train, X_val, y_val, train_start, train_end, val_start, val_end)
+
+        Memory savings example:
+            - 5 folds, 1M samples each, 56 features, float32
+            - Eager: 5 * 1M * 56 * 4 bytes * 2 (train+val) ≈ 2.2 GB
+            - Lazy: 1M * 56 * 4 bytes * 2 ≈ 0.45 GB (per fold, then released)
+        """
+        # Generate fold boundaries without materializing data
+        fold_boundaries = self._generate_fold_boundaries(timestamps)
+
+        for train_start, train_end, val_start, val_end in fold_boundaries:
+            # Create masks for this fold only
+            train_mask = (timestamps >= train_start) & (timestamps <= train_end)
+            val_mask = (timestamps >= val_start) & (timestamps <= val_end)
+
+            # Slice data for this fold
+            X_train = X[train_mask]
+            y_train = y[train_mask]
+            X_val = X[val_mask]
+            y_val = y[val_mask]
+
+            if len(X_train) == 0 or len(X_val) == 0:
+                logger.warning(
+                    f"Empty train or val set for period {train_start.date()} - {val_end.date()}, skipping"
+                )
+                continue
+
+            yield (
+                X_train, y_train, X_val, y_val,
+                train_start, train_end, val_start, val_end
+            )
+
+    def _generate_fold_boundaries(
+        self,
+        timestamps: pd.DatetimeIndex,
+    ) -> List[Tuple[datetime, datetime, datetime, datetime]]:
+        """
+        Generate fold boundaries (timestamps only) without materializing any data.
+
+        This is a lightweight operation that only calculates the time boundaries
+        for each fold, without copying any actual data arrays.
+
+        Args:
+            timestamps: DatetimeIndex to determine data range
+
+        Returns:
+            List of (train_start, train_end, val_start, val_end) tuples
+        """
+        # Get date range
+        start_date = timestamps.min()
+        end_date = timestamps.max()
+        total_months = (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month)
+
+        logger.debug(
+            f"Generating {self.config.n_folds} fold boundaries from {total_months} months of data"
+        )
+
+        boundaries = []
+
+        # Calculate validation window start points
+        available_months = total_months - self.config.min_train_months
+        if available_months < self.config.n_folds * self.config.val_months:
+            raise ValueError(
+                f"Not enough data for {self.config.n_folds} folds with "
+                f"{self.config.val_months} months validation each. "
+                f"Have {available_months} months, need {self.config.n_folds * self.config.val_months}"
+            )
+
+        # Calculate step size between fold starts
+        step_months = (available_months - self.config.val_months) // max(self.config.n_folds - 1, 1)
+
+        for i in range(self.config.n_folds):
+            # Validation period starts after min_train_months + (i * step_months)
+            val_start_offset = self.config.min_train_months + (i * step_months)
+            val_start = start_date + pd.DateOffset(months=val_start_offset)
+            val_end = val_start + pd.DateOffset(months=self.config.val_months) - pd.Timedelta(seconds=1)
+
+            # Training period
+            if self.config.expanding:
+                train_start = start_date
+            else:
+                train_start = val_start - pd.DateOffset(months=self.config.rolling_train_months)
+                if train_start < start_date:
+                    train_start = start_date
+
+            train_end = val_start - pd.Timedelta(seconds=1)
+
+            boundaries.append((train_start, train_end, val_start, val_end))
+
+            logger.debug(
+                f"Fold {i} boundaries: Train {train_start.date()} to {train_end.date()}, "
+                f"Val {val_start.date()} to {val_end.date()}"
+            )
+
+        return boundaries
 
     def calculate_calibration_metrics(
         self,
@@ -445,6 +564,7 @@ class WalkForwardCV:
         y: np.ndarray,
         timestamps: pd.DatetimeIndex,
         feature_names: Optional[List[str]] = None,
+        use_lazy_folds: bool = True,
     ) -> WalkForwardResult:
         """
         Run walk-forward cross-validation.
@@ -454,6 +574,11 @@ class WalkForwardCV:
             y: Target array (n_samples,)
             timestamps: DatetimeIndex aligned with X and y
             feature_names: Feature names for importance tracking
+            use_lazy_folds: If True (default), use memory-efficient lazy fold generation.
+                           This reduces peak memory from O(n_folds * data_size) to O(data_size)
+                           by generating each fold on-the-fly instead of materializing all folds
+                           upfront. Set to False only for debugging or when memory is not a concern.
+                           (Bug #13 fix)
 
         Returns:
             WalkForwardResult with all fold results and aggregated metrics
@@ -461,19 +586,26 @@ class WalkForwardCV:
         logger.info(
             f"Starting walk-forward CV: {self.config.n_folds} folds, "
             f"{'expanding' if self.config.expanding else 'rolling'} window"
+            f"{', lazy fold generation' if use_lazy_folds else ''}"
         )
 
-        # Generate folds
-        folds = self.generate_folds_from_arrays(X, y, timestamps)
+        # Generate folds - use lazy generation by default to avoid OOM (Bug #13)
+        folds = self.generate_folds_from_arrays(X, y, timestamps, lazy=use_lazy_folds)
 
-        if len(folds) == 0:
-            raise ValueError("No valid folds generated. Check data size and config.")
-
-        logger.info(f"Generated {len(folds)} folds")
+        # For lazy folds, we need to count them after iteration
+        # For eager folds, we can check length immediately
+        if not use_lazy_folds:
+            if len(folds) == 0:
+                raise ValueError("No valid folds generated. Check data size and config.")
+            logger.info(f"Generated {len(folds)} folds")
 
         # Train each fold
+        # Note: With lazy=True, folds is a generator. Memory for each fold is allocated
+        # and released during iteration, reducing peak memory usage (Bug #13 fix).
         self.fold_results = []
+        fold_count = 0
         for i, (X_train, y_train, X_val, y_val, train_start, train_end, val_start, val_end) in enumerate(folds):
+            fold_count += 1
             fold_result = self.train_fold(
                 fold_idx=i,
                 X_train=X_train,
@@ -487,6 +619,15 @@ class WalkForwardCV:
                 feature_names=feature_names,
             )
             self.fold_results.append(fold_result)
+            # With lazy folds, data from previous fold is released after each iteration
+            # This is the key memory optimization from Bug #13 fix
+
+        # Validate that we got at least one fold (important for lazy case)
+        if fold_count == 0:
+            raise ValueError("No valid folds generated. Check data size and config.")
+
+        if use_lazy_folds:
+            logger.info(f"Processed {fold_count} folds (lazy generation)")
 
         result = WalkForwardResult(
             fold_results=self.fold_results,
@@ -510,6 +651,7 @@ class WalkForwardCV:
         df: pd.DataFrame,
         feature_cols: List[str],
         target_col: str,
+        use_lazy_folds: bool = True,
     ) -> WalkForwardResult:
         """
         Run walk-forward CV directly from DataFrame.
@@ -518,6 +660,8 @@ class WalkForwardCV:
             df: DataFrame with datetime index, feature columns, and target column
             feature_cols: List of feature column names
             target_col: Target column name
+            use_lazy_folds: If True (default), use memory-efficient lazy fold generation.
+                           (Bug #13 fix)
 
         Returns:
             WalkForwardResult
@@ -526,7 +670,7 @@ class WalkForwardCV:
         y = df[target_col].values
         timestamps = df.index
 
-        return self.run(X, y, timestamps, feature_names=feature_cols)
+        return self.run(X, y, timestamps, feature_names=feature_cols, use_lazy_folds=use_lazy_folds)
 
 
 def run_walk_forward_validation(
@@ -540,6 +684,7 @@ def run_walk_forward_validation(
     expanding: bool = True,
     model_config: Optional[ModelConfig] = None,
     verbose: int = 1,
+    use_lazy_folds: bool = True,
 ) -> WalkForwardResult:
     """
     Convenience function for walk-forward validation.
@@ -555,6 +700,9 @@ def run_walk_forward_validation(
         expanding: Use expanding (True) or rolling (False) window
         model_config: Model configuration
         verbose: Verbosity level
+        use_lazy_folds: If True (default), use memory-efficient lazy fold generation.
+                       This reduces peak memory from O(n_folds * data_size) to O(data_size).
+                       (Bug #13 fix)
 
     Returns:
         WalkForwardResult
@@ -577,4 +725,4 @@ def run_walk_forward_validation(
     )
 
     cv = WalkForwardCV(config=config)
-    return cv.run(X, y, timestamps, feature_names=feature_names)
+    return cv.run(X, y, timestamps, feature_names=feature_names, use_lazy_folds=use_lazy_folds)

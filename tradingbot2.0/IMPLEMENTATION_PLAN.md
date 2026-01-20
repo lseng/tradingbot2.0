@@ -1,13 +1,41 @@
 # Implementation Plan - 5-Minute Scalping System
 
-> **Last Updated**: 2026-01-20 UTC (tag v0.0.96)
+> **Last Updated**: 2026-01-20 UTC (tag v0.0.97)
 > **Status**: PHASES 1-3.6 COMPLETE - **ALL DIRECTION STRATEGIES FAILED** - PROJECT CONCLUDED
 > **Primary Spec**: `specs/5M_SCALPING_SYSTEM.md`
 > **Approach**: LightGBM/XGBoost (NOT neural networks)
 > **Data**: 6.5-year 1-minute data aggregated to 5-minute bars
 > **Data File**: `data/historical/MES/MES_full_1min_continuous_UNadjusted.txt` (122MB, 2.3M rows)
 
-## Progress Update - 2026-01-20
+## Progress Update - 2026-01-20 (v0.0.97)
+
+### Bug #13 Fixed: Walk-Forward CV Memory Usage
+
+**Bug #13 is now FIXED** using lazy fold generation.
+
+**Problem**: The scalping module's `WalkForwardCV.generate_folds_from_arrays()` method materialized ALL fold data upfront in a list, causing memory usage of O(n_folds * data_size). With 5 folds of millions of samples each, this could cause OOM when combined with LSTM sequence creation.
+
+**Solution**: Implemented lazy fold generation that yields folds one at a time instead of materializing all folds upfront. This reduces peak memory from O(n_folds * data_size) to O(data_size).
+
+**Changes:**
+- Added `_generate_folds_from_arrays_lazy()` generator method for memory-efficient fold iteration
+- Added `_generate_fold_boundaries()` method to calculate fold boundaries without copying data
+- Updated `generate_folds_from_arrays()` with `lazy=True/False` parameter (default: uses eager for compatibility)
+- Updated `run()`, `run_with_dataframe()`, and `run_walk_forward_validation()` with `use_lazy_folds=True` parameter (default: True)
+- Added 12 new tests for lazy fold generation
+
+**Test Count Update:**
+- Previous: 3,178 tests (42 tests in `test_walk_forward.py`)
+- Current: **3,190 tests** (54 tests in `test_walk_forward.py`)
+
+**Memory Savings Example:**
+- 5 folds, 1M samples each, 56 features, float32
+- Eager: 5 × 1M × 56 × 4 bytes × 2 (train+val) ≈ 2.2 GB
+- Lazy: 1M × 56 × 4 bytes × 2 ≈ 0.45 GB (per fold, then released)
+
+---
+
+## Progress Update - 2026-01-20 (v0.0.96)
 
 ### Bug #11 Fixed: LSTM Sequence Creation OOM
 
@@ -77,7 +105,9 @@ The following source files were committed to the repository:
 ### Remaining P1 Bugs (from BUGS_FOUND.md)
 
 1. **Bug #11: LSTM Sequence Creation OOM on full dataset** - **FIXED** (v0.0.96 - LazySequenceDataset)
-2. **Bug #13: Walk-Forward CV Memory Usage** - Needs investigation
+2. **Bug #13: Walk-Forward CV Memory Usage** - **FIXED** (v0.0.97 - Lazy Fold Generation)
+
+**All P1 bugs have been fixed.**
 
 ---
 

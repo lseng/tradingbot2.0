@@ -949,3 +949,281 @@ class TestEdgeCases:
         # Should complete without error
         result = cv.run(X, y, timestamps)
         assert len(result.fold_results) > 0
+
+
+# ============================================================================
+# Test Lazy Fold Generation (Bug #13 Fix)
+# ============================================================================
+
+class TestLazyFoldGeneration:
+    """Tests for memory-efficient lazy fold generation (Bug #13 fix)."""
+
+    def test_lazy_folds_same_results_as_eager(self, small_data):
+        """Verify lazy folds produce identical results to eager folds."""
+        X, y, timestamps = small_data
+
+        config = WalkForwardConfig(
+            n_folds=2,
+            min_train_months=6,
+            val_months=3,
+            verbose=0,
+        )
+
+        # Run with eager folds
+        cv_eager = WalkForwardCV(config=config)
+        result_eager = cv_eager.run(X, y, timestamps, use_lazy_folds=False)
+
+        # Run with lazy folds
+        cv_lazy = WalkForwardCV(config=config)
+        result_lazy = cv_lazy.run(X, y, timestamps, use_lazy_folds=True)
+
+        # Results should be identical
+        assert len(result_eager.fold_results) == len(result_lazy.fold_results)
+
+        for eager_fold, lazy_fold in zip(result_eager.fold_results, result_lazy.fold_results):
+            # Same sample counts
+            assert eager_fold.n_train_samples == lazy_fold.n_train_samples
+            assert eager_fold.n_val_samples == lazy_fold.n_val_samples
+
+            # Same time boundaries
+            assert eager_fold.train_start == lazy_fold.train_start
+            assert eager_fold.train_end == lazy_fold.train_end
+            assert eager_fold.val_start == lazy_fold.val_start
+            assert eager_fold.val_end == lazy_fold.val_end
+
+    def test_lazy_folds_generator_type(self, small_data):
+        """Verify lazy folds returns a generator, not a list."""
+        X, y, timestamps = small_data
+
+        config = WalkForwardConfig(
+            n_folds=2,
+            min_train_months=6,
+            val_months=3,
+        )
+        cv = WalkForwardCV(config=config)
+
+        # Lazy should return a generator
+        lazy_folds = cv.generate_folds_from_arrays(X, y, timestamps, lazy=True)
+        import types
+        assert isinstance(lazy_folds, types.GeneratorType)
+
+        # Eager should return a list
+        eager_folds = cv.generate_folds_from_arrays(X, y, timestamps, lazy=False)
+        assert isinstance(eager_folds, list)
+
+    def test_lazy_folds_iteration_count(self, small_data):
+        """Verify lazy generator yields correct number of folds."""
+        X, y, timestamps = small_data
+
+        config = WalkForwardConfig(
+            n_folds=2,
+            min_train_months=6,
+            val_months=3,
+        )
+        cv = WalkForwardCV(config=config)
+
+        # Count folds from generator
+        lazy_folds = cv.generate_folds_from_arrays(X, y, timestamps, lazy=True)
+        fold_count = sum(1 for _ in lazy_folds)
+
+        # Should match expected number
+        assert fold_count == 2
+
+    def test_generate_fold_boundaries(self, multi_year_data):
+        """Test fold boundary generation without data materialization."""
+        X, y, timestamps = multi_year_data
+
+        config = WalkForwardConfig(
+            n_folds=3,
+            min_train_months=12,
+            val_months=6,
+        )
+        cv = WalkForwardCV(config=config)
+
+        boundaries = cv._generate_fold_boundaries(timestamps)
+
+        # Should have 3 boundary tuples
+        assert len(boundaries) == 3
+
+        # Each boundary should be a 4-tuple
+        for boundary in boundaries:
+            assert len(boundary) == 4
+            train_start, train_end, val_start, val_end = boundary
+
+            # Temporal ordering
+            assert train_start < train_end
+            assert train_end < val_start
+            assert val_start < val_end
+
+    def test_lazy_folds_temporal_ordering(self, multi_year_data):
+        """Verify lazy folds maintain temporal ordering."""
+        X, y, timestamps = multi_year_data
+
+        config = WalkForwardConfig(
+            n_folds=3,
+            min_train_months=12,
+            val_months=6,
+        )
+        cv = WalkForwardCV(config=config)
+
+        lazy_folds = cv.generate_folds_from_arrays(X, y, timestamps, lazy=True)
+
+        prev_val_end = None
+        for X_train, y_train, X_val, y_val, train_start, train_end, val_start, val_end in lazy_folds:
+            # Train must end before val starts
+            assert train_end < val_start
+
+            # Each fold's val period should come after the previous
+            if prev_val_end is not None:
+                assert val_start >= prev_val_end
+            prev_val_end = val_end
+
+    def test_lazy_folds_no_data_leakage(self, multi_year_data):
+        """Critical test: lazy folds must not have data leakage."""
+        X, y, timestamps = multi_year_data
+
+        config = WalkForwardConfig(
+            n_folds=3,
+            min_train_months=12,
+            val_months=6,
+        )
+        cv = WalkForwardCV(config=config)
+
+        lazy_folds = cv.generate_folds_from_arrays(X, y, timestamps, lazy=True)
+
+        for i, (X_train, y_train, X_val, y_val, train_start, train_end, val_start, val_end) in enumerate(lazy_folds):
+            # Get timestamps for train and val based on boundaries
+            train_mask = (timestamps >= train_start) & (timestamps <= train_end)
+            val_mask = (timestamps >= val_start) & (timestamps <= val_end)
+
+            train_timestamps = timestamps[train_mask]
+            val_timestamps = timestamps[val_mask]
+
+            # All training timestamps must be before all validation timestamps
+            if len(train_timestamps) > 0 and len(val_timestamps) > 0:
+                assert train_timestamps.max() < val_timestamps.min(), \
+                    f"Lazy fold {i}: Training data extends into validation period"
+
+    def test_run_with_lazy_folds_default(self, small_data):
+        """Test that run() uses lazy folds by default."""
+        X, y, timestamps = small_data
+
+        config = WalkForwardConfig(
+            n_folds=2,
+            min_train_months=6,
+            val_months=3,
+            verbose=0,
+        )
+        cv = WalkForwardCV(config=config)
+
+        # Default should work (lazy=True)
+        result = cv.run(X, y, timestamps)
+        assert len(result.fold_results) == 2
+
+    def test_run_with_lazy_folds_explicit_true(self, small_data):
+        """Test run() with explicit use_lazy_folds=True."""
+        X, y, timestamps = small_data
+
+        config = WalkForwardConfig(
+            n_folds=2,
+            min_train_months=6,
+            val_months=3,
+            verbose=0,
+        )
+        cv = WalkForwardCV(config=config)
+
+        result = cv.run(X, y, timestamps, use_lazy_folds=True)
+        assert len(result.fold_results) == 2
+
+    def test_run_with_lazy_folds_explicit_false(self, small_data):
+        """Test run() with explicit use_lazy_folds=False."""
+        X, y, timestamps = small_data
+
+        config = WalkForwardConfig(
+            n_folds=2,
+            min_train_months=6,
+            val_months=3,
+            verbose=0,
+        )
+        cv = WalkForwardCV(config=config)
+
+        result = cv.run(X, y, timestamps, use_lazy_folds=False)
+        assert len(result.fold_results) == 2
+
+    def test_convenience_function_lazy_folds(self, small_data):
+        """Test convenience function with lazy folds."""
+        X, y, timestamps = small_data
+
+        # With lazy (default)
+        result_lazy = run_walk_forward_validation(
+            X, y, timestamps,
+            n_folds=2,
+            min_train_months=6,
+            val_months=3,
+            verbose=0,
+            use_lazy_folds=True,
+        )
+
+        # Without lazy
+        result_eager = run_walk_forward_validation(
+            X, y, timestamps,
+            n_folds=2,
+            min_train_months=6,
+            val_months=3,
+            verbose=0,
+            use_lazy_folds=False,
+        )
+
+        # Both should produce valid results
+        assert len(result_lazy.fold_results) == 2
+        assert len(result_eager.fold_results) == 2
+
+    def test_run_with_dataframe_lazy_folds(self, small_data):
+        """Test run_with_dataframe with lazy folds."""
+        X, y, timestamps = small_data
+        n_features = X.shape[1]
+        feature_cols = [f"feat_{i}" for i in range(n_features)]
+
+        df = pd.DataFrame(X, columns=feature_cols, index=timestamps)
+        df["target"] = y
+
+        config = WalkForwardConfig(
+            n_folds=2,
+            min_train_months=6,
+            val_months=3,
+            verbose=0,
+        )
+        cv = WalkForwardCV(config=config)
+
+        # Test with lazy folds (default)
+        result = cv.run_with_dataframe(df, feature_cols, "target", use_lazy_folds=True)
+        assert len(result.fold_results) == 2
+
+    def test_lazy_folds_empty_fold_handling(self):
+        """Test that lazy generation handles empty folds gracefully."""
+        np.random.seed(42)
+
+        # Create minimal data
+        start = pd.Timestamp("2020-01-02 09:00:00", tz=NY_TZ)
+        end = pd.Timestamp("2021-06-30 16:00:00", tz=NY_TZ)
+        dates = pd.date_range(start=start, end=end, freq="h")
+
+        n_bars = len(dates)
+        X = np.random.randn(n_bars, 5)
+        y = (X[:, 0] > 0).astype(int)
+
+        config = WalkForwardConfig(
+            n_folds=2,
+            min_train_months=6,
+            val_months=3,
+            verbose=0,
+        )
+        cv = WalkForwardCV(config=config)
+
+        # Should complete or raise ValueError, but not crash
+        try:
+            result = cv.run(X, y, dates, use_lazy_folds=True)
+            assert len(result.fold_results) > 0
+        except ValueError as e:
+            # Expected if not enough data
+            assert "Not enough data" in str(e) or "No valid folds" in str(e)

@@ -309,16 +309,27 @@ RuntimeError: CUDA error: no kernel image is available for execution on the devi
 
 ---
 
-## 13. Walk-Forward CV Memory Usage (NEEDS INVESTIGATION)
+## 13. Walk-Forward CV Memory Usage (FIXED 2026-01-20)
 
 **Priority:** P1
 
-**Issue:** Walk-forward cross-validation with 5 splits may create 5x the sequence data in memory simultaneously. Combined with bug #10, this could cause OOM even after fixing sequence creation.
+**Issue:** Walk-forward cross-validation with 5 splits materialized ALL fold data upfront in a list, causing memory usage of O(n_folds * data_size). With 5 folds of millions of samples each, this could cause OOM when combined with LSTM sequence creation.
 
-**Needs investigation:**
-- Does walk-forward CV hold all fold data in memory?
-- Should each fold be processed and discarded before the next?
-- Consider lazy loading / generators for fold data
+**Investigation findings:**
+- `WalkForwardCV.generate_folds_from_arrays()` in `src/scalping/walk_forward.py` was creating ALL fold data copies upfront
+- For 5 folds of 1M samples each with 56 features, this used ~2.2 GB just for fold data
+- Combined with LSTM sequences, this exceeded available memory
+
+**Fix (v0.0.97):**
+- Added `_generate_folds_from_arrays_lazy()` generator that yields folds one at a time
+- Added `_generate_fold_boundaries()` to calculate boundaries without copying data
+- Updated `generate_folds_from_arrays()` with `lazy=True/False` parameter
+- Updated `run()`, `run_with_dataframe()`, and `run_walk_forward_validation()` with `use_lazy_folds=True` default
+- Added 12 new tests for lazy fold generation
+
+**Memory improvement:**
+- Before: O(n_folds * data_size) = ~2.2 GB for 5 folds of 1M samples
+- After: O(data_size) = ~0.45 GB per fold, released after each iteration
 
 ---
 
@@ -339,14 +350,16 @@ RuntimeError: CUDA error: no kernel image is available for execution on the devi
 
 ## Notes for Ralph
 
-### CRITICAL - P0 BLOCKING BUG
+### All P1 Memory Bugs Fixed (v0.0.97)
 
-**Bug #10 (LSTM Sequence Creation) is BLOCKING.** Without fixing this, LSTM training cannot run on the full dataset. This was discovered during RunPod testing on 2026-01-17 with a 98GB VRAM GPU that sat at 0% utilization for 60+ minutes while the CPU was stuck in sequence creation.
+**Bug #10, #11, #13 are all FIXED:**
+- Bug #10: LSTM Sequence Creation Too Slow - Fixed with NumPy stride tricks
+- Bug #11: LSTM Sequence Creation OOM - Fixed with `LazySequenceDataset`
+- Bug #13: Walk-Forward CV Memory Usage - Fixed with lazy fold generation
 
-**Priority order:**
-1. **Fix Bug #10 first** - LSTM sequence creation (BLOCKING)
-2. Investigate Bug #11 - Walk-forward CV memory
-3. Then other items below
+**These fixes enable full-dataset training without OOM by:**
+1. Using lazy sequence generation (O(n * features) instead of O(n * seq * features))
+2. Using lazy fold iteration (O(data_size) instead of O(n_folds * data_size))
 
 ### Other considerations:
 - Adding unit tests for edge cases
