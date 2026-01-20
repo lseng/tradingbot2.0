@@ -1,6 +1,6 @@
 # Implementation Plan - 5-Minute Scalping System
 
-> **Last Updated**: 2026-01-21 UTC (tag v0.0.93)
+> **Last Updated**: 2026-01-21 UTC (tag v0.0.95)
 > **Status**: PHASES 1-3.6 COMPLETE - **ALL DIRECTION STRATEGIES FAILED** - PROJECT CONCLUDED
 > **Primary Spec**: `specs/5M_SCALPING_SYSTEM.md`
 > **Approach**: LightGBM/XGBoost (NOT neural networks)
@@ -30,8 +30,8 @@ The following source files were committed to the repository:
 - **Fix**: Added explicit `prefix="test_default_"` parameter to `tempfile.NamedTemporaryFile()`
 
 **Current Test Status:**
-- All **3,140 tests pass** (2 skipped) in the main test suite
-- **Note**: The `src/rl/` module has NO tests and is experimental
+- All **3,163 tests pass** (2 skipped) in the main test suite
+- **Note**: The `src/rl/` module now has 23 basic tests for `trading_env.py` (added in v0.0.95)
 
 ### Recent Commits (v0.0.92 - v0.0.93)
 
