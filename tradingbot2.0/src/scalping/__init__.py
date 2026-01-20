@@ -37,6 +37,17 @@ from .walk_forward import (
     FoldResult,
     run_walk_forward_validation,
 )
+from .backtest import (
+    ScalpingBacktest,
+    BacktestConfig,
+    BacktestResult,
+    Trade,
+    ExitReason,
+    run_backtest,
+    analyze_results,
+    export_trades_csv,
+    export_summary_json,
+)
 
 __all__ = [
     # Data pipeline
@@ -61,4 +72,14 @@ __all__ = [
     "WalkForwardResult",
     "FoldResult",
     "run_walk_forward_validation",
+    # Backtesting
+    "ScalpingBacktest",
+    "BacktestConfig",
+    "BacktestResult",
+    "Trade",
+    "ExitReason",
+    "run_backtest",
+    "analyze_results",
+    "export_trades_csv",
+    "export_summary_json",
 ]

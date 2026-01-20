@@ -1,7 +1,7 @@
 # Implementation Plan - 5-Minute Scalping System
 
 > **Last Updated**: 2026-01-20 UTC (Verified via codebase analysis)
-> **Status**: PHASES 1, 2.1, 2.2 COMPLETE
+> **Status**: PHASES 1, 2.1, 2.2, 3.1 COMPLETE
 > **Primary Spec**: `specs/5M_SCALPING_SYSTEM.md`
 > **Approach**: LightGBM/XGBoost (NOT neural networks)
 > **Data**: 6.5-year 1-minute data aggregated to 5-minute bars
@@ -9,14 +9,15 @@
 
 ## Progress Update - 2026-01-20
 
-**Phase 1 (Data Pipeline), Phase 2.1 (LightGBM Model Setup), and Phase 2.2 (Walk-Forward Validation) are COMPLETE.**
+**Phase 1 (Data Pipeline), Phase 2.1 (LightGBM Model Setup), Phase 2.2 (Walk-Forward Validation), and Phase 3.1 (Backtest Engine) are COMPLETE.**
 
 **New Modules Created**:
 - `src/scalping/data_pipeline.py` - Data loading, aggregation, RTH filtering, temporal splits
 - `src/scalping/features.py` - 24-feature generation engine for 5-minute scalping
 - `src/scalping/model.py` - LightGBM classifier training and inference
 - `src/scalping/walk_forward.py` - Walk-forward cross-validation with calibration metrics
-- `tests/scalping/` - Comprehensive test suite with 133 passing tests
+- `src/scalping/backtest.py` - Simplified backtest engine with slippage, commission, and time stops
+- `tests/scalping/` - Comprehensive test suite with 173 passing tests
 
 ---
 
@@ -28,7 +29,7 @@ The previous neural network approach (v0.0.83) did NOT achieve profitability. Th
 |-------|-------------|--------|--------|
 | **Phase 1** | Data Pipeline | 6-8 hrs | COMPLETE |
 | **Phase 2** | Model Training | 4-6 hrs | IN PROGRESS |
-| **Phase 3** | Backtesting | 4-6 hrs | NOT STARTED |
+| **Phase 3** | Backtesting | 4-6 hrs | IN PROGRESS |
 | **Phase 4** | Analysis & Iteration | 4-6 hrs | NOT STARTED |
 | **Phase 5** | Live Integration (if profitable) | 8-12 hrs | NOT STARTED |
 
@@ -356,10 +357,10 @@ class ScalpingBacktest:
 **Reuse**: Adapt `src/backtest/engine.py` (add 30-min time stop)
 
 **Acceptance Criteria**:
-- [ ] Slippage and commission applied correctly
-- [ ] Time stop exits after 6 bars (30 min on 5M)
-- [ ] EOD flatten at 3:55 PM
-- [ ] No new entries after 3:45 PM
+- [x] Slippage and commission applied correctly
+- [x] Time stop exits after 6 bars (30 min on 5M)
+- [x] EOD flatten at 3:55 PM
+- [x] No new entries after 3:45 PM
 
 ### 3.2 Performance Metrics
 **Effort**: 1 hour
