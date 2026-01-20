@@ -885,10 +885,13 @@ def train_with_walk_forward(
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
         # Create and train model
+        # Remove num_classes from params if present to avoid duplicate argument
+        params = model_config.get('params', {}).copy()
+        params.pop('num_classes', None)
         model = create_model(
             model_type, input_dim,
             num_classes=num_classes,
-            **model_config.get('params', {})
+            **params
         )
         trainer = ModelTrainer(
             model,

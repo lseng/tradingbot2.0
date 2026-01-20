@@ -81,6 +81,9 @@ class MLSignalGenerator:
         stop_ticks: float = 8.0,
         target_ticks: float = 16.0,
         device: str = 'cpu',
+        scaler_mean: Optional[np.ndarray] = None,
+        scaler_scale: Optional[np.ndarray] = None,
+        is_binary: bool = False,
     ):
         """
         Initialize the ML signal generator.
@@ -92,6 +95,9 @@ class MLSignalGenerator:
             stop_ticks: Default stop loss in ticks
             target_ticks: Default take profit in ticks
             device: Device to run inference on
+            scaler_mean: Mean values for feature normalization
+            scaler_scale: Scale values for feature normalization
+            is_binary: True if model is binary (UP vs DOWN), False for 3-class
         """
         self.model = model
         self.model.eval()
@@ -100,6 +106,9 @@ class MLSignalGenerator:
         self.stop_ticks = stop_ticks
         self.target_ticks = target_ticks
         self.device = device
+        self.scaler_mean = scaler_mean
+        self.scaler_scale = scaler_scale
+        self.is_binary = is_binary
 
         # Cache for features
         self._feature_cache: Dict[str, np.ndarray] = {}
@@ -134,11 +143,23 @@ class MLSignalGenerator:
                 output = self.model(features_tensor)
                 # Handle LSTM which returns (logits, hidden_state) tuple
                 logits = output[0] if isinstance(output, tuple) else output
-                probs = torch.softmax(logits, dim=1).squeeze().cpu().numpy()
 
-            # Get prediction and confidence
-            predicted_class = int(np.argmax(probs))
-            confidence = float(probs[predicted_class])
+                if self.is_binary:
+                    # Binary model: sigmoid -> probability of UP
+                    prob_up = torch.sigmoid(logits.squeeze()).cpu().item()
+                    # Binary: 0 = DOWN, 1 = UP
+                    # Map to 3-class: 0 = DOWN, 2 = UP (skip FLAT=1)
+                    if prob_up >= 0.5:
+                        predicted_class = 2  # UP
+                        confidence = prob_up
+                    else:
+                        predicted_class = 0  # DOWN
+                        confidence = 1.0 - prob_up
+                else:
+                    # 3-class model: softmax
+                    probs = torch.softmax(logits, dim=1).squeeze().cpu().numpy()
+                    predicted_class = int(np.argmax(probs))
+                    confidence = float(probs[predicted_class])
 
             # Check confidence threshold
             if confidence < self.min_confidence:
@@ -160,7 +181,7 @@ class MLSignalGenerator:
         bar: pd.Series,
         context: Dict[str, Any],
     ) -> Optional[np.ndarray]:
-        """Extract feature values from bar data."""
+        """Extract feature values from bar data and apply normalization."""
         # Try to get features from bar if they exist
         feature_names = self.feature_engineer.feature_names if hasattr(self.feature_engineer, 'feature_names') else []
 
@@ -168,7 +189,11 @@ class MLSignalGenerator:
             # If no feature names, try to find numeric columns that look like features
             feature_cols = [col for col in bar.index if col.startswith(('return_', 'ema_', 'rsi_', 'vol_', 'vwap_'))]
             if feature_cols:
-                return bar[feature_cols].values
+                features = bar[feature_cols].values.astype(np.float32)
+                # Apply normalization if scaler is available
+                if self.scaler_mean is not None and self.scaler_scale is not None:
+                    features = (features - self.scaler_mean[:len(features)]) / self.scaler_scale[:len(features)]
+                return features
             return None
 
         # Extract features by name
@@ -180,7 +205,13 @@ class MLSignalGenerator:
                 # Missing feature - use 0 as default
                 features.append(0.0)
 
-        return np.array(features, dtype=np.float32)
+        features = np.array(features, dtype=np.float32)
+
+        # Apply normalization if scaler is available
+        if self.scaler_mean is not None and self.scaler_scale is not None:
+            features = (features - self.scaler_mean) / self.scaler_scale
+
+        return features
 
     def _generate_entry_signal(
         self,
@@ -236,7 +267,7 @@ class MLSignalGenerator:
         return Signal(SignalType.HOLD, confidence=confidence, predicted_class=predicted_class)
 
 
-def load_model(model_path: str, device: str = 'cpu') -> Tuple[torch.nn.Module, Dict[str, Any]]:
+def load_model(model_path: str, device: str = 'cpu') -> Tuple[torch.nn.Module, Dict[str, Any], Optional[np.ndarray], Optional[np.ndarray], bool]:
     """
     Load a trained model from checkpoint.
 
@@ -245,7 +276,7 @@ def load_model(model_path: str, device: str = 'cpu') -> Tuple[torch.nn.Module, D
         device: Device to load model to
 
     Returns:
-        Tuple of (model, config)
+        Tuple of (model, config, scaler_mean, scaler_scale, is_binary)
     """
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model not found: {model_path}")
@@ -311,7 +342,20 @@ def load_model(model_path: str, device: str = 'cpu') -> Tuple[torch.nn.Module, D
 
     logger.info(f"Loaded {model_type} model with {sum(p.numel() for p in model.parameters()):,} parameters")
 
-    return model, config
+    # Extract scaler parameters if available
+    scaler_mean = checkpoint.get('scaler_mean', None)
+    scaler_scale = checkpoint.get('scaler_scale', None)
+    if scaler_mean is not None:
+        scaler_mean = np.array(scaler_mean)
+        scaler_scale = np.array(scaler_scale)
+        logger.info(f"Loaded feature scaler (mean/scale for {len(scaler_mean)} features)")
+
+    # Check if binary model
+    is_binary = checkpoint.get('binary', False)
+    if is_binary:
+        logger.info("Model is binary (UP vs DOWN classification)")
+
+    return model, config, scaler_mean, scaler_scale, is_binary
 
 
 def create_random_signal_generator(
@@ -410,9 +454,9 @@ def run_backtest(
     if config is None:
         config = BacktestConfig()
 
-    # Load data
+    # Load data (disable memory check for backtest - we'll limit bars if needed)
     logger.info(f"Loading data from {data_path}")
-    loader = ParquetDataLoader(data_path)
+    loader = ParquetDataLoader(data_path, check_memory=False)
     df = loader.load_data()
     df = loader.convert_to_ny_timezone(df)
     df = loader.filter_rth(df)
@@ -445,13 +489,16 @@ def run_backtest(
         )
     elif model_path is not None and os.path.exists(model_path):
         logger.info(f"Using ML model from {model_path}")
-        model, model_config = load_model(model_path)
+        model, model_config, scaler_mean, scaler_scale, is_binary = load_model(model_path)
         ml_generator = MLSignalGenerator(
             model=model,
             feature_engineer=feature_engineer,
             min_confidence=config.min_confidence,
             stop_ticks=config.default_stop_ticks,
             target_ticks=config.default_target_ticks,
+            scaler_mean=scaler_mean,
+            scaler_scale=scaler_scale,
+            is_binary=is_binary,
         )
         signal_generator = ml_generator.generate_signal
     else:

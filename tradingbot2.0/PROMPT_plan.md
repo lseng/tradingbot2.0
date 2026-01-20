@@ -1,25 +1,70 @@
-0a. Study `specs/*` with up to 250 parallel Sonnet subagents to learn the application specifications.
-0b. Study @IMPLEMENTATION_PLAN.md (if present) to understand the plan so far.
-0c. Study `src/lib/*` with up to 250 parallel Sonnet subagents to understand shared utilities & components.
-0d. For reference, the application source code is in `src/*`.
-0e. **CRITICAL**: Read @BUGS_FOUND.md for known bugs discovered during production deployment. These should be prioritized in the implementation plan.
+0a. Study `specs/5M_SCALPING_SYSTEM.md` - this is the PRIMARY specification for the new trading system.
+0b. Study @IMPLEMENTATION_PLAN.md (if present) to understand progress so far.
+0c. The existing `src/` code is from a PREVIOUS iteration that did NOT achieve profitability. It may be reused where applicable but should not constrain the new approach.
 
-1. Study @IMPLEMENTATION_PLAN.md (if present; it may be incorrect) and use up to 500 Sonnet subagents to study existing source code in `src/*` and compare it against `specs/*`. Use an Opus subagent to analyze findings, prioritize tasks, and create/update @IMPLEMENTATION_PLAN.md as a bullet point list sorted in priority of items yet to be implemented. Ultrathink. Consider searching for TODO, minimal implementations, placeholders, skipped/flaky tests, and inconsistent patterns. Study @IMPLEMENTATION_PLAN.md to determine starting point for research and keep it up to date with items considered complete/incomplete using subagents.
+1. Create/update @IMPLEMENTATION_PLAN.md with a prioritized task list to implement the 5M scalping system as specified. Use up to 500 Sonnet subagents to:
+   - Analyze what existing code in `src/` can be reused
+   - Identify what needs to be built new
+   - Create a phased implementation plan
 
-IMPORTANT: Plan only. Do NOT implement anything. Do NOT assume functionality is missing; confirm with code search first. Treat `src/lib` as the project's standard library for shared utilities and components. Prefer consolidated, idiomatic implementations there over ad-hoc copies.
+IMPORTANT: Plan only. Do NOT implement anything.
 
-ULTIMATE GOAL: Build a profitable MES futures day trading scalper with the following requirements:
+---
 
-1. DAY TRADING ONLY: Flatten all positions by 4:30 PM NY time (21:30 UTC). No overnight positions.
+## PRIMARY GOAL: Build a Profitable 5-Minute Scalping System
 
-2. CAPITAL PROTECTION: Starting capital is $1,000. The account CANNOT be blown up. Implement strict risk management with max 5% daily loss limit, 2.5% risk per trade, and circuit breakers.
+The previous approach (neural networks, RL agents) did NOT achieve profitability. We are starting fresh with a simpler, more robust approach.
 
-3. POSITION MANAGEMENT: Trade only one position at a time. Scale contracts based on confidence and available capital (start with 1 contract, scale up as profitable).
+### Key Requirements from specs/5M_SCALPING_SYSTEM.md:
 
-4. ML MODEL: Train on 3 years of 1-second MES data (33M rows in data/historical/MES/MES_1s_2years.parquet) to predict price action for scalping entries/exits. Use walk-forward validation to prevent overfitting.
+1. **DATA**: Use the full 6.5-year 1-minute dataset (`data/historical/MES/MES_full_1min_continuous_UNadjusted.txt`) aggregated to 5-minute bars. This provides 2.3M bars covering multiple market regimes.
 
-5. STRATEGY OPTIMIZATION: Determine optimal R:R ratios, whether to adjust stops/targets during trades, and whether to reverse positions. No limit on number of trades.
+2. **TEMPORAL SPLITS** (CRITICAL - No look-ahead bias):
+   - Train: 2019-2022 (4 years)
+   - Validate: 2023 (1 year)
+   - Test: 2024-2025 (completely held out until final evaluation)
 
-6. PROFITABILITY: The bot must consistently generate high returns through disciplined scalping with proper risk management.
+3. **MODEL**: Use LightGBM or XGBoost (NOT neural networks). Simpler models are less prone to overfitting.
 
-Consider missing elements and plan accordingly. If an element is missing, search first to confirm it doesn't exist, then if needed author the specification at specs/FILENAME.md. If you create a new element then document the plan to implement it in @IMPLEMENTATION_PLAN.md using a subagent.
+4. **FEATURES**: Keep it simple - ~24 features focused on short-term momentum, moving averages, volatility, volume, and time-of-day.
+
+5. **TARGETS**: Predict direction at 15m, 30m, and 1h horizons (3-bar, 6-bar, 12-bar on 5-minute candles).
+
+6. **CONFIDENCE FILTERING**: Only trade when model confidence >= 60%. This is the key to high win rate.
+
+7. **TRADING RULES**:
+   - RTH only (9:30 AM - 4:00 PM ET)
+   - Profit target: 4-8 ticks ($5-10)
+   - Stop loss: 4-6 ticks ($5-7.50)
+   - Time stop: 30 minutes max hold
+   - No new positions after 3:45 PM
+   - Max daily loss: $100
+
+8. **SUCCESS CRITERIA**:
+   - Test set win rate >= 55% on filtered trades
+   - Profit factor >= 1.2
+   - Average >= 3 trades per day
+   - No single day loses more than $100
+
+### What Can Be Reused from src/:
+
+- `src/lib/constants.py` - MES tick size, commission constants
+- `src/lib/time_utils.py` - Timezone handling, RTH detection
+- `src/backtest/` - Backtesting engine (may need modifications)
+- `src/risk/` - Risk management, circuit breakers, EOD handling
+
+### What Needs to Be Built New:
+
+- `src/scalping/data_pipeline.py` - Load 1-min data, aggregate to 5-min, generate features
+- `src/scalping/model.py` - LightGBM/XGBoost training and prediction
+- `src/scalping/backtest.py` - Simplified backtest with realistic execution
+- `src/scalping/run_backtest.py` - Main entry point
+
+### Anti-Patterns to Avoid:
+
+1. **No neural networks** - Previous approach overfit. Use gradient boosted trees.
+2. **No peeking at test set** - All tuning on validation only.
+3. **No complex features** - Keep it simple (24 features max).
+4. **No unrealistic fills** - Always assume slippage and commission.
+
+Create the implementation plan with clear phases, acceptance criteria, and estimated effort.
