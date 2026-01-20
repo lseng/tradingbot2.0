@@ -30,6 +30,13 @@ from .model import (
     TrainingResult,
     hyperparameter_search,
 )
+from .walk_forward import (
+    WalkForwardCV,
+    WalkForwardConfig,
+    WalkForwardResult,
+    FoldResult,
+    run_walk_forward_validation,
+)
 
 __all__ = [
     # Data pipeline
@@ -48,4 +55,10 @@ __all__ = [
     "ModelConfig",
     "TrainingResult",
     "hyperparameter_search",
+    # Walk-forward validation
+    "WalkForwardCV",
+    "WalkForwardConfig",
+    "WalkForwardResult",
+    "FoldResult",
+    "run_walk_forward_validation",
 ]
