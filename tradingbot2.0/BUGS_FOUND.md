@@ -266,13 +266,15 @@ def test_sequence_creation_performance():
 
 ---
 
-## 11. LSTM Sequence Creation OOM on Full Dataset (NOT FIXED)
+## 11. LSTM Sequence Creation OOM on Full Dataset (FIXED 2026-01-20)
 
 **Priority:** P1 - Prevents full-dataset training
 
 **File:** `src/ml/models/training.py` - `SequenceDataset`
 
-**Issue:** Even with Bug #10 fix (stride tricks), the full dataset still OOMs because the `.copy()` call materializes all sequences into memory at once.
+**Status:** FIXED using `LazySequenceDataset` class - sequences are generated on-the-fly instead of materialized upfront. Memory reduced from O(n * seq_length * features) to O(n * features).
+
+**Original Issue:** Even with Bug #10 fix (stride tricks), the full dataset still OOMs because the `.copy()` call materializes all sequences into memory at once.
 
 **Evidence from RunPod testing (2026-01-18):**
 - Container limit: ~175 GB usable RAM
@@ -280,12 +282,11 @@ def test_sequence_creation_performance():
 - Plus DataFrames, scalers: ~30 GB
 - Total needed: ~175-200 GB → **OOM kill (exit 137)**
 
-**Workaround:** Use `--max-samples 2000000` to cap training data
-
-**Proper Fix Needed:**
-- Implement lazy DataLoader that generates sequences on-the-fly
-- Or use memory-mapped arrays
-- Or chunked sequence creation
+**Fix (v0.0.96):**
+- Added `LazySequenceDataset` class (lines 98-227) that generates sequences in `__getitem__` instead of `__init__`
+- Uses references to input arrays, not copies
+- Integrated into `train_with_walk_forward()` for datasets exceeding lazy loading threshold
+- Added 15 new tests for LazySequenceDataset
 
 ---
 
