@@ -1,7 +1,7 @@
 # Implementation Plan - 5-Minute Scalping System
 
 > **Last Updated**: 2026-01-20 UTC (Verified via codebase analysis)
-> **Status**: PHASES 1, 2.1, 2.2, 3.1, 3.3, 3.4 COMPLETE - **VALIDATION FAILED**
+> **Status**: PHASES 1, 2.1, 2.2, 3.1, 3.3, 3.4, 3.5 COMPLETE - **EXPLORING ALTERNATIVE STRATEGIES**
 > **Primary Spec**: `specs/5M_SCALPING_SYSTEM.md`
 > **Approach**: LightGBM/XGBoost (NOT neural networks)
 > **Data**: 6.5-year 1-minute data aggregated to 5-minute bars
@@ -9,7 +9,7 @@
 
 ## Progress Update - 2026-01-20
 
-**Phase 1 (Data Pipeline), Phase 2.1 (LightGBM Model Setup), Phase 2.2 (Walk-Forward Validation), Phase 3.1 (Backtest Engine), Phase 3.3 (Validation Backtest), and Phase 3.4 (Volatility Prediction Analysis) are COMPLETE.**
+**Phase 1 (Data Pipeline), Phase 2.1 (LightGBM Model Setup), Phase 2.2 (Walk-Forward Validation), Phase 3.1 (Backtest Engine), Phase 3.3 (Validation Backtest), Phase 3.4 (Volatility Prediction Analysis), and Phase 3.5 (Breakout Detection Strategy) are COMPLETE.**
 
 ### CRITICAL FINDING: Validation Backtest FAILED
 
@@ -46,8 +46,11 @@ The strongest feature correlation is only 0.019 - effectively zero predictive po
 - `src/scalping/model.py` - LightGBM classifier training and inference
 - `src/scalping/walk_forward.py` - Walk-forward cross-validation with calibration metrics
 - `src/scalping/backtest.py` - Simplified backtest engine with slippage, commission, and time stops
+- `src/scalping/breakout.py` - Breakout detection strategy with consolidation features
 - `scripts/run_validation_backtest.py` - Validation backtest runner
-- `tests/scalping/` - Comprehensive test suite with 173 passing tests
+- `scripts/run_volatility_prediction.py` - Volatility prediction analysis
+- `scripts/run_breakout_detection.py` - Breakout detection strategy runner
+- `tests/scalping/` - Comprehensive test suite with **220 passing tests**
 
 ---
 
@@ -59,8 +62,9 @@ The previous neural network approach (v0.0.83) did NOT achieve profitability. Th
 |-------|-------------|--------|--------|
 | **Phase 1** | Data Pipeline | 6-8 hrs | COMPLETE |
 | **Phase 2** | Model Training | 4-6 hrs | COMPLETE (2.1, 2.2) |
-| **Phase 3** | Backtesting | 4-6 hrs | COMPLETE - **FAILED** |
-| **Phase 4** | Analysis & Iteration | 4-6 hrs | BLOCKED |
+| **Phase 3.1-3.4** | Backtesting & Volatility | 4-6 hrs | COMPLETE - **DIRECTION FAILED** |
+| **Phase 3.5** | Breakout Detection Strategy | 4 hrs | COMPLETE - **TESTING** |
+| **Phase 4** | Analysis & Iteration | 4-6 hrs | BLOCKED (pending Phase 3.5 results) |
 | **Phase 5** | Live Integration (if profitable) | 8-12 hrs | BLOCKED |
 
 **Total Estimated Effort**: 26-38 hours
@@ -118,6 +122,54 @@ Given the validation failure, the following options should be considered:
 - `scripts/run_volatility_prediction.py` - Volatility training and analysis script
 - Added `create_volatility_target()` function to `src/scalping/features.py`
 - Added 7 tests for volatility target in `tests/scalping/test_features.py`
+
+---
+
+## Phase 3.5: Breakout Detection Strategy (COMPLETE)
+
+**Implemented**: 2026-01-20
+
+After finding that volatility is predictable (AUC 0.856) but direction is not, this phase implements a **breakout detection strategy** that:
+
+1. **Detects consolidation periods** using:
+   - Bollinger Band squeeze (BB inside Keltner Channel)
+   - ATR percentile (lower = more consolidated)
+   - Consolidation score combining multiple factors
+   - Range contraction (current range vs moving average)
+
+2. **Predicts breakout timing** using the proven volatility model:
+   - When consolidation is high AND volatility prediction is high = breakout likely
+
+3. **Determines breakout direction** based on price position within consolidation range:
+   - Near range bottom (< 35%) = likely upward breakout
+   - Near range top (> 65%) = likely downward breakout
+   - Middle = no clear direction, skip trade
+
+**Strategy Logic:**
+- Entry: Consolidated + HIGH volatility predicted + clear range position
+- Exit: Profit target (6 ticks), Stop loss (8 ticks), Time stop (30 min)
+- Slippage: 1 tick entry and exit
+- Commission: $0.84 round-trip
+
+**New Modules Created:**
+- `src/scalping/breakout.py` - Breakout detection features, targets, and trading logic
+- `scripts/run_breakout_detection.py` - Training and validation script
+- `tests/scalping/test_breakout.py` - 40 comprehensive tests
+
+**New Features (14 breakout-specific):**
+- Consolidation: bb_squeeze, consolidation_score, atr_percentile, squeeze_duration, range_contraction
+- Direction: range_position, dist_from_high, dist_from_low, momentum_divergence, micro_trend, volume_expansion
+- Timing: cumulative_consolidation, is_opening_range, is_pre_close
+
+**Test Coverage:**
+- 40 tests covering all breakout functionality
+- Total scalping tests: 220 (including 180 from Phases 1-3.4)
+- All tests passing
+
+**Next Steps:**
+- Run `scripts/run_breakout_detection.py` on real data to evaluate strategy performance
+- If edge > 10pp on direction prediction, proceed to Phase 4 analysis
+- If no edge, consider mean-reversion strategy in consolidation periods
 
 ---
 

@@ -9,6 +9,7 @@ Key components:
 - features: 24-feature generator for 5-minute bars
 - model: LightGBM classifier with confidence-based filtering
 - backtest: Simplified backtest engine with 30-min time stops
+- breakout: Breakout detection strategy using volatility prediction
 """
 
 from .data_pipeline import (
@@ -49,6 +50,15 @@ from .backtest import (
     export_trades_csv,
     export_summary_json,
 )
+from .breakout import (
+    BreakoutConfig,
+    BreakoutFeatureGenerator,
+    BreakoutTrader,
+    ConsolidationType,
+    create_breakout_target,
+    identify_breakout_setups,
+    run_breakout_backtest,
+)
 
 __all__ = [
     # Data pipeline
@@ -84,4 +94,12 @@ __all__ = [
     "analyze_results",
     "export_trades_csv",
     "export_summary_json",
+    # Breakout detection
+    "BreakoutConfig",
+    "BreakoutFeatureGenerator",
+    "BreakoutTrader",
+    "ConsolidationType",
+    "create_breakout_target",
+    "identify_breakout_setups",
+    "run_breakout_backtest",
 ]
