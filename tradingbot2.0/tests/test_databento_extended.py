@@ -474,8 +474,14 @@ class TestDownloadIncrementalSchemaDetection:
                 os.unlink(f.name)
 
     def test_schema_detection_default_1m(self, config_with_key, sample_ohlcv_df):
-        """Test default schema detection."""
-        with tempfile.NamedTemporaryFile(suffix="_data.parquet", delete=False) as f:
+        """Test default schema detection.
+
+        Note: Use explicit prefix to avoid flaky tests where random temp filenames
+        might accidentally contain '1s', '1h', or '1d' patterns.
+        """
+        with tempfile.NamedTemporaryFile(
+            prefix="test_default_", suffix="_data.parquet", delete=False
+        ) as f:
             sample_ohlcv_df.to_parquet(f.name, index=True, engine="pyarrow")
             try:
                 file_name = Path(f.name).stem
