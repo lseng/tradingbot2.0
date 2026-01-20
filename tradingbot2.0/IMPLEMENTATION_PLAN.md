@@ -99,6 +99,51 @@ Given the validation failure, the following options should be considered:
 
 ---
 
+## Progress Update - 2026-01-21
+
+### Test Suite Fix
+
+**Fixed the `test_load_new_format_checkpoint` test failure:**
+- **Bug**: Test expected 2 return values from `load_model()` but function now returns 5 values
+- **Root Cause**: The `load_model()` function in `src/ml/models/training.py` was updated to return `(model, config, scaler_mean, scaler_scale, is_binary)` but 12 test locations were still expecting the old 2-value signature `(model, config)`
+- **Resolution**: Updated all 12 test locations in `tests/ml/models/test_training.py` to handle the new 5-value return signature
+
+**Current Test Status:**
+- All **3,140 tests pass** (2 skipped)
+- Created tag **v0.0.91**
+
+### Project Status Summary
+
+**All direction prediction strategies have failed.** The project is at a crossroads:
+
+| Strategy | Win Rate | Profit Factor | Result |
+|----------|----------|---------------|--------|
+| Direction (24 features) | 38.8% | 0.28 | FAILED |
+| Breakout Detection | 39.1% | 0.50 | FAILED |
+| Mean-Reversion | 19.1% | 0.11 | FAILED |
+
+### Remaining P1 Bugs (from BUGS_FOUND.md)
+
+The following bugs still need attention before any neural network approach can be revisited:
+
+1. **Bug #11: LSTM Sequence Creation OOM on full dataset** - NOT FIXED
+   - **Impact**: Prevents training LSTM models on the full 2.3M row dataset
+   - **Status**: The numpy stride tricks fix works for smaller datasets but memory usage still blows up on full data
+   - **Recommendation**: If neural network approach is revisited, this must be addressed first
+
+2. **Bug #13: Walk-Forward CV Memory Usage** - Needs investigation
+   - **Impact**: High memory usage during walk-forward cross-validation
+   - **Status**: Not fully characterized; may affect model training scalability
+
+### Recommendations
+
+Given the consistent failure of all direction prediction strategies:
+1. Do NOT proceed with live trading
+2. Consider alternative approaches documented in the main Progress Update above
+3. If neural networks are revisited, fix Bug #11 first
+
+---
+
 ## Phase 3.4: Volatility Prediction Analysis (COMPLETE)
 
 **Key Results:**
